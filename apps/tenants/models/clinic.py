@@ -1,4 +1,4 @@
-from django.db.models import CharField, SlugField
+from django.db.models import CharField, PositiveSmallIntegerField, SlugField
 
 from apps.core.fields import EncryptedJSONField
 from apps.core.models import BaseModel
@@ -19,6 +19,14 @@ class Clinic(BaseModel):
         max_length=48,
         default="America/Fortaleza",
         help_text="Base do send_time das jornadas e dos horários exibidos.",
+    )
+    active_window_days = PositiveSmallIntegerField(
+        verbose_name="Janela de paciente ativo (dias)",
+        default=90,
+        help_text=(
+            "Paciente é ATIVO se consultou nos últimos N dias (RF-PAC-2). "
+            "Padrão da clínica; cada profissional pode sobrescrever o seu."
+        ),
     )
     ehr_provider = CharField(
         verbose_name="Provedor de EHR",

@@ -18,6 +18,10 @@ urlpatterns = [
     path("me/", MeView.as_view(), name="me"),
     # Vínculos do usuário com clínicas — alimenta o seletor de clínica do front
     path("me/memberships/", MeMembershipsView.as_view(), name="me-memberships"),
+    # CRM (pacientes e tags)
+    path("", include("apps.patients.api.routers")),
+    # Agenda e catálogos
+    path("", include("apps.scheduling.api.routers")),
     # Recursos internos (auditoria)
     path("core/", include("apps.core.api.routers")),
 ]

@@ -2,31 +2,67 @@
 Seed de desenvolvimento — IDEMPOTENTE.
 
 Rodar N vezes produz o mesmo estado: os registros são resolvidos por chave
-natural (slug da clínica, email do usuário) via get_or_create, e o Faker é
-semeado para gerar sempre os mesmos nomes.
+natural (slug, email, nome no catálogo, external_id determinístico) via
+get_or_create, e o Faker é semeado para gerar sempre os mesmos nomes.
 
 Uso:
     python manage.py seed
-    python manage.py seed --clinics 3 --doctors 2 --attendants 1
-    python manage.py seed --only clinics
-    python manage.py seed --only users,memberships
+    python manage.py seed --clinics 3 --patients 60
+    python manage.py seed --only clinics,users,memberships
+    python manage.py seed --only catalogs,patients,appointments
 
 Credenciais criadas (senha padrão: medessence123):
     admin@medessence.dev            → admin da plataforma
     gestor@medessence.dev           → MANAGER em TODAS as clínicas (testa o seletor)
-    medico{n}.{slug}@medessence.dev → DOCTOR por clínica
+    medico{n}.{slug}@medessence.dev → DOCTOR por clínica (com Practitioner vinculado)
     atendente{n}.{slug}@medessence.dev → ATTENDANT por clínica
+
+Pacientes: distribuição determinística de última consulta para exercitar os
+dois status calculados (ativo ≤ 90 dias / inativo) no admin e na API.
 """
 
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 from faker import Faker
 
 from apps.accounts.choices import MembershipRole
 from apps.accounts.models import Membership, User
+from apps.patients.choices import TagOrigin
+from apps.patients.models import Contact, Patient, PatientContact, PatientTag, Tag
+from apps.scheduling.choices import AppointmentStatus
+from apps.scheduling.models import (
+    Appointment,
+    CareUnit,
+    InsuranceCompany,
+    InsurancePlan,
+    Practitioner,
+    Procedure,
+)
 from apps.tenants.models import Clinic
 
-SECTIONS = ("clinics", "users", "memberships")
+SECTIONS = ("clinics", "users", "memberships", "catalogs", "patients", "appointments")
 DEFAULT_PASSWORD = "medessence123"
+
+CARE_UNITS = ["Unidade Centro", "Unidade Aldeota"]
+PROCEDURES = [
+    ("Consulta", 30, False),
+    ("Retorno", 20, False),
+    ("Avaliação", 40, False),
+    ("Procedimento estético", 60, False),
+    ("Teleconsulta", 30, True),
+]
+INSURANCES = {"Particular": [], "Unimed": ["Unimed Nacional", "Unimed Regional"]}
+TAGS = [
+    ("VIP", "#149AA1"),
+    ("Pós-operatório", "#EBA01F"),
+    ("Convênio", "#3F9CCA"),
+    ("Indicação", "#32AE66"),
+    ("Inadimplente", "#BC242C"),
+    ("Preparo especial", "#276C8E"),
+]
+CITIES = ["Fortaleza", "Fortaleza", "Fortaleza", "Caucaia", "Maracanaú", "Sobral"]
 
 
 class Command(BaseCommand):
@@ -41,6 +77,7 @@ class Command(BaseCommand):
         parser.add_argument("--clinics", type=int, default=2, help="Quantidade de clínicas.")
         parser.add_argument("--doctors", type=int, default=2, help="Médicos por clínica.")
         parser.add_argument("--attendants", type=int, default=1, help="Atendentes por clínica.")
+        parser.add_argument("--patients", type=int, default=40, help="Pacientes por clínica.")
         parser.add_argument(
             "--password", default=DEFAULT_PASSWORD, help="Senha dos usuários de seed."
         )
@@ -73,8 +110,22 @@ class Command(BaseCommand):
                 create_memberships="memberships" in sections,
             )
 
+        if "catalogs" in sections:
+            for clinic in clinics:
+                self._seed_catalogs(clinic)
+
+        if "patients" in sections:
+            for clinic in clinics:
+                self._seed_patients(fake, clinic, options["patients"])
+
+        if "appointments" in sections:
+            for clinic in clinics:
+                self._seed_appointments(clinic)
+
         self.stdout.write(self.style.SUCCESS("Seed concluído."))
 
+    # ------------------------------------------------------------------ #
+    # F0 — clínicas, usuários e vínculos
     # ------------------------------------------------------------------ #
 
     def _seed_clinics(self, fake, quantity) -> list[Clinic]:
@@ -145,6 +196,153 @@ class Command(BaseCommand):
         )
         self._log("Membership", f"{user.email} @ {clinic.slug} ({role})", created)
         return membership
+
+    # ------------------------------------------------------------------ #
+    # F1 — catálogos, pacientes e agenda
+    # ------------------------------------------------------------------ #
+
+    def _seed_catalogs(self, clinic):
+        # Profissionais: um por usuário médico da clínica, ligado ao Membership (M3)
+        doctor_memberships = clinic.memberships.filter(role=MembershipRole.DOCTOR).select_related(
+            "user"
+        )
+        for membership in doctor_memberships:
+            practitioner, created = Practitioner.objects.get_or_create(
+                clinic=clinic,
+                user=membership.user,
+                defaults={"name": f"Dr(a). {membership.user.get_full_name()}"},
+            )
+            if membership.practitioner_id != practitioner.pk:
+                membership.practitioner = practitioner
+                membership.save(update_fields=["practitioner", "updated_at"])
+            self._log("Practitioner", f"{practitioner.name} @ {clinic.slug}", created)
+
+        for name in CARE_UNITS:
+            _, created = CareUnit.objects.get_or_create(clinic=clinic, name=name)
+            self._log("CareUnit", f"{name} @ {clinic.slug}", created)
+
+        for name, duration, remotely in PROCEDURES:
+            _, created = Procedure.objects.get_or_create(
+                clinic=clinic,
+                name=name,
+                defaults={"duration_min": duration, "remotely": remotely},
+            )
+            self._log("Procedure", f"{name} @ {clinic.slug}", created)
+
+        for company_name, plans in INSURANCES.items():
+            company, created = InsuranceCompany.objects.get_or_create(
+                clinic=clinic, name=company_name
+            )
+            self._log("InsuranceCompany", f"{company_name} @ {clinic.slug}", created)
+            for plan_name in plans:
+                _, plan_created = InsurancePlan.objects.get_or_create(
+                    clinic=clinic, company=company, name=plan_name
+                )
+                self._log("InsurancePlan", f"{plan_name} @ {clinic.slug}", plan_created)
+
+        for name, color in TAGS:
+            _, created = Tag.objects.get_or_create(
+                clinic=clinic, name=name, defaults={"color": color}
+            )
+            self._log("Tag", f"{name} @ {clinic.slug}", created)
+
+    def _seed_patients(self, fake, clinic, quantity):
+        tags = list(Tag.objects.filter(clinic=clinic).order_by("name"))
+        for index in range(1, quantity + 1):
+            email = f"paciente{index}.{clinic.slug}@seed.medessence.dev"
+            phone = f"5585{9}{index:08d}"
+            patient = Patient.objects.filter(clinic=clinic, email=email).first()
+            created = patient is None
+            if created:
+                patient = Patient.objects.create(
+                    clinic=clinic,
+                    name=fake.name(),
+                    cpf=fake.cpf(),
+                    birth_date=fake.date_of_birth(minimum_age=18, maximum_age=85),
+                    email=email,
+                    phone=phone,
+                    city=CITIES[index % len(CITIES)],
+                    state="CE",
+                    profession=fake.job()[:120],
+                )
+            else:
+                fake.name(), fake.cpf(), fake.date_of_birth(), fake.job()  # mantém a sequência
+            self._log("Patient", email, created)
+
+            contact, _ = Contact.objects.get_or_create(
+                clinic=clinic,
+                wa_id=phone,
+                defaults={"display_name": patient.name.split()[0]},
+            )
+            PatientContact.objects.get_or_create(
+                patient=patient,
+                contact=contact,
+                defaults={"is_primary": True},
+            )
+
+            if tags:  # 2 tags determinísticas por paciente
+                for offset in (0, 3):
+                    tag = tags[(index + offset) % len(tags)]
+                    PatientTag.objects.get_or_create(
+                        patient=patient,
+                        tag=tag,
+                        defaults={"origin": TagOrigin.LOCAL},
+                    )
+
+    def _seed_appointments(self, clinic):
+        """
+        Distribuição determinística por paciente (index % 3):
+            0 → consulta recente (< 60 dias)      → status ATIVO (janela de 90d)
+            1 → consulta antiga (> 8 meses)        → status INATIVO
+            2 → sem consulta ou intermediária      → status INATIVO
+        Um terço dos pacientes também ganha consulta FUTURA (agenda viva).
+        """
+        practitioners = list(Practitioner.objects.filter(clinic=clinic).order_by("pk"))
+        care_units = list(CareUnit.objects.filter(clinic=clinic).order_by("pk"))
+        procedures = list(Procedure.objects.filter(clinic=clinic).order_by("pk"))
+        if not practitioners:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"  ! {clinic.slug}: sem profissionais — rode a seção catalogs antes."
+                )
+            )
+            return
+
+        now = timezone.now()
+        patients = list(Patient.objects.filter(clinic=clinic).order_by("pk"))
+        for index, patient in enumerate(patients, start=1):
+            bucket = index % 3
+            slots = []
+            if bucket == 0:
+                slots.append(("past", now - timedelta(days=(index % 55) + 2)))
+            elif bucket == 1:
+                slots.append(("past", now - timedelta(days=250 + (index % 90))))
+            elif index % 6 == 5:  # metade dos "inativos" com consulta intermediária
+                slots.append(("past", now - timedelta(days=100 + (index % 60))))
+
+            if index % 3 == 0:
+                slots.append(("future", now + timedelta(days=(index % 20) + 1)))
+
+            for kind, starts_at in slots:
+                external_id = f"seed-{clinic.slug}-p{index}-{kind}"
+                _, created = Appointment.objects.get_or_create(
+                    clinic=clinic,
+                    external_id=external_id,
+                    defaults={
+                        "patient": patient,
+                        "practitioner": practitioners[index % len(practitioners)],
+                        "care_unit": care_units[index % len(care_units)] if care_units else None,
+                        "procedure": procedures[index % len(procedures)] if procedures else None,
+                        "starts_at": starts_at,
+                        "status": (
+                            AppointmentStatus.COMPLETED
+                            if kind == "past"
+                            else AppointmentStatus.SCHEDULED
+                        ),
+                    },
+                )
+                if created:
+                    self._log("Appointment", external_id, created=True)
 
     def _log(self, resource, key, created):
         marker = self.style.SUCCESS("+ criado") if created else self.style.NOTICE("= existente")

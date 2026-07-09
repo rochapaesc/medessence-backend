@@ -69,3 +69,4 @@ wcwidth==0.6.0
 uvicorn==0.34.0
 pytest==8.4.2
 pytest-django==4.11.1
+nh3==0.2.18

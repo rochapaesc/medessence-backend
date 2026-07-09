@@ -1,6 +1,7 @@
 from datetime import timedelta
 from pathlib import Path
 
+from celery.schedules import crontab
 from decouple import config
 from kombu import Queue
 
@@ -39,6 +40,9 @@ LOCAL_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.tenants",
+    "apps.patients",
+    "apps.scheduling",
+    "apps.integrations",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PART_APPS + LOCAL_APPS
@@ -313,18 +317,32 @@ CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default="redis://localho
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RUN_INTERVAL_MINUTES = int(config("CELERY_RUN_INTERVAL_MINUTES", default=1))
-CELERY_BEAT_SCHEDULE = {}
 
 CELERY_EMAIL_QUEUE = "email"
+CELERY_SYNC_QUEUE = "sync"
 CELERY_DEFAULT_QUEUE = "default"
 
 CELERY_QUEUES = (
     Queue(CELERY_DEFAULT_QUEUE, routing_key=CELERY_DEFAULT_QUEUE),
     Queue(CELERY_EMAIL_QUEUE, routing_key=CELERY_EMAIL_QUEUE),
+    Queue(CELERY_SYNC_QUEUE, routing_key=CELERY_SYNC_QUEUE),
 )
 
 CELERY_TASK_DEFAULT_QUEUE = CELERY_DEFAULT_QUEUE
 CELERY_TASK_QUEUES = CELERY_QUEUES
+
+# Beat (§13): agenda a cada 10 min; catálogos + pacientes na madrugada.
+# Fan-out por tenant acontece dentro das tasks schedule_* (lock por clínica).
+CELERY_BEAT_SCHEDULE = {
+    "sync-appointments-fanout": {
+        "task": "apps.integrations.tasks.schedule_appointment_syncs",
+        "schedule": crontab(minute="*/10"),
+    },
+    "sync-daily-fanout": {
+        "task": "apps.integrations.tasks.schedule_daily_syncs",
+        "schedule": crontab(hour=3, minute=0),
+    },
+}
 
 
 RESET_PASSWORD_TIME = int(config("RESET_PASSWORD_TIME", default=60))
@@ -341,3 +359,7 @@ SERVER_EMAIL = config("SERVER_EMAIL", default="noreply@mail.licittudo.com.br")
 
 ASAAS_API_KEY = "$" + config("ASAAS_API_KEY", default="")
 ASAAS_API_URL = config("ASAAS_API_URL", default="https://api-sandbox.asaas.com")
+
+# Base URL padrão da vSaúde — pode ser sobrescrita por clínica em
+# Clinic.ehr_credentials["base_url"] (instalações self-hosted).
+VSAUDE_API_URL = config("VSAUDE_API_URL", default="")

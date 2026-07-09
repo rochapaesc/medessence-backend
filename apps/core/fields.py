@@ -1,6 +1,8 @@
+import ast
 import json
 
 from cryptography.fernet import Fernet, InvalidToken
+from django import forms
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.core.serializers.json import DjangoJSONEncoder
@@ -50,7 +52,7 @@ class EncryptedJSONField(models.TextField):
 
     def to_python(self, value):
         # Deserialização (fixtures/forms): aceita dict/list já decifrado,
-        # token Fernet ou JSON puro.
+        # token Fernet, JSON puro ou literal Python (aspas simples no admin).
         if value is None or isinstance(value, (dict, list)):
             return value
         try:
@@ -59,4 +61,13 @@ class EncryptedJSONField(models.TextField):
             try:
                 return json.loads(value)
             except (TypeError, ValueError):
-                return value
+                try:
+                    return ast.literal_eval(value)
+                except (SyntaxError, ValueError):
+                    return value
+
+    def formfield(self, **kwargs):
+        # No admin, valida JSON na entrada (erro claro em vez de salvar string)
+        kwargs.setdefault("form_class", forms.JSONField)
+        kwargs.setdefault("help_text", 'JSON com aspas duplas — ex.: {"api_key": "..."}')
+        return super().formfield(**kwargs)

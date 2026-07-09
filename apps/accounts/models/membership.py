@@ -1,5 +1,6 @@
 from django.db.models import (
     RESTRICT,
+    SET_NULL,
     BooleanField,
     CharField,
     ForeignKey,
@@ -15,8 +16,7 @@ class Membership(BaseModel):
     Vínculo user↔clinic — a autorização do plano clínica (§3.1).
 
     `is_active=False` revoga o acesso preservando o histórico.
-    A FK `practitioner` (carteira do médico) entra na F1, junto com o
-    app scheduling.
+    `practitioner` liga o papel de médico à sua carteira/agenda (M3).
     """
 
     user = ForeignKey(
@@ -37,6 +37,14 @@ class Membership(BaseModel):
         choices=MembershipRole.choices,
     )
     is_active = BooleanField(verbose_name="Ativo", default=True)
+    practitioner = ForeignKey(  # M3 — carteira/agenda do médico
+        "scheduling.Practitioner",
+        verbose_name="Profissional",
+        null=True,
+        blank=True,
+        on_delete=SET_NULL,
+        related_name="memberships",
+    )
 
     class Meta:
         verbose_name = "Vínculo"

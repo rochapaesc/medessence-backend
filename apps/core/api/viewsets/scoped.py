@@ -18,7 +18,7 @@ from apps.core.api.viewsets.base import (
     BaseReadOnlyModelViewSet,
     ListModelViewSet,
 )
-from apps.core.context import resolve_active_membership
+from apps.core.context import assert_object_in_clinic, resolve_active_membership
 
 
 class ClinicScopedMixin:
@@ -43,11 +43,33 @@ class ClinicScopedMixin:
         queryset = super().get_queryset()
         return queryset.filter(**{self.clinic_lookup: self.clinic})
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["clinic"] = getattr(self, "clinic", None)
+        return context
+
+    def validate_nested_clinic(self, serializer):
+        """
+        Nunca confiar em id vindo do cliente (§3): toda FK resolvida no
+        payload que aponte para um recurso tenant-scoped precisa pertencer
+        à clínica ativa.
+        """
+        for field, value in serializer.validated_data.items():
+            items = value if isinstance(value, (list, tuple)) else [value]
+            for item in items:
+                if hasattr(item, "clinic_id"):
+                    assert_object_in_clinic(item, self.clinic, label=field)
+
     def perform_create(self, serializer):
         # Injeção da clínica ativa no caminho de escrita. Só se aplica a
         # modelos com FK direta; recursos com lookup indireto herdam o escopo
-        # da FK pai (validada com assert_object_in_clinic no serializer).
+        # da FK pai (validada em validate_nested_clinic).
+        self.validate_nested_clinic(serializer)
         serializer.save(**self.clinic_save_kwargs())
+
+    def perform_update(self, serializer):
+        self.validate_nested_clinic(serializer)
+        serializer.save()
 
     def clinic_save_kwargs(self) -> dict:
         if self.clinic_lookup == "clinic":
