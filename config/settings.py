@@ -42,6 +42,7 @@ LOCAL_APPS = [
     "apps.tenants",
     "apps.patients",
     "apps.scheduling",
+    "apps.inbox",
     "apps.integrations",
 ]
 

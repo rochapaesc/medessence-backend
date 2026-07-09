@@ -29,6 +29,14 @@ from faker import Faker
 
 from apps.accounts.choices import MembershipRole
 from apps.accounts.models import Membership, User
+from apps.inbox.choices import MessageKind, SenderKind, WhatsAppProviderKind
+from apps.inbox.models import (
+    Channel,
+    Conversation,
+    Message,
+    QuickReply,
+    WhatsAppTemplate,
+)
 from apps.patients.choices import TagOrigin
 from apps.patients.models import Contact, Patient, PatientContact, PatientTag, Tag
 from apps.scheduling.choices import AppointmentStatus
@@ -42,7 +50,7 @@ from apps.scheduling.models import (
 )
 from apps.tenants.models import Clinic
 
-SECTIONS = ("clinics", "users", "memberships", "catalogs", "patients", "appointments")
+SECTIONS = ("clinics", "users", "memberships", "catalogs", "patients", "appointments", "inbox")
 DEFAULT_PASSWORD = "medessence123"
 
 CARE_UNITS = ["Unidade Centro", "Unidade Aldeota"]
@@ -63,6 +71,16 @@ TAGS = [
     ("Preparo especial", "#276C8E"),
 ]
 CITIES = ["Fortaleza", "Fortaleza", "Fortaleza", "Caucaia", "Maracanaú", "Sobral"]
+QUICK_REPLIES = [
+    ("Saudação", "Olá! Aqui é da clínica. Como podemos ajudar?"),
+    ("Confirmação", "Sua consulta está confirmada. Até breve!"),
+    ("Endereço", "Estamos na Av. Central, 1000 — Fortaleza/CE."),
+]
+WA_TEMPLATES = [
+    ("confirmacao_consulta", "UTILITY", "APPROVED"),
+    ("lembrete_retorno", "MARKETING", "APPROVED"),
+    ("avaliacao_google", "UTILITY", "PENDING"),
+]
 
 
 class Command(BaseCommand):
@@ -121,6 +139,10 @@ class Command(BaseCommand):
         if "appointments" in sections:
             for clinic in clinics:
                 self._seed_appointments(clinic)
+
+        if "inbox" in sections:
+            for clinic in clinics:
+                self._seed_inbox(clinic)
 
         self.stdout.write(self.style.SUCCESS("Seed concluído."))
 
@@ -343,6 +365,87 @@ class Command(BaseCommand):
                 )
                 if created:
                     self._log("Appointment", external_id, created=True)
+
+    # ------------------------------------------------------------------ #
+    # F2 — inbox (canal, conversas, mensagens, respostas rápidas, templates)
+    # ------------------------------------------------------------------ #
+
+    def _seed_inbox(self, clinic):
+        # Canal FAKE por clínica (dev sem número real) — unicidade por clínica.
+        channel, created = Channel.objects.get_or_create(
+            clinic=clinic,
+            defaults={
+                "provider": WhatsAppProviderKind.FAKE,
+                "display_number": "5585999990000",
+                "phone_number_id": f"fake-pnid-{clinic.slug}",
+            },
+        )
+        self._log("Channel", channel.display_number, created)
+
+        for label, body in QUICK_REPLIES:
+            _, qr_created = QuickReply.objects.get_or_create(
+                clinic=clinic, label=label, defaults={"body": body}
+            )
+            self._log("QuickReply", f"{label} @ {clinic.slug}", qr_created)
+
+        for name, category, status in WA_TEMPLATES:
+            _, tpl_created = WhatsAppTemplate.objects.get_or_create(
+                clinic=clinic,
+                name=name,
+                language="pt_BR",
+                defaults={"category": category, "status": status},
+            )
+            self._log("WhatsAppTemplate", f"{name} @ {clinic.slug}", tpl_created)
+
+        # Conversas para os primeiros contatos com paciente vinculado.
+        now = timezone.now()
+        links = list(
+            PatientContact.objects.filter(patient__clinic=clinic)
+            .select_related("patient", "contact")
+            .order_by("pk")[:5]
+        )
+        for index, link in enumerate(links, start=1):
+            conversation, conv_created = Conversation.objects.get_or_create(
+                clinic=clinic,
+                channel=channel,
+                contact=link.contact,
+                defaults={"patient": link.patient},
+            )
+            self._log("Conversation", f"{link.contact} @ {clinic.slug}", conv_created)
+
+            # Uma recebida (abre a janela de 24h) e uma enviada em resposta.
+            inbound_at = now - timedelta(hours=index)
+            self._seed_message(
+                clinic,
+                conversation,
+                mid=f"seed-{clinic.slug}-c{index}-in",
+                sender_kind=SenderKind.CONTACT,
+                body="Olá, gostaria de remarcar minha consulta.",
+                wa_timestamp=inbound_at,
+            )
+            self._seed_message(
+                clinic,
+                conversation,
+                mid=f"seed-{clinic.slug}-c{index}-out",
+                sender_kind=SenderKind.AGENT,
+                body="Claro! Consigo encaixar você esta semana. Qual o melhor dia?",
+                wa_timestamp=inbound_at + timedelta(minutes=3),
+            )
+
+    def _seed_message(self, clinic, conversation, *, mid, sender_kind, body, wa_timestamp):
+        _, created = Message.objects.get_or_create(
+            clinic=clinic,
+            provider_message_id=mid,
+            defaults={
+                "conversation": conversation,
+                "sender_kind": sender_kind,
+                "kind": MessageKind.TEXT,
+                "body": body,
+                "wa_timestamp": wa_timestamp,
+            },
+        )
+        if created:
+            self._log("Message", mid, created=True)
 
     def _log(self, resource, key, created):
         marker = self.style.SUCCESS("+ criado") if created else self.style.NOTICE("= existente")
