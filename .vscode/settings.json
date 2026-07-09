@@ -1,0 +1,57 @@
+{
+  // Editor
+  "editor.rulers": [
+    88
+  ],
+  "editor.tabSize": 4,
+  "editor.insertSpaces": true,
+  "editor.renderWhitespace": "boundary",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  // Python
+  "[python]": {
+    // Ruff como formatter padrão
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    // Formata ao salvar
+    "editor.formatOnSave": true,
+    // Linha-guia em 88 colunas (padrão do Ruff/Black)
+    "editor.rulers": [
+      88
+    ],
+    // Organiza imports e aplica fixes do Ruff ao salvar
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "always",
+      "source.fixAll": "explicit"
+    }
+  },
+  // Pylance
+  // Ativa Pylance como language server
+  "python.languageServer": "Pylance",
+  // Nível de type checking: "off" | "basic" | "standard" | "strict"
+  "python.analysis.typeCheckingMode": "basic",
+  // Analisa todos os arquivos do workspace, não só os abertos
+  "python.analysis.diagnosticMode": "workspace",
+  // Desativa os diagnósticos de lint do Pylance (evita duplicatas com o Ruff)
+  "python.analysis.ignore": [
+    "*"
+  ],
+  // Sugere imports automaticamente ao digitar
+  "python.analysis.autoImportCompletions": true,
+  // Python
+  // Ativa o venv automaticamente no terminal integrado
+  "python.terminal.activateEnvInCurrentTerminal": true,
+  // Explorer
+  // Oculta pastas e arquivos de ruído no explorer
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    "**/.pytest_cache": true
+  },
+  // Misc
+  "editor.stickyScroll.enabled": true,
+  // Desabilita o formatter de HTML (evita conflito em templates Jinja/Django)
+  "html.format.enable": false
+}
+

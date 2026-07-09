@@ -1,0 +1,131 @@
+services:
+  medessence_db:
+    container_name: medessence_db
+    image: postgres:17.4-alpine
+    volumes:
+      - medessence_data:/var/lib/postgresql/data/
+      - ./pg_scripts/load-extensions.sql:/docker-entrypoint-initdb.d/load-extensions.sql
+    env_file:
+      - .db.env
+    ports:
+      - "${DB_CONTAINER_PORT}:${DB_PORT}"
+    restart: always
+    networks:
+      medessence_network:
+        ipv4_address: 10.31.0.2
+    hostname: medessence_db
+
+  medessence_django:
+    container_name: medessence_django
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+      args:
+        - REQUIREMENTS_PATH=${REQUIREMENTS_PATH}
+    command: ${BACKEND_COMMAND}
+    volumes:
+      - .:/home/app/
+      - ${MEDIA_ROOT}:/home/app/media
+      - ${STATIC_ROOT}:/home/app/static
+    ports:
+      - "${BACKEND_CONTAINER_PORT}:${BACKEND_PORT}"
+    env_file:
+      - .env
+    depends_on:
+      - medessence_db
+      - medessence_redis
+    restart: always
+    networks:
+      medessence_network:
+        ipv4_address: 10.31.0.3
+    hostname: medessence_django
+
+  medessence_redis:
+    container_name: medessence_redis
+    image: redis:alpine
+    ports:
+      - "${REDIS_CONTAINER_PORT}:${REDIS_PORT}"
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    env_file:
+      - .env
+    networks:
+      medessence_network:
+        ipv4_address: 10.31.0.4
+    hostname: medessence_redis
+
+  medessence_celery_worker:
+    container_name: medessence_celery_worker
+    build:
+      context: .
+      dockerfile: docker/celery/Dockerfile
+      args:
+        - REQUIREMENTS_PATH=${REQUIREMENTS_PATH}
+    command: ${CELERY_WORKER_COMMAND}
+    volumes:
+      - .:/home/app/
+    env_file:
+      - .env
+    depends_on:
+      - medessence_db
+      - medessence_redis
+    restart: always
+    networks:
+      medessence_network:
+        ipv4_address: 10.31.0.5
+    hostname: medessence_celery_worker
+
+  medessence_celery_beat:
+    container_name: medessence_celery_beat
+    build:
+      context: .
+      dockerfile: docker/celery/Dockerfile
+      args:
+        - REQUIREMENTS_PATH=${REQUIREMENTS_PATH}
+    command: ${CELERY_BEAT_COMMAND}
+    volumes:
+      - .:/home/app/
+    env_file:
+      - .env
+    depends_on:
+      - medessence_db
+      - medessence_redis
+    restart: always
+    networks:
+      medessence_network:
+        ipv4_address: 10.31.0.6
+    hostname: medessence_celery_beat
+
+  medessence_db_backup:
+    container_name: medessence_db_backup
+    image: postgres:17.4-alpine
+    env_file:
+      - .db.env
+      - .env
+    volumes:
+      - ./backups:/backups
+      - ./docker/backup/entrypoint.sh:/entrypoint.sh
+    entrypoint: ["sh", "/entrypoint.sh"]
+    networks:
+      medessence_network:
+        ipv4_address: 10.31.0.7
+    depends_on:
+      - medessence_db
+    restart: always
+
+volumes:
+  medessence_data:
+
+networks:
+  medessence_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.31.0.0/24
+          gateway: 10.31.0.1

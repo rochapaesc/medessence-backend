@@ -1,0 +1,61 @@
+line-length = 100
+target-version = "py311"
+
+exclude = [
+    "migrations",
+    "venv",
+    ".venv",
+    "__pycache__",
+    ".git",
+]
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "DJ",  # flake8-django
+    "S",   # bandit (segurança) — substitui o `make security`
+    "B",   # flake8-bugbear (bugs comuns)
+    "C4",  # flake8-comprehensions (simplifica list/dict comprehensions)
+    "UP",  # pyupgrade (moderniza sintaxe)
+    "RUF", # regras do próprio Ruff
+]
+
+ignore = [
+    "S101",   # uso de assert (comum em testes)
+    "S105",   # hardcoded password — muito verboso em settings
+    "S106",
+    "S107",
+    "DJ001",  # nullable CharField — padrão em alguns casos Django
+    "B008",   # chamada de função em default de argumento (comum no DRF/FastAPI)
+]
+
+[lint.per-file-ignores]
+# Em testes, libera asserções e magic values
+"tests/**/*.py" = ["S", "N802"]
+"**/tests.py"   = ["S", "N802"]
+# Settings podem ter strings hardcoded
+"**/settings*.py" = ["S105", "S106", "S107"]
+# Ignora o aviso de atributo mutável em todos os arquivos do Django
+"**/filtersets/**/*.py" = ["RUF012"]
+"**/serializers/**/*.py" = ["RUF012"]
+"**/viewsets/**/*.py" = ["RUF012"]
+"**/models/**/*.py" = ["RUF012"]
+"**/admin/**/*.py" = ["RUF012"]
+"**/api/views.py" = ["RUF012"]
+"**/mixins.py" = ["RUF012"]
+
+[lint.isort]
+known-third-party = ["django", "rest_framework"]
+known-first-party  = ["apps", "config", "core"]
+
+[lint.pydocstyle]
+convention = "google"
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
