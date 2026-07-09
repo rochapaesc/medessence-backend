@@ -3,13 +3,17 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
-from apps.inbox.choices import MessageKind, SenderKind
+from apps.inbox.choices import MessageKind, SenderKind, WhatsAppProviderKind
 from apps.inbox.models import Channel, Conversation, Message
 from apps.patients.models import Contact, Patient
 
 
 def _scaffold(clinic, wa_id):
-    channel = Channel.objects.create(clinic=clinic, display_number="5585999990000")
+    channel = Channel.objects.create(
+        clinic=clinic,
+        provider=WhatsAppProviderKind.FAKE,
+        display_number="5585999990000",
+    )
     contact = Contact.objects.create(clinic=clinic, wa_id=wa_id, display_name="Fulano")
     patient = Patient.objects.create(clinic=clinic, name="Paciente Teste")
     conversation = Conversation.objects.create(

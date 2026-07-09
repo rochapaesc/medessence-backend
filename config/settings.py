@@ -322,11 +322,18 @@ CELERY_RUN_INTERVAL_MINUTES = int(config("CELERY_RUN_INTERVAL_MINUTES", default=
 CELERY_EMAIL_QUEUE = "email"
 CELERY_SYNC_QUEUE = "sync"
 CELERY_DEFAULT_QUEUE = "default"
+# Filas do inbox (F2, §13)
+CELERY_WEBHOOKS_QUEUE = "webhooks"
+CELERY_OUTBOUND_QUEUE = "outbound"
+CELERY_MEDIA_QUEUE = "media"
 
 CELERY_QUEUES = (
     Queue(CELERY_DEFAULT_QUEUE, routing_key=CELERY_DEFAULT_QUEUE),
     Queue(CELERY_EMAIL_QUEUE, routing_key=CELERY_EMAIL_QUEUE),
     Queue(CELERY_SYNC_QUEUE, routing_key=CELERY_SYNC_QUEUE),
+    Queue(CELERY_WEBHOOKS_QUEUE, routing_key=CELERY_WEBHOOKS_QUEUE),
+    Queue(CELERY_OUTBOUND_QUEUE, routing_key=CELERY_OUTBOUND_QUEUE),
+    Queue(CELERY_MEDIA_QUEUE, routing_key=CELERY_MEDIA_QUEUE),
 )
 
 CELERY_TASK_DEFAULT_QUEUE = CELERY_DEFAULT_QUEUE
@@ -342,6 +349,11 @@ CELERY_BEAT_SCHEDULE = {
     "sync-daily-fanout": {
         "task": "apps.integrations.tasks.schedule_daily_syncs",
         "schedule": crontab(hour=3, minute=0),
+    },
+    # Cache de templates aprovados do WhatsApp (§13) — a cada 6h.
+    "refresh-wa-templates": {
+        "task": "apps.inbox.tasks.refresh_wa_templates",
+        "schedule": crontab(minute=0, hour="*/6"),
     },
 }
 
@@ -364,3 +376,7 @@ ASAAS_API_URL = config("ASAAS_API_URL", default="https://api-sandbox.asaas.com")
 # Base URL padrão da vSaúde — pode ser sobrescrita por clínica em
 # Clinic.ehr_credentials["base_url"] (instalações self-hosted).
 VSAUDE_API_URL = config("VSAUDE_API_URL", default="")
+
+# Base URL padrão da Datafy — sobrescrita por canal em
+# Channel.credentials["base_url"]. A calibrar com número/WABA real.
+DATAFY_API_URL = config("DATAFY_API_URL", default="")

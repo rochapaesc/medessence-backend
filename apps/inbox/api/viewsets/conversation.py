@@ -40,6 +40,10 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         if conversation.unread_count:
             conversation.unread_count = 0
             conversation.save(update_fields=["unread_count", "updated_at"])
+        # RF-INB-4: além de local, confirma a leitura no provedor.
+        from apps.inbox.tasks import mark_whatsapp_read
+
+        mark_whatsapp_read.delay(conversation.pk)
         return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["post"], url_path="assign")

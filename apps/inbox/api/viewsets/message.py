@@ -44,6 +44,13 @@ class MessageViewSet(
     def get_queryset(self):
         return super().get_queryset().order_by("wa_timestamp")
 
+    def perform_create(self, serializer):
+        super().perform_create(serializer)  # AuditMixin → ClinicScoped → save
+        # Fatia B: persistir e ENVIAR (provider real; FAKE devolve wamid sintético).
+        from apps.inbox.tasks import send_whatsapp_message
+
+        send_whatsapp_message.delay(serializer.instance.pk)
+
     def clinic_save_kwargs(self) -> dict:
         # A mensagem do composer nasce OUT/AGENT, autoria do usuário logado e
         # horário do servidor; a direção é derivada no Message.save().
