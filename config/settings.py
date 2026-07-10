@@ -296,6 +296,12 @@ FIELD_ENCRYPTION_KEY = config("FIELD_ENCRYPTION_KEY")
 
 CORS_ALLOW_ALL_ORIGINS = True
 
+# O front web envia o contexto de clínica no header X-Clinic-Id (§3.1); sem
+# liberá-lo, o preflight CORS barra TODA request escopada.
+from corsheaders.defaults import default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = (*default_headers, "x-clinic-id")
+
 SESSION_CACHE_ALIAS = "default"
 
 CACHE_TTL = 60 * 1
@@ -391,4 +397,4 @@ VSAUDE_API_URL = config("VSAUDE_API_URL", default="")
 
 # Base URL padrão da Datafy — sobrescrita por canal em
 # Channel.credentials["base_url"]. A calibrar com número/WABA real.
-DATAFY_API_URL = config("DATAFY_API_URL", default="")
+DATAFY_API_URL = config("DATAFY_API_URL", default="https://cloud.datafyapi.com.br")
