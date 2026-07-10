@@ -397,4 +397,4 @@ VSAUDE_API_URL = config("VSAUDE_API_URL", default="")
 
 # Base URL padrão da Datafy — sobrescrita por canal em
 # Channel.credentials["base_url"]. A calibrar com número/WABA real.
-DATAFY_API_URL = config("DATAFY_API_URL", default="https://cloud.datafyapi.com.br")
+DATAFY_API_URL = config("DATAFY_API_URL", default="")
