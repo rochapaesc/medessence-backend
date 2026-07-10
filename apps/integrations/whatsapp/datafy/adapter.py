@@ -71,18 +71,20 @@ class DatafyAdapter:
         )
 
     def resolve_media(self, media_id: str) -> MediaURL:
-        data = self.client.get(f"/v1/{media_id}")
+        # Endpoint simplificado da Datafy: URL da CDN válida por 30 dias e
+        # baixável SEM Authorization. (O mirror `/v1/{id}` devolve URL Meta de
+        # ~5 min que EXIGE `Bearer` no download — por isso não o usamos.)
+        data = self.client.get(f"/media/{media_id}")
         return MediaURL(
             url=data.get("url", ""),
             mime_type=data.get("mime_type", ""),
-            size_bytes=data.get("file_size"),
+            size_bytes=data.get("size"),
         )
 
     def list_templates(self) -> list[Template]:
-        waba_id = self.channel.waba_id
-        if not waba_id:
-            return []
-        data = self.client.get(f"/v1/{waba_id}/message_templates")
+        # Endpoint simplificado da Datafy (associa à WABA pelo token — dispensa
+        # o waba_id na URL).
+        data = self.client.get("/templates")
         return [
             Template(
                 name=item.get("name", ""),
