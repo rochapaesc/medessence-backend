@@ -145,6 +145,12 @@ def _ingest_message(channel, event, sender_kind) -> bool:
 
         fetch_media_asset.delay(media.pk)
 
+    # Realtime (§12): a conversa vem atualizada pelo signal de Message.
+    from apps.inbox.realtime import notify_conversation_updated, notify_message_new
+
+    conversation.refresh_from_db()
+    notify_message_new(message)
+    notify_conversation_updated(conversation)
     return message is not None
 
 
@@ -157,6 +163,10 @@ def _apply_status(channel, event) -> bool:
     updated = Message.objects.filter(
         clinic=channel.clinic, provider_message_id=event.provider_message_id
     ).update(status=event.status, updated_at=timezone.now())
+    if updated:
+        from apps.inbox.realtime import notify_message_status
+
+        notify_message_status(channel.clinic_id, event.provider_message_id, event.status)
     return bool(updated)
 
 
@@ -182,3 +192,8 @@ def send_message(message) -> None:
     message.provider_message_id = result.provider_message_id
     message.status = result.status or MessageStatus.SENT
     message.save(update_fields=["provider_message_id", "status", "updated_at"])
+
+    # Realtime (§12): telas dos demais atendentes veem a mensagem enviada.
+    from apps.inbox.realtime import notify_message_new
+
+    notify_message_new(message)

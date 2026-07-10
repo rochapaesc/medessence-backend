@@ -26,6 +26,7 @@ DJANGO_APPS = [
 ]
 
 THIRD_PART_APPS = [
+    "channels",  # tempo real (§12) — habilita o ASGI_APPLICATION do Channels
     "rest_framework",
     "django_filters",
     "rest_framework_simplejwt",
@@ -309,6 +310,17 @@ CACHES = {
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0",
         "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+    },
+}
+
+# Channel layer do tempo real (§12) — mesmo Redis, DB separado (/1) do
+# cache/broker (/0). O front recebe eventos; a fonte da verdade é a API REST.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/1"],
+        },
     },
 }
 

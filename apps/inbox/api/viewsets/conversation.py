@@ -67,6 +67,10 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         conversation = self.get_object()
         conversation.needs_agent = True
         conversation.save(update_fields=["needs_agent", "updated_at"])
+        # Realtime (§12): aba "aguardando" acende em todas as telas da clínica.
+        from apps.inbox.realtime import notify_handoff
+
+        notify_handoff(conversation)
         return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["post"], url_path="link-patient")
