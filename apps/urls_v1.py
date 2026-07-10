@@ -22,6 +22,8 @@ urlpatterns = [
     path("", include("apps.patients.api.routers")),
     # Agenda e catálogos
     path("", include("apps.scheduling.api.routers")),
+    # Inbox (WhatsApp)
+    path("", include("apps.inbox.api.routers")),
     # Recursos internos (auditoria)
     path("core/", include("apps.core.api.routers")),
 ]

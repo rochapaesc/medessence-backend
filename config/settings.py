@@ -26,6 +26,7 @@ DJANGO_APPS = [
 ]
 
 THIRD_PART_APPS = [
+    "channels",  # tempo real (§12) — habilita o ASGI_APPLICATION do Channels
     "rest_framework",
     "django_filters",
     "rest_framework_simplejwt",
@@ -42,6 +43,7 @@ LOCAL_APPS = [
     "apps.tenants",
     "apps.patients",
     "apps.scheduling",
+    "apps.inbox",
     "apps.integrations",
 ]
 
@@ -294,6 +296,12 @@ FIELD_ENCRYPTION_KEY = config("FIELD_ENCRYPTION_KEY")
 
 CORS_ALLOW_ALL_ORIGINS = True
 
+# O front web envia o contexto de clínica no header X-Clinic-Id (§3.1); sem
+# liberá-lo, o preflight CORS barra TODA request escopada.
+from corsheaders.defaults import default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = (*default_headers, "x-clinic-id")
+
 SESSION_CACHE_ALIAS = "default"
 
 CACHE_TTL = 60 * 1
@@ -311,6 +319,17 @@ CACHES = {
     },
 }
 
+# Channel layer do tempo real (§12) — mesmo Redis, DB separado (/1) do
+# cache/broker (/0). O front recebe eventos; a fonte da verdade é a API REST.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/1"],
+        },
+    },
+}
+
 CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default="redis://localhost:6379/0")
 
@@ -321,11 +340,18 @@ CELERY_RUN_INTERVAL_MINUTES = int(config("CELERY_RUN_INTERVAL_MINUTES", default=
 CELERY_EMAIL_QUEUE = "email"
 CELERY_SYNC_QUEUE = "sync"
 CELERY_DEFAULT_QUEUE = "default"
+# Filas do inbox (F2, §13)
+CELERY_WEBHOOKS_QUEUE = "webhooks"
+CELERY_OUTBOUND_QUEUE = "outbound"
+CELERY_MEDIA_QUEUE = "media"
 
 CELERY_QUEUES = (
     Queue(CELERY_DEFAULT_QUEUE, routing_key=CELERY_DEFAULT_QUEUE),
     Queue(CELERY_EMAIL_QUEUE, routing_key=CELERY_EMAIL_QUEUE),
     Queue(CELERY_SYNC_QUEUE, routing_key=CELERY_SYNC_QUEUE),
+    Queue(CELERY_WEBHOOKS_QUEUE, routing_key=CELERY_WEBHOOKS_QUEUE),
+    Queue(CELERY_OUTBOUND_QUEUE, routing_key=CELERY_OUTBOUND_QUEUE),
+    Queue(CELERY_MEDIA_QUEUE, routing_key=CELERY_MEDIA_QUEUE),
 )
 
 CELERY_TASK_DEFAULT_QUEUE = CELERY_DEFAULT_QUEUE
@@ -341,6 +367,11 @@ CELERY_BEAT_SCHEDULE = {
     "sync-daily-fanout": {
         "task": "apps.integrations.tasks.schedule_daily_syncs",
         "schedule": crontab(hour=3, minute=0),
+    },
+    # Cache de templates aprovados do WhatsApp (§13) — a cada 6h.
+    "refresh-wa-templates": {
+        "task": "apps.inbox.tasks.refresh_wa_templates",
+        "schedule": crontab(minute=0, hour="*/6"),
     },
 }
 
@@ -363,3 +394,7 @@ ASAAS_API_URL = config("ASAAS_API_URL", default="https://api-sandbox.asaas.com")
 # Base URL padrão da vSaúde — pode ser sobrescrita por clínica em
 # Clinic.ehr_credentials["base_url"] (instalações self-hosted).
 VSAUDE_API_URL = config("VSAUDE_API_URL", default="")
+
+# Base URL padrão da Datafy — sobrescrita por canal em
+# Channel.credentials["base_url"]. A calibrar com número/WABA real.
+DATAFY_API_URL = config("DATAFY_API_URL", default="https://cloud.datafyapi.com.br")
