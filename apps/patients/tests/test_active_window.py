@@ -46,7 +46,7 @@ def test_janela_da_clinica_e_configuravel(
     assert inactive.data["results"][0]["status"] == "inactive"
 
     counters = api_client.get(f"{URL}counters/")
-    assert counters.data == {"total": 1, "active": 0, "inactive": 1}
+    assert counters.data == {"total": 1, "active": 0, "inactive": 1, "to_reactivate": 1}
 
 
 def test_override_do_profissional_na_carteira(
@@ -69,11 +69,16 @@ def test_override_do_profissional_na_carteira(
     api_client.force_authenticate(manager_single_clinic)
 
     # Visão da clínica (30d): inativo
-    assert api_client.get(f"{URL}counters/").data == {"total": 1, "active": 0, "inactive": 1}
+    assert api_client.get(f"{URL}counters/").data == {
+        "total": 1,
+        "active": 0,
+        "inactive": 1,
+        "to_reactivate": 1,
+    }
 
     # Carteira da profissional (180d): ativo
     carteira = api_client.get(f"{URL}counters/", {"practitioner": practitioner.pk})
-    assert carteira.data == {"total": 1, "active": 1, "inactive": 0}
+    assert carteira.data == {"total": 1, "active": 1, "inactive": 0, "to_reactivate": 0}
 
     listagem = api_client.get(URL, {"status": "active", "practitioner": practitioner.pk})
     assert [i["name"] for i in listagem.data["results"]] == ["Paciente Quarenta Dias"]
@@ -103,10 +108,55 @@ def test_atividade_da_carteira_e_relativa_ao_profissional(
 
     # Na carteira da Dra. A (90d, sem override): inativo — a consulta COM ELA é antiga
     carteira = api_client.get(f"{URL}counters/", {"practitioner": dra.pk})
-    assert carteira.data == {"total": 1, "active": 0, "inactive": 1}
+    assert carteira.data == {"total": 1, "active": 0, "inactive": 1, "to_reactivate": 1}
 
 
 def test_counters_com_profissional_inexistente_retorna_400(api_client, manager_single_clinic):
     api_client.force_authenticate(manager_single_clinic)
     response = api_client.get(f"{URL}counters/", {"practitioner": 9999})
     assert response.status_code == 400
+
+
+def test_retorno_futuro_mantem_ativo_sem_vies_de_reativacao(
+    api_client, manager_single_clinic, clinic_a
+):
+    """
+    Sem viés (RF-PAC-2): última consulta há 200d (fora da janela) MAS com
+    retorno agendado → ATIVO, não "para reativar". E paciente sem histórico
+    (só futuro) também é ativo e nunca entra no balde de reativação.
+    """
+    now = timezone.now()
+    dra = Practitioner.objects.create(clinic=clinic_a, name="Dra. Agenda")
+    lapsado = Patient.objects.create(clinic=clinic_a, name="Lapsado Sem Retorno")
+    com_retorno = Patient.objects.create(clinic=clinic_a, name="Voltando Com Retorno")
+    novo_agendado = Patient.objects.create(clinic=clinic_a, name="Novo Só Futuro")
+
+    # Lapsado: só consulta antiga (200d) → inativo COM histórico.
+    Appointment.objects.create(
+        clinic=clinic_a, patient=lapsado, practitioner=dra,
+        starts_at=now - timedelta(days=200), status=AppointmentStatus.COMPLETED,
+    )
+    # Com retorno: consulta antiga (200d) + retorno agendado (futuro) → ativo.
+    Appointment.objects.create(
+        clinic=clinic_a, patient=com_retorno, practitioner=dra,
+        starts_at=now - timedelta(days=200), status=AppointmentStatus.COMPLETED,
+    )
+    Appointment.objects.create(
+        clinic=clinic_a, patient=com_retorno, practitioner=dra,
+        starts_at=now + timedelta(days=7), status=AppointmentStatus.SCHEDULED,
+    )
+    # Novo: só consulta futura, sem histórico → ativo, fora da reativação.
+    Appointment.objects.create(
+        clinic=clinic_a, patient=novo_agendado, practitioner=dra,
+        starts_at=now + timedelta(days=3), status=AppointmentStatus.SCHEDULED,
+    )
+    api_client.force_authenticate(manager_single_clinic)
+
+    # 2 ativos (com_retorno + novo_agendado), 1 inativo (lapsado),
+    # e só o lapsado é alvo de reativação.
+    assert api_client.get(f"{URL}counters/").data == {
+        "total": 3,
+        "active": 2,
+        "inactive": 1,
+        "to_reactivate": 1,
+    }

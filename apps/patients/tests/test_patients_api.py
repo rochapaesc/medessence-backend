@@ -78,7 +78,8 @@ def test_counters_por_status(api_client, manager_single_clinic, patients_a):
     api_client.force_authenticate(manager_single_clinic)
     response = api_client.get(f"{URL}counters/")
     assert response.status_code == 200
-    assert response.data == {"total": 4, "active": 1, "inactive": 3}
+    # 3 inativos, mas só 2 já vieram antes (o "novo" sem histórico fica de fora).
+    assert response.data == {"total": 4, "active": 1, "inactive": 3, "to_reactivate": 2}
 
 
 def test_filtro_por_cidade(api_client, manager_single_clinic, patients_a):

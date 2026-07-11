@@ -7,6 +7,7 @@ from django.db.models import (
     EmailField,
     JSONField,
     Max,
+    Min,
     Q,
     TextField,
     UniqueConstraint,
@@ -38,55 +39,70 @@ class PatientQuerySet(SoftDeleteQuerySet):
         practitioner=None,
     ):
         """
-        Filtra por status calculado. Sem `practitioner`, usa o denormalizado
-        `last_appointment_at` (visão da clínica). Com `practitioner`, a
-        atividade é relativa à CARTEIRA dele: última consulta COM ELE dentro
-        da janela efetiva (que o chamador já resolveu).
+        Filtra por status calculado (RF-PAC-2). ATIVO = compareceu dentro da
+        janela OU tem consulta futura agendada (retorno marcado não vira alvo
+        de reativação). INATIVO = o complemento. Sem `practitioner`, usa os
+        denormalizados da clínica; com ele, a atividade é relativa à CARTEIRA
+        dele (última/próxima consulta COM ELE).
         """
         now = timezone.now()
         cutoff = active_cutoff(window_days, now)
 
         if practitioner is not None:
-            queryset = self.annotate(
-                practitioner_last_appointment=Max(
-                    "appointments__starts_at",
-                    filter=Q(appointments__practitioner=practitioner)
-                    & Q(appointments__starts_at__lte=now)
-                    & Q(appointments__deleted_at__isnull=True)
-                    & ~Q(appointments__status__in=["canceled", "no_show"]),
-                )
-            )
-            if status == PatientStatus.ACTIVE:
-                return queryset.filter(practitioner_last_appointment__gte=cutoff)
-            if status == PatientStatus.INACTIVE:
-                return queryset.filter(
-                    Q(practitioner_last_appointment__isnull=True)
-                    | Q(practitioner_last_appointment__lt=cutoff)
-                )
-            return queryset
+            queryset = self._annotate_practitioner(practitioner, now)
+            active = Q(pract_last__gte=cutoff) | Q(pract_next__isnull=False)
+        else:
+            queryset = self
+            active = Q(last_appointment_at__gte=cutoff) | Q(next_appointment_at__gte=now)
 
         if status == PatientStatus.ACTIVE:
-            return self.filter(last_appointment_at__gte=cutoff)
+            return queryset.filter(active)
         if status == PatientStatus.INACTIVE:
-            return self.filter(
-                Q(last_appointment_at__isnull=True) | Q(last_appointment_at__lt=cutoff)
-            )
-        return self
+            return queryset.exclude(active)
+        return queryset
+
+    def _annotate_practitioner(self, practitioner, now):
+        """Anota última consulta passada e próxima futura COM o profissional."""
+        base = (
+            Q(appointments__practitioner=practitioner)
+            & Q(appointments__deleted_at__isnull=True)
+            & ~Q(appointments__status__in=["canceled", "no_show"])
+        )
+        return self.annotate(
+            pract_last=Max(
+                "appointments__starts_at",
+                filter=base & Q(appointments__starts_at__lte=now),
+            ),
+            pract_next=Min(
+                "appointments__starts_at",
+                filter=base & Q(appointments__starts_at__gt=now),
+            ),
+        )
 
     def status_counters(
         self,
         window_days: int = DEFAULT_ACTIVE_WINDOW_DAYS,
         practitioner=None,
     ) -> dict:
-        """Contadores por status (RF-PAC-1/RF-DSH-1) — endpoint dedicado."""
+        """
+        Contadores (RF-PAC-1/RF-DSH-1). `to_reactivate` (lapsado) = inativo que
+        JÁ compareceu antes — exclui quem nunca teve consulta (novo/sem
+        histórico), removendo o viés no número de reativação. Por isso
+        `active + inactive = total`, mas `to_reactivate ≤ inactive`.
+        """
+        inactive_qs = self.by_status(PatientStatus.INACTIVE, window_days, practitioner)
+        has_history = (
+            Q(pract_last__isnull=False)
+            if practitioner is not None
+            else Q(last_appointment_at__isnull=False)
+        )
         return {
             "total": self.count(),
             PatientStatus.ACTIVE.value: self.by_status(
                 PatientStatus.ACTIVE, window_days, practitioner
             ).count(),
-            PatientStatus.INACTIVE.value: self.by_status(
-                PatientStatus.INACTIVE, window_days, practitioner
-            ).count(),
+            PatientStatus.INACTIVE.value: inactive_qs.count(),
+            "to_reactivate": inactive_qs.filter(has_history).count(),
         }
 
 
@@ -147,6 +163,16 @@ class Patient(TenantScopedModel):
         db_index=True,
         help_text="Denormalizado da agenda — deriva o status ativo/inativo (90 dias).",
     )
+    next_appointment_at = DateTimeField(
+        verbose_name="Próxima consulta",
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "Denormalizado da agenda — próxima consulta futura (não cancelada). "
+            "Um retorno agendado mantém o paciente ativo, sem viés de reativação."
+        ),
+    )
     sync_status = CharField(
         verbose_name="Sincronização",
         max_length=10,
@@ -171,10 +197,16 @@ class Patient(TenantScopedModel):
         return self.name
 
     def status_for_window(self, window_days: int) -> str:
-        """Status calculado (RF-PAC-2) para uma janela específica."""
-        if self.last_appointment_at and self.last_appointment_at >= active_cutoff(window_days):
-            return PatientStatus.ACTIVE
-        return PatientStatus.INACTIVE
+        """
+        Status calculado (RF-PAC-2): ATIVO se compareceu na janela OU tem
+        consulta futura agendada; senão INATIVO.
+        """
+        now = timezone.now()
+        attended = self.last_appointment_at and self.last_appointment_at >= active_cutoff(
+            window_days, now
+        )
+        booked = self.next_appointment_at and self.next_appointment_at >= now
+        return PatientStatus.ACTIVE if (attended or booked) else PatientStatus.INACTIVE
 
     @property
     def status(self) -> str:

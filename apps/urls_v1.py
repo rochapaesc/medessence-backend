@@ -6,6 +6,7 @@ from drf_spectacular.views import (
 )
 
 from apps.accounts.api.views import MeMembershipsView, MeView
+from apps.integrations.api.views import EHRSyncView
 
 urlpatterns = [
     # Swagger
@@ -24,6 +25,8 @@ urlpatterns = [
     path("", include("apps.scheduling.api.routers")),
     # Inbox (WhatsApp)
     path("", include("apps.inbox.api.routers")),
+    # Sincronização manual com o EHR (complementa o beat)
+    path("sync/ehr/", EHRSyncView.as_view(), name="ehr-sync"),
     # Recursos internos (auditoria)
     path("core/", include("apps.core.api.routers")),
 ]

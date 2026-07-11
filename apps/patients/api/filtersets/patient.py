@@ -47,13 +47,15 @@ class PatientFilterset(FilterSet):
 
     def _resolve_window(self):
         from apps.core.context import resolve_active_membership
+        from apps.patients.api.windows import parse_window
         from apps.scheduling.models import Practitioner
 
         clinic = resolve_active_membership(self.request).clinic
+        override = parse_window(self.request)
         practitioner = None
         practitioner_id = self.data.get("practitioner")
         if practitioner_id:
             practitioner = Practitioner.objects.filter(clinic=clinic, pk=practitioner_id).first()
         if practitioner is not None:
-            return practitioner.effective_active_window_days, practitioner
-        return clinic.active_window_days, None
+            return override or practitioner.effective_active_window_days, practitioner
+        return override or clinic.active_window_days, None
