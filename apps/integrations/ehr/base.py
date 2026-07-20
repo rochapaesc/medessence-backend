@@ -6,8 +6,14 @@ desnormalizam na saída. Os DTOs abaixo são a linguagem comum: campos já
 limpos (telefone E.164, HTML sanitizado, nomes sem espaços duplicados),
 com o payload cru preservado apenas para auditoria/replay.
 
-F1 cobre o sentido de LEITURA (pull). Os métodos de escrita (create/update)
-entram nas fases de write-through (F3/F4).
+Leitura (pull) desde a F1; escrita (write-through, §10.2) no bloco de
+agenda+pacientes: os métodos de escrita recebem dicts no NOSSO formato
+normalizado (mesmas chaves dos models) e o adapter desnormaliza na saída.
+
+Transições de agenda são AÇÕES SEMÂNTICAS no nosso vocabulário
+(`AppointmentStatus`: confirmed/in_progress/completed/canceled/no_show) -
+cada adapter traduz para a rota/código do provedor. O código final quem
+grava é o EHR; o chamador confirma com `get_appointment`/re-pull.
 """
 
 from dataclasses import dataclass, field
@@ -84,6 +90,33 @@ class EHRProcedure:
 class EHRCareUnit:
     external_id: str
     name: str
+    address: dict = field(default_factory=dict)
+    # Disponibilidade da unidade (workJourney da vSaúde): lista de janelas
+    # {startDate, endDate, rRule, available, ...} - alimenta a sugestão de
+    # dias no form "Nova consulta".
+    work_journey: list = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class EHRProfessional:
+    external_id: str
+    name: str
+    email: str = ""
+    phone: str = ""
+    cpf: str = ""
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EHRProfessionalProcedure:
+    """Procedimento OFERECIDO por um profissional (duração/preço próprios)."""
+
+    procedure_external_id: str
+    name: str
+    duration_min: int | None = None
+    price: str = ""  # decimal serializado ("400.00"); vazio = sem preço
+    allow_online: bool = False
+    is_active: bool = True
 
 
 @dataclass(frozen=True)
@@ -128,4 +161,66 @@ class EHRProvider(Protocol):
         Convênios. A vSaúde não tem endpoint documentado para isso
         (pendência P12) - o adapter real retorna lista vazia até lá.
         """
+        ...
+
+    def list_professionals(self) -> list[EHRProfessional]:
+        """Catálogo de profissionais - inclui quem nunca atendeu."""
+        ...
+
+    def list_professional_procedures(
+        self, professional_external_id: str
+    ) -> list[EHRProfessionalProcedure]:
+        """Procedimentos oferecidos POR profissional (duração/preço do form)."""
+        ...
+
+    # ------------------- escrita (write-through, §10.2) ------------------- #
+    # `data` chega no NOSSO formato normalizado (chaves dos models); o
+    # adapter desnormaliza. Erros de rede/limite levantam as exceções de
+    # ehr.exceptions - a fila de push decide retry/FAILED.
+
+    def search_patients(self, keyword: str) -> list[EHRPatient]:
+        """Busca por nome/CPF - dedupe antes do create (§10.2)."""
+        ...
+
+    def create_patient(self, data: dict) -> EHRPatient:
+        """Cria o paciente e devolve o registro normalizado (com external_id)."""
+        ...
+
+    def update_patient(self, external_id: str, data: dict) -> None:
+        """
+        Atualiza demográficos. Provedores PUT-full-object (vSaúde) devem
+        buscar o registro atual e sobrepor apenas os nossos campos - nunca
+        apagar o que não gerimos (tipo sanguíneo, mãe/pai, etc.).
+        """
+        ...
+
+    def delete_patient(self, external_id: str) -> None:
+        """Exclusão (soft no provedor) - delete bidirecional (§10.1)."""
+        ...
+
+    def add_patient_tag(self, patient_external_id: str, tag_name: str) -> EHRTag:
+        """Atribui tag POR NOME (cria no catálogo se faltar) e devolve id/identifier."""
+        ...
+
+    def remove_patient_tag(self, patient_external_id: str, tag_name: str) -> None: ...
+
+    def create_appointment(self, data: dict) -> EHRAppointment:
+        """Cria o agendamento e devolve o registro normalizado (id + status cru)."""
+        ...
+
+    def update_appointment(self, external_id: str, data: dict) -> None:
+        """Remarca/edita. NÃO troca o paciente (limitação do provedor)."""
+        ...
+
+    def delete_appointment(self, external_id: str) -> None: ...
+
+    def transition_appointment(self, external_id: str, target_status: str) -> None:
+        """
+        Ação semântica → rota do provedor. `target_status` no nosso
+        vocabulário: confirmed/in_progress/completed/canceled/no_show.
+        """
+        ...
+
+    def get_appointment(self, external_id: str) -> EHRAppointment | None:
+        """Refresh pontual - confirma o código de status pós-ação."""
         ...

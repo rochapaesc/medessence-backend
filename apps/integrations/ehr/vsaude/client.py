@@ -43,9 +43,20 @@ class VSaudeClient:
         """GET (métodos pontuais, ex.: PatientService/Get?Id=...)."""
         return self._request("GET", path, params=params or {})
 
-    def post(self, path: str, body: dict | None = None):
-        """POST (listagens GetAll e comandos)."""
-        return self._request("POST", path, json=body or {})
+    def post(self, path: str, body: dict | None = None, params: dict | None = None):
+        """POST (listagens GetAll e comandos; Search usa query param)."""
+        kwargs = {"json": body or {}}
+        if params:
+            kwargs["params"] = params
+        return self._request("POST", path, **kwargs)
+
+    def put(self, path: str, body: dict | None = None):
+        """PUT (updates full-object, ex.: PatientService/Update)."""
+        return self._request("PUT", path, json=body or {})
+
+    def delete(self, path: str, params: dict | None = None):
+        """DELETE (ex.: PatientService/Delete?Id=...)."""
+        return self._request("DELETE", path, params=params or {})
 
     def _request(self, method: str, path: str, **kwargs):
         url = f"{self.base_url}/{path.lstrip('/')}"

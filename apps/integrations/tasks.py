@@ -58,6 +58,50 @@ def sync_clinic(clinic_id: int, kind: str):
                 lock.release()
 
 
+@shared_task(
+    queue="sync",
+    autoretry_for=(EHRRateLimitedError, EHRUnavailableError),
+    retry_backoff=60,
+    retry_backoff_max=60 * 30,
+    max_retries=5,
+)
+def push_sync_operations(clinic_id: int | None = None):
+    """
+    Processa a fila de write-back (§10.2). Com `clinic_id`, só a clínica
+    (disparo pós-commit); sem, varre toda clínica com operação PENDING
+    (beat 1 min - rede de segurança p/ EHR que estava fora).
+    """
+    from apps.integrations.choices import OperationStatus
+    from apps.integrations.models import SyncOperation
+    from apps.integrations.push import process_clinic_operations
+    from apps.tenants.models import Clinic
+
+    if clinic_id is not None:
+        clinic_ids = [clinic_id]
+    else:
+        clinic_ids = list(
+            SyncOperation.objects.filter(status=OperationStatus.PENDING)
+            .values_list("clinic_id", flat=True)
+            .distinct()
+        )
+
+    results = {}
+    for pk in clinic_ids:
+        clinic = Clinic.objects.filter(pk=pk).first()
+        if clinic is None or not clinic.ehr_provider:
+            continue
+        lock = _acquire_lock("push", pk)
+        if lock is False:
+            continue  # já tem push rodando para a clínica
+        try:
+            results[pk] = process_clinic_operations(clinic)
+        finally:
+            if lock:
+                with suppress(Exception):
+                    lock.release()
+    return results
+
+
 @shared_task(queue="sync")
 def schedule_appointment_syncs():
     """Beat (10 min): pull da agenda de toda clínica integrada."""

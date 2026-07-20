@@ -1,13 +1,37 @@
-from django.db.models import CASCADE, BooleanField, CharField, ForeignKey, PositiveSmallIntegerField
+from django.db.models import (
+    CASCADE,
+    BooleanField,
+    CharField,
+    DecimalField,
+    ForeignKey,
+    JSONField,
+    PositiveSmallIntegerField,
+    UniqueConstraint,
+)
 
 from apps.core.models import TenantScopedModel
 
 
 class CareUnit(TenantScopedModel):
-    """Unidade de atendimento (catálogo do EHR - sync_catalogs diário)."""
+    """
+    Unidade de atendimento. Com EHR é espelho (sync_catalogs diário, dono =
+    EHR); sem EHR é catálogo local (external_id vazio, gestão nossa) - o
+    sistema funciona standalone.
+    """
 
     name = CharField(verbose_name="Nome", max_length=160)
-    external_id = CharField(verbose_name="ID no EHR", max_length=32)
+    external_id = CharField(verbose_name="ID no EHR", max_length=32, blank=True)
+    address = JSONField(verbose_name="Endereço", default=dict, blank=True)
+    work_journey = JSONField(
+        verbose_name="Disponibilidade",
+        default=list,
+        blank=True,
+        help_text=(
+            "Janelas de atendimento da unidade (workJourney do EHR): "
+            '[{"startDate", "endDate", "rRule", "available"}...] - alimenta '
+            "a sugestão de dias no form de agendamento."
+        ),
+    )
 
     class Meta:
         verbose_name = "Unidade"
@@ -18,10 +42,10 @@ class CareUnit(TenantScopedModel):
 
 
 class Procedure(TenantScopedModel):
-    """Procedimento (catálogo do EHR)."""
+    """Procedimento (catálogo do EHR; local quando standalone)."""
 
     name = CharField(verbose_name="Nome", max_length=160)
-    external_id = CharField(verbose_name="ID no EHR", max_length=32)
+    external_id = CharField(verbose_name="ID no EHR", max_length=32, blank=True)
     duration_min = PositiveSmallIntegerField(verbose_name="Duração (min)", null=True, blank=True)
     remotely = BooleanField(verbose_name="Remoto", default=False)
 
@@ -33,11 +57,52 @@ class Procedure(TenantScopedModel):
         return self.name
 
 
+class PractitionerProcedure(TenantScopedModel):
+    """
+    Procedimento OFERECIDO por um profissional, com duração/preço próprios
+    (HealthProfessionalMedicalProcedureService) - alimenta o form "Nova
+    consulta": escolher o profissional filtra os procedimentos e define
+    duração e preço padrão do agendamento.
+    """
+
+    practitioner = ForeignKey(
+        "scheduling.Practitioner",
+        verbose_name="Profissional",
+        on_delete=CASCADE,
+        related_name="offered_procedures",
+    )
+    procedure = ForeignKey(
+        Procedure,
+        verbose_name="Procedimento",
+        on_delete=CASCADE,
+        related_name="practitioner_offers",
+    )
+    duration_min = PositiveSmallIntegerField(verbose_name="Duração (min)", null=True, blank=True)
+    price = DecimalField(
+        verbose_name="Preço", max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    allow_online = BooleanField(verbose_name="Agenda online", default=False)
+    is_active = BooleanField(verbose_name="Ativo", default=True)
+
+    class Meta:
+        verbose_name = "Procedimento do profissional"
+        verbose_name_plural = "Procedimentos dos profissionais"
+        constraints = [
+            UniqueConstraint(
+                fields=["practitioner", "procedure"],
+                name="uniq_practitioner_procedure",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.practitioner} · {self.procedure}"
+
+
 class InsuranceCompany(TenantScopedModel):
     """Convênio (M1) - exigido pelo payload de criação de agendamento."""
 
     name = CharField(verbose_name="Nome", max_length=160)
-    external_id = CharField(verbose_name="ID no EHR", max_length=32)
+    external_id = CharField(verbose_name="ID no EHR", max_length=32, blank=True)
 
     class Meta:
         verbose_name = "Convênio"
@@ -57,7 +122,7 @@ class InsurancePlan(TenantScopedModel):
         related_name="plans",
     )
     name = CharField(verbose_name="Nome", max_length=160)
-    external_id = CharField(verbose_name="ID no EHR", max_length=32)
+    external_id = CharField(verbose_name="ID no EHR", max_length=32, blank=True)
 
     class Meta:
         verbose_name = "Plano de convênio"

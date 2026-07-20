@@ -65,4 +65,15 @@ class AppointmentWriteSerializer(ModelSerializer):
             raise ValidationError(
                 {"insurance_plan": "O plano informado não pertence ao convênio selecionado."}
             )
+        # O EHR não permite trocar o paciente de um agendamento existente
+        # (ScheduleService/Update não tem patientId) - espelhamos a regra.
+        if (
+            self.instance is not None
+            and self.instance.external_id
+            and "patient" in attrs
+            and attrs["patient"].pk != self.instance.patient_id
+        ):
+            raise ValidationError(
+                {"patient": "Não é possível trocar o paciente - cancele e crie outra consulta."}
+            )
         return attrs

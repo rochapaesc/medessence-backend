@@ -12,7 +12,9 @@ dados - o pull deve ser idempotente sobre eles. Casos cobertos de propósito:
     - paciente sem telefone; consulta cancelada (status cru "100").
 """
 
+import re
 from datetime import timedelta
+from typing import ClassVar
 
 from django.utils import timezone
 from faker import Faker
@@ -25,6 +27,8 @@ from apps.integrations.ehr.base import (
     EHRPage,
     EHRPatient,
     EHRProcedure,
+    EHRProfessional,
+    EHRProfessionalProcedure,
     EHRTag,
 )
 from apps.patients.choices import Gender
@@ -93,6 +97,9 @@ class FakeAdapter:
         )
 
     def get_patient(self, external_id: str) -> EHRPatient | None:
+        created = self._created_patients.get(self.clinic.pk, {})
+        if external_id in created:
+            return created[external_id]
         return next((p for p in self._patients if p.external_id == external_id), None)
 
     def list_tags(self) -> list[EHRTag]:
@@ -150,3 +157,191 @@ class FakeAdapter:
                 plans=[EHRInsurancePlan(external_id="fake-plan-1", name="Nacional")],
             ),
         ]
+
+    def list_professionals(self) -> list[EHRProfessional]:
+        return [
+            EHRProfessional(
+                external_id=f"fake-prof-{i}",
+                name=f"Dr(a). Fake {i}",
+                email=f"prof{i}@clinica.dev",
+                phone=f"5585988{self.clinic.pk:02d}000{i}",
+            )
+            for i in (1, 2)
+        ]
+
+    def list_professional_procedures(
+        self, professional_external_id: str
+    ) -> list[EHRProfessionalProcedure]:
+        return [
+            EHRProfessionalProcedure(
+                procedure_external_id=f"fake-proc-{i}",
+                name=name,
+                duration_min=duration,
+                price="400.00" if i == 1 else "0.00",
+                allow_online=i != 1,
+            )
+            for i, (name, duration) in enumerate(PROCEDURES, start=1)
+        ]
+
+    # -------------------- escrita (registro em memória) ------------------- #
+    # Estado de escrita fica em dicts DE CLASSE, particionados por clínica:
+    # sobrevive entre instâncias no mesmo processo (a task de push cria um
+    # adapter novo por operação) e é suficiente p/ dev e testes.
+
+    _created_patients: ClassVar[dict] = {}  # clinic_pk -> {external_id: EHRPatient}
+    _deleted_patients: ClassVar[dict] = {}  # clinic_pk -> set[external_id]
+    _patient_tags: ClassVar[dict] = {}  # clinic_pk -> {patient_ext: set[str]}
+    _extra_tags: ClassVar[dict] = {}  # clinic_pk -> {name: EHRTag}
+    _appointments: ClassVar[dict] = {}  # clinic_pk -> {external_id: EHRAppointment}
+    _sequences: ClassVar[dict] = {}  # clinic_pk -> int
+
+    # Ação semântica → código cru "gravado" pelo fake (compatível com o
+    # mapa da vSaúde p/ facilitar leitura; sem EHRStatusMap p/ 'fake', o
+    # confirmador mantém o status otimista - comportamento esperado).
+    TRANSITION_CODES: ClassVar[dict] = {
+        "confirmed": "30",
+        "in_progress": "9",
+        "completed": "81",
+        "canceled": "50",
+        "no_show": "6",
+    }
+
+    @classmethod
+    def _next_seq(cls, clinic_pk: int) -> int:
+        cls._sequences[clinic_pk] = cls._sequences.get(clinic_pk, 0) + 1
+        return cls._sequences[clinic_pk]
+
+    def search_patients(self, keyword: str) -> list[EHRPatient]:
+        keyword = (keyword or "").strip().lower()
+        pool = [*self._patients, *self._created_patients.get(self.clinic.pk, {}).values()]
+        deleted = self._deleted_patients.get(self.clinic.pk, set())
+        return [
+            p
+            for p in pool
+            if p.external_id not in deleted
+            and keyword
+            and (keyword in p.name.lower() or keyword in re.sub(r"\D", "", p.cpf))
+        ]
+
+    def create_patient(self, data: dict) -> EHRPatient:
+        external_id = f"fake-{self.clinic.pk}-pat-local-{self._next_seq(self.clinic.pk)}"
+        patient = EHRPatient(
+            external_id=external_id,
+            name=data.get("name", ""),
+            cpf=data.get("cpf", ""),
+            gender=data.get("gender", Gender.UNKNOWN),
+            email=data.get("email", ""),
+            phone=data.get("phone", ""),
+            city=data.get("city", ""),
+            state=data.get("state", ""),
+            profession=data.get("profession", ""),
+            raw={"fake": True, "created_by_push": True},
+        )
+        self._created_patients.setdefault(self.clinic.pk, {})[external_id] = patient
+        return patient
+
+    def update_patient(self, external_id: str, data: dict) -> None:
+        created = self._created_patients.setdefault(self.clinic.pk, {})
+        base = created.get(external_id) or self.get_patient(external_id)
+        if base is None:
+            return  # permissivo: dev stub não falha em estado desconhecido
+        created[external_id] = EHRPatient(
+            external_id=external_id,
+            name=data.get("name", base.name),
+            cpf=data.get("cpf", base.cpf),
+            gender=data.get("gender", base.gender),
+            email=data.get("email", base.email),
+            phone=data.get("phone", base.phone),
+            city=data.get("city", base.city),
+            state=data.get("state", base.state),
+            profession=data.get("profession", base.profession),
+            raw={"fake": True, "updated_by_push": True},
+        )
+
+    def delete_patient(self, external_id: str) -> None:
+        self._deleted_patients.setdefault(self.clinic.pk, set()).add(external_id)
+
+    def add_patient_tag(self, patient_external_id: str, tag_name: str) -> EHRTag:
+        extras = self._extra_tags.setdefault(self.clinic.pk, {})
+        known = {
+            name: EHRTag(f"fake-tag-{i}", name, value) for i, (name, value) in enumerate(TAGS, 1)
+        }
+        tag = known.get(tag_name) or extras.get(tag_name)
+        if tag is None:
+            used = {t.identifier for t in [*known.values(), *extras.values()]}
+            bit = 1
+            while bit in used:
+                bit <<= 1
+            tag = EHRTag(external_id=f"fake-tag-x{len(extras) + 1}", name=tag_name, identifier=bit)
+            extras[tag_name] = tag
+        self._patient_tags.setdefault(self.clinic.pk, {}).setdefault(
+            patient_external_id, set()
+        ).add(tag_name)
+        return tag
+
+    def remove_patient_tag(self, patient_external_id: str, tag_name: str) -> None:
+        self._patient_tags.setdefault(self.clinic.pk, {}).setdefault(
+            patient_external_id, set()
+        ).discard(tag_name)
+
+    def create_appointment(self, data: dict) -> EHRAppointment:
+        external_id = f"fake-{self.clinic.pk}-appt-local-{self._next_seq(self.clinic.pk)}"
+        appointment = EHRAppointment(
+            external_id=external_id,
+            patient_external_id=data.get("patient_external_id", ""),
+            practitioner_external_id=data.get("practitioner_external_id", ""),
+            starts_at=data.get("starts_at"),
+            duration_min=data.get("duration_min"),
+            care_unit_external_id=data.get("care_unit_external_id", ""),
+            procedure_external_id=data.get("procedure_external_id", ""),
+            source_status="10",  # agendada pelo profissional
+            remotely=bool(data.get("remotely", False)),
+            raw={"fake": True, "created_by_push": True},
+        )
+        self._appointments.setdefault(self.clinic.pk, {})[external_id] = appointment
+        return appointment
+
+    def update_appointment(self, external_id: str, data: dict) -> None:
+        store = self._appointments.setdefault(self.clinic.pk, {})
+        base = store.get(external_id)
+        if base is None:
+            return
+        store[external_id] = EHRAppointment(
+            external_id=external_id,
+            patient_external_id=base.patient_external_id,
+            practitioner_external_id=data.get(
+                "practitioner_external_id", base.practitioner_external_id
+            ),
+            starts_at=data.get("starts_at", base.starts_at),
+            duration_min=data.get("duration_min", base.duration_min),
+            care_unit_external_id=data.get("care_unit_external_id", base.care_unit_external_id),
+            procedure_external_id=data.get("procedure_external_id", base.procedure_external_id),
+            source_status=base.source_status,
+            remotely=bool(data.get("remotely", base.remotely)),
+            raw=base.raw,
+        )
+
+    def delete_appointment(self, external_id: str) -> None:
+        self._appointments.setdefault(self.clinic.pk, {}).pop(external_id, None)
+
+    def transition_appointment(self, external_id: str, target_status: str) -> None:
+        store = self._appointments.setdefault(self.clinic.pk, {})
+        base = store.get(external_id)
+        code = self.TRANSITION_CODES.get(target_status, "10")
+        if base is None:
+            return
+        store[external_id] = EHRAppointment(
+            external_id=external_id,
+            patient_external_id=base.patient_external_id,
+            practitioner_external_id=base.practitioner_external_id,
+            starts_at=base.starts_at,
+            duration_min=base.duration_min,
+            care_unit_external_id=base.care_unit_external_id,
+            procedure_external_id=base.procedure_external_id,
+            source_status=code,
+            remotely=base.remotely,
+            raw=base.raw,
+        )
+
+    def get_appointment(self, external_id: str) -> EHRAppointment | None:
+        return self._appointments.get(self.clinic.pk, {}).get(external_id)

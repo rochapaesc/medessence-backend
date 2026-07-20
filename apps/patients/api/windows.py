@@ -20,7 +20,7 @@ def parse_window(request):
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        raise ValidationError({"window": "Janela inválida."})
+        raise ValidationError({"window": "Janela inválida."}) from None
     if value not in ALLOWED_WINDOWS:
         raise ValidationError({"window": f"Janela deve ser uma de {ALLOWED_WINDOWS} dias."})
     return value

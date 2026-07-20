@@ -386,6 +386,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.inbox.tasks.refresh_wa_templates",
         "schedule": crontab(minute=0, hour="*/6"),
     },
+    # Fila de write-back nós → EHR (§10.2): rede de segurança do disparo
+    # pós-commit - retoma operações que ficaram PENDING (EHR fora do ar).
+    "push-sync-operations": {
+        "task": "apps.integrations.tasks.push_sync_operations",
+        "schedule": crontab(minute="*"),
+    },
 }
 
 

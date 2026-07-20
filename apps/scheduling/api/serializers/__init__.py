@@ -6,6 +6,7 @@ from apps.scheduling.api.serializers.catalogs import (
     CareUnitSerializer,
     InsuranceCompanySerializer,
     InsurancePlanSerializer,
+    PractitionerProcedureSerializer,
     PractitionerSerializer,
     ProcedureSerializer,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "CareUnitSerializer",
     "InsuranceCompanySerializer",
     "InsurancePlanSerializer",
+    "PractitionerProcedureSerializer",
     "PractitionerSerializer",
     "ProcedureSerializer",
 ]

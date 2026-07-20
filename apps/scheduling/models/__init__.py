@@ -3,6 +3,7 @@ from apps.scheduling.models.catalog import (
     CareUnit,
     InsuranceCompany,
     InsurancePlan,
+    PractitionerProcedure,
     Procedure,
 )
 from apps.scheduling.models.practitioner import Practitioner
@@ -15,5 +16,6 @@ __all__ = [
     "InsuranceCompany",
     "InsurancePlan",
     "Practitioner",
+    "PractitionerProcedure",
     "Procedure",
 ]

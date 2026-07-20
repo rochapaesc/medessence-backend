@@ -20,6 +20,7 @@ HTML sanitizado; nomes com colapso de espaços; datas naive → fuso da clínica
 
 import re
 from datetime import date, datetime, timedelta
+from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 from dateutil import parser as dateparser
@@ -34,12 +35,45 @@ from apps.integrations.ehr.base import (
     EHRPage,
     EHRPatient,
     EHRProcedure,
+    EHRProfessional,
+    EHRProfessionalProcedure,
     EHRTag,
 )
+from apps.integrations.ehr.exceptions import EHRError
 from apps.integrations.ehr.vsaude.client import PAGE_SIZE, VSaudeClient
 from apps.patients.choices import Gender
 
 GENDER_MAP = {0: Gender.UNKNOWN, 1: Gender.MALE, 2: Gender.FEMALE}
+GENDER_REVERSE = {choice: code for code, choice in GENDER_MAP.items()}
+
+# Campos do payload de Update do paciente (PUT full-object) - espelho exato
+# do que o app web envia. Montamos o corpo SÓ com estas chaves: o registro
+# atual entra de base e os nossos campos sobrepõem (nunca apagar o que não
+# gerimos: tipo sanguíneo, mãe/pai, birthInfo...).
+# `status` e `insurance` ficam de fora: são definidos explicitamente (status
+# só no Update; insurance com default {isCompany:false}) para não vazarem como
+# `null` no Create - o dict-base os preencheria com None senão.
+PATIENT_PAYLOAD_KEYS = (
+    "personalIdentifier",
+    "dni",
+    "name",
+    "gender",
+    "birthday",
+    "email",
+    "phone",
+    "bloodType",
+    "weight",
+    "height",
+    "address",
+    "comments",
+    "birthInfo",
+    "mother",
+    "father",
+    "partner",
+    "sponsor",
+    "profession",
+    "photo",
+)
 
 # AppointmentsQueryRange (swagger): Daily=1, Weekly=2, Monthly=3, NowOn=4.
 # Monthly retorna o MÊS-CALENDÁRIO que contém o `from`.
@@ -223,10 +257,221 @@ class VSaudeAdapter:
             EHRCareUnit(
                 external_id=str(item.get("id", "")),
                 name=_clean_name(item.get("name") or item.get("description")),
+                address=item.get("address") or {},
+                work_journey=item.get("workJourney") or [],
             )
             for item in items
             if not item.get("isDeleted", False)
         ]
+
+    def list_professionals(self) -> list[EHRProfessional]:
+        items = list(self.client.post_paginated("HealthProfessionalService/GetAll", {"text": ""}))
+        professionals = []
+        for item in items:
+            user = item.get("user") or {}
+            professionals.append(
+                EHRProfessional(
+                    external_id=str(item.get("id", ""))[:64],
+                    name=_clean_name(item.get("name") or user.get("fullName"))[:200],
+                    email=(user.get("emailAddress") or "")[:254],
+                    phone=_clean_phone(user.get("phoneNumber"))[:20],
+                    cpf=(user.get("personalIdentifier") or "")[:32],
+                    raw=item,
+                )
+            )
+        return professionals
+
+    def list_professional_procedures(
+        self, professional_external_id: str
+    ) -> list[EHRProfessionalProcedure]:
+        items = list(
+            self.client.post_paginated(
+                "HealthProfessionalMedicalProcedureService/GetAll",
+                {"professionalId": professional_external_id},
+            )
+        )
+        result = []
+        for item in items:
+            procedure = item.get("medicalProcedure") or {}
+            # Preço real vem do medicalProcedure (o item por-profissional
+            # costuma vir 0.0) - calibrado com a captura de 20/07/2026.
+            price = procedure.get("price") or item.get("price") or 0
+            result.append(
+                EHRProfessionalProcedure(
+                    procedure_external_id=str(item.get("medicalProcedureId") or ""),
+                    name=_clean_name(procedure.get("name")),
+                    duration_min=item.get("duration") or procedure.get("duration"),
+                    price=f"{float(price):.2f}",
+                    allow_online=bool(item.get("allowOnlineSchedule", False)),
+                    is_active=bool(item.get("isActive", True)),
+                )
+            )
+        return result
+
+    # ------------------- escrita (write-through, §10.2) ------------------- #
+
+    TRANSITION_ROUTES: ClassVar[dict] = {
+        "confirmed": "Accept",
+        "in_progress": "Waiting",
+        "completed": "Finalize",
+        "canceled": "Cancel",
+        "no_show": "CounterPartDidNotShowUp",
+    }
+
+    def _patient_payload(self, data: dict, base: dict | None = None) -> dict:
+        """
+        Corpo do Create/Update: registro atual de base (PUT full-object) com
+        os NOSSOS campos por cima, restrito às chaves que o app web envia.
+        """
+        payload = {key: (base or {}).get(key) for key in PATIENT_PAYLOAD_KEYS}
+
+        cpf = re.sub(r"\D", "", data.get("cpf") or "")
+        if cpf:
+            payload["personalIdentifier"] = cpf
+            payload["dni"] = cpf
+        if data.get("name"):
+            payload["name"] = _clean_name(data["name"])
+        if data.get("gender"):
+            payload["gender"] = GENDER_REVERSE.get(data["gender"], 0)
+        if data.get("birth_date"):
+            # O app web envia meia-noite de Brasília ("T03:00:00.000Z").
+            payload["birthday"] = f"{data['birth_date']}T03:00:00.000Z"
+        if data.get("email"):
+            payload["email"] = data["email"]
+        if data.get("phone"):
+            digits = re.sub(r"\D", "", data["phone"])
+            payload["phone"] = f"+{digits}" if digits else None
+        if data.get("comments_html"):
+            payload["comments"] = data["comments_html"]
+        if data.get("profession"):
+            payload["profession"] = data["profession"]
+
+        address = dict((base or {}).get("address") or {})
+        if data.get("address"):
+            address.update(data["address"])
+        if data.get("city"):
+            address["city"] = data["city"]
+        if data.get("state"):
+            address["state"] = data["state"]
+        if address:
+            payload["address"] = address
+
+        # Preserva o convênio do registro atual (Update) ou usa o default
+        # observado no Create. `setdefault` não serviria: a chave já existiria
+        # como None vinda do `base`.
+        payload["insurance"] = (base or {}).get("insurance") or {"isCompany": False}
+        # NÃO enviar `tags` aqui: o payload capturado de Update não inclui a
+        # chave, e as atribuições são geridas à parte (AddTag/RemoveTag). O
+        # Create adiciona tags=[] explicitamente.
+        return payload
+
+    def search_patients(self, keyword: str) -> list[EHRPatient]:
+        result = self.client.post("PatientService/Search", params={"keyword": keyword}) or []
+        items = result if isinstance(result, list) else result.get("items", [])
+        return [self._normalize_patient(item) for item in items]
+
+    def create_patient(self, data: dict) -> EHRPatient:
+        payload = self._patient_payload(data)
+        payload["tags"] = []  # só no Create (ver _patient_payload)
+        result = self.client.post("PatientService/Create", payload)
+        if not result or not result.get("id"):
+            raise EHRError("vSaúde: Create de paciente não retornou id.")
+        return self._normalize_patient(result)
+
+    def update_patient(self, external_id: str, data: dict) -> None:
+        current = self.client.get("PatientService/Get", {"Id": external_id}) or {}
+        payload = self._patient_payload(data, base=current)
+        payload["id"] = external_id
+        payload["status"] = current.get("status", 1)
+        self.client.put("PatientService/Update", payload)
+
+    def delete_patient(self, external_id: str) -> None:
+        self.client.delete("PatientService/Delete", {"Id": external_id})
+
+    def add_patient_tag(self, patient_external_id: str, tag_name: str) -> EHRTag:
+        result = (
+            self.client.post(
+                "PatientService/AddTag",
+                {"patientId": patient_external_id, "tag": tag_name},
+            )
+            or {}
+        )
+        return EHRTag(
+            external_id=str(result.get("id", "")),
+            name=_clean_name(result.get("name") or tag_name),
+            identifier=int(result.get("identifier") or 0),
+        )
+
+    def remove_patient_tag(self, patient_external_id: str, tag_name: str) -> None:
+        # Payload assumido análogo ao AddTag (calibrar na 1ª chamada real).
+        self.client.post(
+            "PatientService/RemoveTag",
+            {"patientId": patient_external_id, "tag": tag_name},
+        )
+
+    def _appointment_payload(self, data: dict) -> dict:
+        starts = self._parse_datetime(data.get("starts_at"))
+        duration = int(data.get("duration_min") or 30)
+        ends = starts + timedelta(minutes=duration) if starts else None
+
+        def _int_or_none(value):
+            try:
+                return int(value) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        # Campos COMUNS a Create e Update (o `price` é exclusivo do Create,
+        # conforme os payloads capturados - fica fora daqui).
+        return {
+            "professionalId": data.get("practitioner_external_id"),
+            "procedureId": _int_or_none(data.get("procedure_external_id")),
+            "insuranceCompanyId": _int_or_none(data.get("insurance_company_external_id")),
+            "insurancePlanId": _int_or_none(data.get("insurance_plan_external_id")),
+            "careUnitId": _int_or_none(data.get("care_unit_external_id")),
+            "startDate": starts.isoformat() if starts else None,
+            "endDate": ends.isoformat() if ends else None,
+            "comments": data.get("comments_html") or "",
+        }
+
+    def create_appointment(self, data: dict) -> EHRAppointment:
+        payload = {
+            "patientId": data.get("patient_external_id"),
+            **self._appointment_payload(data),
+            "price": float(data.get("price") or 0),
+            "signedTerms": [],
+            "complementaryProcedures": [],
+        }
+        result = self.client.post("ScheduleService/Create", payload)
+        if not result or not result.get("id"):
+            raise EHRError("vSaúde: Create de agendamento não retornou id.")
+        return self._normalize_appointment(result)
+
+    def update_appointment(self, external_id: str, data: dict) -> None:
+        payload = {
+            "id": external_id,
+            **self._appointment_payload(data),
+            "remotely": bool(data.get("remotely", False)),
+            "parentRecurrenceId": None,
+            "recurrence": None,
+            "updateAllRecurrences": False,
+        }
+        self.client.put("ScheduleService/Update", payload)
+
+    def delete_appointment(self, external_id: str) -> None:
+        self.client.delete(
+            "ScheduleService/Delete",
+            {"Id": external_id, "DeleteAllRecurrences": "false"},
+        )
+
+    def transition_appointment(self, external_id: str, target_status: str) -> None:
+        route = self.TRANSITION_ROUTES.get(target_status)
+        if route is None:
+            raise EHRError(f"vSaúde: transição sem rota para '{target_status}'.")
+        self.client.post(f"ScheduleService/{route}", {"id": external_id})
+
+    def get_appointment(self, external_id: str) -> EHRAppointment | None:
+        payload = self.client.get("ScheduleService/Get", {"id": external_id})
+        return self._normalize_appointment(payload) if payload else None
 
     def list_insurance_companies(self) -> list[EHRInsuranceCompany]:
         items = list(

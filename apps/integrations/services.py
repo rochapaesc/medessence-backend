@@ -28,6 +28,7 @@ from apps.scheduling.models import (
     InsuranceCompany,
     InsurancePlan,
     Practitioner,
+    PractitionerProcedure,
     Procedure,
 )
 
@@ -78,12 +79,62 @@ def pull_catalogs(clinic) -> SyncRun:
             clinic,
             CareUnit,
             provider.list_care_units(),
-            lambda item: {"name": item.name},
+            lambda item: {
+                "name": item.name,
+                "address": item.address,
+                "work_journey": item.work_journey,
+            },
         )
         stats["insurances"] = _upsert_insurances(clinic, provider.list_insurance_companies())
+        stats["professionals"] = _upsert_professionals(clinic, provider)
         return stats
 
     return run_sync(clinic, SyncRunKind.CATALOGS, _execute)
+
+
+def _upsert_professionals(clinic, provider) -> dict:
+    """
+    Pull dedicado de profissionais (inclui quem nunca atendeu) + os
+    procedimentos que cada um OFERECE (duração/preço → form Nova consulta).
+    O CRM não vem neste GetAll - o pull da agenda mantém o license_number.
+    """
+    created = updated = offers = 0
+    professionals = provider.list_professionals()
+    for professional in professionals:
+        record, was_created = Practitioner.objects.update_or_create(
+            clinic=clinic,
+            external_id=professional.external_id,
+            defaults={"name": professional.name},
+        )
+        created += was_created
+        updated += not was_created
+
+        for offer in provider.list_professional_procedures(professional.external_id):
+            procedure = _by_external(Procedure, clinic, offer.procedure_external_id)
+            if procedure is None:
+                procedure, _ = Procedure.objects.update_or_create(
+                    clinic=clinic,
+                    external_id=offer.procedure_external_id,
+                    defaults={"name": offer.name},
+                )
+            PractitionerProcedure.objects.update_or_create(
+                clinic=clinic,
+                practitioner=record,
+                procedure=procedure,
+                defaults={
+                    "duration_min": offer.duration_min,
+                    "price": offer.price or None,
+                    "allow_online": offer.allow_online,
+                    "is_active": offer.is_active,
+                },
+            )
+            offers += 1
+    return {
+        "fetched": len(professionals),
+        "created": created,
+        "updated": updated,
+        "offers": offers,
+    }
 
 
 def _upsert_simple(clinic, model, items, defaults_fn) -> dict:
@@ -173,6 +224,7 @@ def pull_patients(clinic) -> SyncRun:
 
     def _execute():
         stats = {"fetched": 0, "created": 0, "updated": 0}
+        seen_external_ids = set()
         page = 1
         while True:
             result = provider.list_patients(page)
@@ -180,12 +232,31 @@ def pull_patients(clinic) -> SyncRun:
                 break
             for ehr_patient in result.items:
                 _, was_created = upsert_patient(clinic, ehr_patient)
+                seen_external_ids.add(ehr_patient.external_id)
                 stats["fetched"] += 1
                 stats["created"] += was_created
                 stats["updated"] += not was_created
             if stats["fetched"] >= result.total_count:
                 break
             page += 1
+
+        # Diff de varredura (delete bidirecional, §10.1): espelhado que NÃO
+        # veio na varredura completa foi apagado no EHR → soft delete local.
+        # Só roda se a varredura terminou sem erro (estamos aqui) e trouxe
+        # algo (uma resposta vazia de API instável não pode apagar a base).
+        if seen_external_ids:
+            from apps.patients.choices import PatientSource
+
+            removed = 0
+            missing = (
+                Patient.objects.filter(clinic=clinic, source=PatientSource.EHR)
+                .exclude(external_id="")
+                .exclude(external_id__in=seen_external_ids)
+            )
+            for patient in missing:
+                patient.delete()  # soft - reaparecer no EHR restaura (upsert)
+                removed += 1
+            stats["removed"] = removed
         return stats
 
     return run_sync(clinic, SyncRunKind.PATIENTS_FULL, _execute)

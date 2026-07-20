@@ -61,7 +61,7 @@ def test_tag_local_com_mesmo_nome_e_vinculada_nao_duplicada(fake_clinic):
 def test_pull_patients_upsert_contatos_e_tags(fake_clinic):
     pull_catalogs(fake_clinic)
     run = pull_patients(fake_clinic)
-    assert run.stats == {"fetched": 25, "created": 25, "updated": 0}
+    assert run.stats == {"fetched": 25, "created": 25, "updated": 0, "removed": 0}
 
     # Telefone compartilhado (pacientes 3 e 4) → um Contact, dois vínculos, UM principal
     shared = Contact.objects.get(clinic=fake_clinic, wa_id__endswith="00003")
@@ -78,7 +78,7 @@ def test_pull_patients_upsert_contatos_e_tags(fake_clinic):
 
     # Idempotência
     run2 = pull_patients(fake_clinic)
-    assert run2.stats == {"fetched": 25, "created": 0, "updated": 25}
+    assert run2.stats == {"fetched": 25, "created": 0, "updated": 25, "removed": 0}
     assert Patient.objects.filter(clinic=fake_clinic).count() == 25
 
 

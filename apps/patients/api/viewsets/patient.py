@@ -48,6 +48,52 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
             .order_by("name")
         )
 
+    # ----------------- write-through p/ o EHR (§10.2) ----------------- #
+    # Padrão único: salva local primeiro; com EHR configurado, enfileira
+    # SyncOperation e o selo vira "aguardando sincronização". Standalone:
+    # o fluxo termina aqui.
+
+    def _enqueue_patient_push(self, patient, payload: dict) -> None:
+        from apps.core.choices import SyncStatus
+        from apps.integrations.push import enqueue_push
+
+        operation = enqueue_push(self.clinic, "patient", patient.pk, payload)
+        if operation is not None and patient.sync_status != SyncStatus.PENDING:
+            patient.sync_status = SyncStatus.PENDING
+            patient.save(update_fields=["sync_status", "updated_at"])
+
+    def _enqueue_tags_push(self, patient) -> None:
+        from apps.integrations.push import enqueue_push
+
+        enqueue_push(self.clinic, "patient_tags", patient.pk, {"op": "set"})
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        patient = serializer.instance
+        self._enqueue_patient_push(patient, {"op": "create"})
+        if "tag_ids" in self.request.data:
+            self._enqueue_tags_push(patient)
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        patient = serializer.instance
+        self._enqueue_patient_push(patient, {"op": "update"})
+        if "tag_ids" in self.request.data:
+            self._enqueue_tags_push(patient)
+
+    def perform_destroy(self, instance):
+        external_id = instance.external_id
+        super().perform_destroy(instance)  # soft delete + auditoria
+        if external_id:
+            from apps.integrations.push import enqueue_push
+
+            enqueue_push(
+                self.clinic,
+                "patient",
+                instance.pk,
+                {"op": "delete", "external_id": external_id},
+            )
+
     @action(detail=False, methods=["get"], url_path="counters")
     def counters(self, request):
         """

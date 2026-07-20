@@ -1,10 +1,11 @@
-from rest_framework.serializers import IntegerField, ModelSerializer
+from rest_framework.serializers import CharField, IntegerField, ModelSerializer
 
 from apps.scheduling.models import (
     CareUnit,
     InsuranceCompany,
     InsurancePlan,
     Practitioner,
+    PractitionerProcedure,
     Procedure,
 )
 
@@ -27,7 +28,26 @@ class PractitionerSerializer(ModelSerializer):
 class CareUnitSerializer(ModelSerializer):
     class Meta:
         model = CareUnit
-        fields = ["id", "name", "external_id"]
+        fields = ["id", "name", "address", "work_journey", "external_id"]
+
+
+class PractitionerProcedureSerializer(ModelSerializer):
+    """Procedimento oferecido pelo profissional - opções do form Nova consulta."""
+
+    procedure_id = IntegerField(source="procedure.pk", read_only=True)
+    name = CharField(source="procedure.name", read_only=True)
+
+    class Meta:
+        model = PractitionerProcedure
+        fields = [
+            "id",
+            "procedure_id",
+            "name",
+            "duration_min",
+            "price",
+            "allow_online",
+            "is_active",
+        ]
 
 
 class ProcedureSerializer(ModelSerializer):

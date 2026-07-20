@@ -153,3 +153,110 @@ def test_401_vira_autherror(clinic):
     with patch.object(client.session, "request", return_value=response):
         with pytest.raises(EHRAuthError):
             client.post("PatientService/GetAll")
+
+
+class RecordingClient:
+    """Captura o corpo enviado nas chamadas de escrita (contrato do payload)."""
+
+    def __init__(self, get_result=None, post_result=None):
+        self.get_result = get_result or {}
+        self.post_result = post_result or {"id": "novo-guid"}
+        self.calls = []
+
+    def get(self, path, params=None):
+        self.calls.append(("GET", path, params))
+        return self.get_result
+
+    def post(self, path, body=None, params=None):
+        self.calls.append(("POST", path, body if body is not None else params))
+        return self.post_result
+
+    def put(self, path, body=None):
+        self.calls.append(("PUT", path, body))
+        return self.post_result
+
+    def delete(self, path, params=None):
+        self.calls.append(("DELETE", path, params))
+        return None
+
+    def last(self, method):
+        return next(c for c in reversed(self.calls) if c[0] == method)
+
+
+def test_create_patient_payload_tem_tags_e_insurance(clinic):
+    client = RecordingClient(post_result={"id": "guid-novo", "name": "Ana"})
+    adapter = VSaudeAdapter(clinic, client=client)
+    adapter.create_patient({"name": "Ana", "cpf": "111.222.333-44"})
+
+    _, path, body = client.last("POST")
+    assert path == "PatientService/Create"
+    assert body["tags"] == []  # Create inclui tags
+    assert body["insurance"] == {"isCompany": False}
+    assert body["personalIdentifier"] == "11122233344"
+
+
+def test_update_patient_nao_envia_tags(clinic):
+    """Regressão: Update capturado NÃO tem `tags` - enviar apagaria as tags."""
+    current = {"id": "g1", "name": "Antigo", "status": 1, "tags": [1, 4], "bloodType": "O-"}
+    client = RecordingClient(get_result=current)
+    adapter = VSaudeAdapter(clinic, client=client)
+    adapter.update_patient("g1", {"name": "Novo Nome"})
+
+    _, path, body = client.last("PUT")
+    assert path == "PatientService/Update"
+    assert "tags" not in body  # não clobbera as atribuições
+    assert body["bloodType"] == "O-"  # preserva o que não gerimos
+    assert body["name"] == "Novo Nome"
+    assert body["id"] == "g1"
+
+
+def test_create_appointment_tem_price_e_listas(clinic):
+    client = RecordingClient(post_result={"id": "appt-1", "status": 10})
+    adapter = VSaudeAdapter(clinic, client=client)
+    adapter.create_appointment({
+        "patient_external_id": "pac-1",
+        "practitioner_external_id": "prof-1",
+        "procedure_external_id": "34948",
+        "care_unit_external_id": "4398",
+        "insurance_company_external_id": "5894",
+        "starts_at": "2026-07-20T15:21:14+00:00",
+        "duration_min": 30,
+        "price": "400.00",
+    })
+    _, path, body = client.last("POST")
+    assert path == "ScheduleService/Create"
+    assert body["price"] == 400.0
+    assert body["procedureId"] == 34948  # int, não string
+    assert body["signedTerms"] == [] and body["complementaryProcedures"] == []
+
+
+def test_update_appointment_nao_envia_price(clinic):
+    """Regressão: Update capturado NÃO tem `price`."""
+    client = RecordingClient()
+    adapter = VSaudeAdapter(clinic, client=client)
+    adapter.update_appointment("appt-1", {
+        "practitioner_external_id": "prof-1",
+        "procedure_external_id": "34948",
+        "care_unit_external_id": "4398",
+        "starts_at": "2026-07-20T15:21:14+00:00",
+        "duration_min": 30,
+    })
+    _, path, body = client.last("PUT")
+    assert path == "ScheduleService/Update"
+    assert "price" not in body
+    assert body["updateAllRecurrences"] is False
+
+
+def test_transition_mapeia_acao_para_rota(clinic):
+    client = RecordingClient()
+    adapter = VSaudeAdapter(clinic, client=client)
+    adapter.transition_appointment("appt-1", "completed")
+    _, path, body = client.last("POST")
+    assert path == "ScheduleService/Finalize"
+    assert body == {"id": "appt-1"}
+
+
+def test_transition_desconhecida_falha(clinic):
+    adapter = VSaudeAdapter(clinic, client=RecordingClient())
+    with pytest.raises(EHRError):
+        adapter.transition_appointment("appt-1", "scheduled")
