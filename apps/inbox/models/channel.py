@@ -1,12 +1,7 @@
 import secrets
 import uuid
 
-from django.db.models import (
-    CharField,
-    Q,
-    UniqueConstraint,
-    UUIDField,
-)
+from django.db.models import CharField, Q, UniqueConstraint, UUIDField
 
 from apps.core.fields import EncryptedJSONField
 from apps.core.models import TenantScopedModel
@@ -14,7 +9,7 @@ from apps.inbox.choices import WhatsAppProviderKind
 
 
 def default_webhook_secret() -> str:
-    """Segredo da URL de webhook por canal (§7) — sem verify token da Meta,
+    """Segredo da URL de webhook por canal (§7) - sem verify token da Meta,
     a URL é a credencial: `/webhooks/whatsapp/{uuid}/{secret}/`."""
     return secrets.token_urlsafe(32)
 

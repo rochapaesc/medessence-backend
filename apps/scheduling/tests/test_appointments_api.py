@@ -1,4 +1,4 @@
-"""API da agenda (RF-AGE-1/2) — escopo, validação de FKs e denormalização."""
+"""API da agenda (RF-AGE-1/2) - escopo, validação de FKs e denormalização."""
 
 from datetime import timedelta
 

@@ -1,5 +1,5 @@
 """
-Adapter vSaúde — normalizações sobre o contrato REAL (docs/vsaude-swagger.json
+Adapter vSaúde - normalizações sobre o contrato REAL (docs/vsaude-swagger.json
 + payloads observados na API em 09/07/2026) e tratamento do envelope ABP.
 """
 
@@ -140,7 +140,7 @@ def test_envelope_com_success_false_vira_ehrerror(clinic):
 
 
 def test_envelope_so_com_result_e_aberto(clinic):
-    """A API real nem sempre manda `success` — `result` presente basta."""
+    """A API real nem sempre manda `success` - `result` presente basta."""
     client, response = _client_with_response(
         clinic, json_data={"result": [{"name": "AA"}], "__abp": True}
     )

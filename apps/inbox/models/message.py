@@ -23,14 +23,14 @@ from apps.inbox.choices import (
 class Message(TenantScopedModel):
     """
     Uma mensagem da thread (§9.5). Idempotência por `provider_message_id`
-    (wamid) com unique por clínica — o mesmo evento reentregue pelo webhook
+    (wamid) com unique por clínica - o mesmo evento reentregue pelo webhook
     não duplica (RNF-2).
 
     `direction` é SEMPRE derivado de `sender_kind` no `save()` (M8): a direção
     não pode divergir do autor.
 
     NOTA: `journey_stage` (FK para `automation.JourneyStage`) fica de fora na
-    F2 e entra na F3 — mesmo adiamento de `Membership.practitioner` (M3).
+    F2 e entra na F3 - mesmo adiamento de `Membership.practitioner` (M3).
     """
 
     conversation = ForeignKey(
@@ -99,7 +99,7 @@ class Message(TenantScopedModel):
         ]
 
     def save(self, *args, **kwargs):
-        # A direção NUNCA vem do cliente — deriva do autor (M8).
+        # A direção NUNCA vem do cliente - deriva do autor (M8).
         self.direction = SENDER_TO_DIRECTION.get(self.sender_kind, MessageDirection.OUT)
         super().save(*args, **kwargs)
 

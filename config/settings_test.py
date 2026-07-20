@@ -1,5 +1,5 @@
 """
-Settings de teste — pytest roda sem Docker: SQLite em memória, cache local,
+Settings de teste - pytest roda sem Docker: SQLite em memória, cache local,
 hash de senha rápido. O settings real continua sendo o config.settings.
 """
 
@@ -22,10 +22,10 @@ CACHES = {
 
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
-# Chave efêmera por sessão de teste — cifra e decifra no mesmo processo.
+# Chave efêmera por sessão de teste - cifra e decifra no mesmo processo.
 FIELD_ENCRYPTION_KEY = Fernet.generate_key().decode()
 
 CELERY_TASK_ALWAYS_EAGER = True
 
-# Channel layer em memória — realtime (§12) sem Redis nos testes.
+# Channel layer em memória - realtime (§12) sem Redis nos testes.
 CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}

@@ -6,9 +6,9 @@ def recalculate_last_appointment(patient) -> None:
     Recalcula os denormalizados de agenda do paciente (RF-PAC-2):
 
     - `last_appointment_at`: última consulta PASSADA que conta (exclui
-      canceladas e faltas) — define o "compareceu na janela".
+      canceladas e faltas) - define o "compareceu na janela".
     - `next_appointment_at`: próxima consulta FUTURA agendada (exclui
-      canceladas/faltas) — um retorno marcado mantém o paciente ativo e
+      canceladas/faltas) - um retorno marcado mantém o paciente ativo e
       fora do balde de reativação.
 
     Chamado pelos signals de Appointment e pelo pull da agenda (fase do adapter).

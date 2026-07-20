@@ -2,7 +2,7 @@ from django.db.models import TextChoices
 
 
 class MessageDirection(TextChoices):
-    """Sentido da mensagem (§9.11). Derivado de `sender_kind` no `save()` —
+    """Sentido da mensagem (§9.11). Derivado de `sender_kind` no `save()` -
     `CONTACT`→`IN`, `AGENT`/`BOT`→`OUT`; nunca aceito cru do cliente."""
 
     IN = "in", "Recebida"

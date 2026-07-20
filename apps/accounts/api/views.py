@@ -54,7 +54,7 @@ class MeMembershipsView(ListAPIView):
 
     É a fonte do seletor de clínica do front: 0 vínculos = sem acesso ao
     plano clínica; 1 = auto-resolve; N = o front pede o X-Clinic-Id.
-    Sem paginação — ninguém tem centenas de vínculos.
+    Sem paginação - ninguém tem centenas de vínculos.
     """
 
     permission_classes = [IsAuthenticated]

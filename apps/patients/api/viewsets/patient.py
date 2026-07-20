@@ -51,7 +51,7 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
     @action(detail=False, methods=["get"], url_path="counters")
     def counters(self, request):
         """
-        Contadores por status (RF-PAC-2) — endpoint dedicado (RNF-5).
+        Contadores por status (RF-PAC-2) - endpoint dedicado (RNF-5).
 
         Sem parâmetros: janela da clínica, carteira inteira.
         Com ?practitioner=<id>: carteira do profissional (pacientes que já
@@ -59,9 +59,8 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
         """
         from rest_framework.exceptions import ValidationError
 
-        from apps.scheduling.models import Practitioner
-
         from apps.patients.api.windows import parse_window
+        from apps.scheduling.models import Practitioner
 
         queryset = self.get_queryset()
         override = parse_window(request)
@@ -87,17 +86,17 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
         """
         Agregações reais para o dashboard (RF-DSH): pacientes por tag e por
         cidade (os 6 maiores de cada). Cada item traz `count` (carteira toda)
-        e `active_count` (só ativos na janela da clínica) — o front alterna
+        e `active_count` (só ativos na janela da clínica) - o front alterna
         entre "Todos" e "Ativos". Read-only, escopo da clínica ativa.
 
-        Nota: acquisição ("novos no mês") não é derivável de `created_at` —
+        Nota: acquisição ("novos no mês") não é derivável de `created_at` -
         na base sincronizada do EHR ele reflete a data de importação, não o
         cadastro real. Fica de fora até haver um campo de origem confiável.
         """
+        from django.utils import timezone
+
         from apps.patients.api.windows import parse_window
         from apps.patients.models.patient import active_cutoff
-
-        from django.utils import timezone
 
         base = self.get_queryset().order_by()  # limpa ordenação p/ agregação
         window_days = parse_window(request) or self.clinic.active_window_days
@@ -111,13 +110,11 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
             assignments__patient__next_appointment_at__gte=now
         )
 
-        # Pacientes (vivos) por tag da clínica — total e ativos.
+        # Pacientes (vivos) por tag da clínica - total e ativos.
         tags = (
             Tag.objects.filter(clinic=self.clinic, deleted_at__isnull=True)
             .annotate(
-                patients=Count(
-                    "assignments__patient", filter=alive_assignment, distinct=True
-                ),
+                patients=Count("assignments__patient", filter=alive_assignment, distinct=True),
                 active=Count(
                     "assignments__patient",
                     filter=alive_assignment & active_patient,
@@ -137,7 +134,7 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
             for t in tags[:6]
         ]
 
-        # Pacientes por cidade (ignora cidade vazia) — total e ativos.
+        # Pacientes por cidade (ignora cidade vazia) - total e ativos.
         cities = (
             base.exclude(city="")
             .values("city")
@@ -145,8 +142,7 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
                 count=Count("id"),
                 active=Count(
                     "id",
-                    filter=Q(last_appointment_at__gte=cutoff)
-                    | Q(next_appointment_at__gte=now),
+                    filter=Q(last_appointment_at__gte=cutoff) | Q(next_appointment_at__gte=now),
                 ),
             )
             .order_by("-count", "city")

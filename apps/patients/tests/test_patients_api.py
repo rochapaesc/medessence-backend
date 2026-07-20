@@ -1,4 +1,4 @@
-"""API de pacientes (RF-PAC-1..7) — escopo, filtros, status calculado e tags."""
+"""API de pacientes (RF-PAC-1..7) - escopo, filtros, status calculado e tags."""
 
 from datetime import timedelta
 

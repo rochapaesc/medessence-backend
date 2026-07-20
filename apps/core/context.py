@@ -26,7 +26,7 @@ CLINIC_HEADER = "X-Clinic-Id"
 
 
 class ClinicContextRequired(APIException):
-    """400 — o front trata no interceptor e abre o seletor de clínica."""
+    """400 - o front trata no interceptor e abre o seletor de clínica."""
 
     status_code = status.HTTP_400_BAD_REQUEST
     default_detail = (
@@ -39,7 +39,7 @@ def resolve_active_membership(request):
     """
     Resolve (e cacheia na request) o Membership ativo do usuário logado.
 
-    Ponto único de resolução do contexto — viewsets escopados e permissions
+    Ponto único de resolução do contexto - viewsets escopados e permissions
     por papel passam por aqui.
     """
     cached = getattr(request, "active_membership", None)

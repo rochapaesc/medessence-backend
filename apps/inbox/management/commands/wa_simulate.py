@@ -1,5 +1,5 @@
 """
-Simula uma mensagem recebida no WhatsApp — dev/QA sem número real.
+Simula uma mensagem recebida no WhatsApp - dev/QA sem número real.
 
 Injeta um payload no formato Meta e roda o pipeline SÍNCRONO
 (store → parse → ingestão), como se o webhook tivesse chegado. Útil para
@@ -33,13 +33,13 @@ class Command(BaseCommand):
             raise CommandError(f"Clínica '{options['clinic_slug']}' não encontrada.")
         channel = Channel.objects.filter(clinic=clinic).first()
         if channel is None:
-            raise CommandError(f"Clínica '{clinic.slug}' sem canal — rode `seed --only inbox`.")
+            raise CommandError(f"Clínica '{clinic.slug}' sem canal - rode `seed --only inbox`.")
 
         payload = build_inbound_payload(
             wa_id=options["wa_id"], body=options["body"], name=options["name"]
         )
         # Mesmo caminho do webhook real: grava o log cru e roda a task
-        # (síncrona aqui) — que faz parse + ingestão e marca `processed_at`.
+        # (síncrona aqui) - que faz parse + ingestão e marca `processed_at`.
         event = WebhookEvent.objects.create(
             source=WebhookSource.DATAFY, clinic=clinic, payload=payload
         )

@@ -1,5 +1,5 @@
 """
-Seed de desenvolvimento — IDEMPOTENTE.
+Seed de desenvolvimento - IDEMPOTENTE.
 
 Rodar N vezes produz o mesmo estado: os registros são resolvidos por chave
 natural (slug, email, nome no catálogo, external_id determinístico) via
@@ -30,13 +30,7 @@ from faker import Faker
 from apps.accounts.choices import MembershipRole
 from apps.accounts.models import Membership, User
 from apps.inbox.choices import MessageKind, SenderKind, WhatsAppProviderKind
-from apps.inbox.models import (
-    Channel,
-    Conversation,
-    Message,
-    QuickReply,
-    WhatsAppTemplate,
-)
+from apps.inbox.models import Channel, Conversation, Message, QuickReply, WhatsAppTemplate
 from apps.patients.choices import TagOrigin
 from apps.patients.models import Contact, Patient, PatientContact, PatientTag, Tag
 from apps.scheduling.choices import AppointmentStatus
@@ -74,7 +68,7 @@ CITIES = ["Fortaleza", "Fortaleza", "Fortaleza", "Caucaia", "Maracanaú", "Sobra
 QUICK_REPLIES = [
     ("Saudação", "Olá! Aqui é da clínica. Como podemos ajudar?"),
     ("Confirmação", "Sua consulta está confirmada. Até breve!"),
-    ("Endereço", "Estamos na Av. Central, 1000 — Fortaleza/CE."),
+    ("Endereço", "Estamos na Av. Central, 1000 - Fortaleza/CE."),
 ]
 WA_TEMPLATES = [
     ("confirmacao_consulta", "UTILITY", "APPROVED"),
@@ -110,7 +104,7 @@ class Command(BaseCommand):
         sections = only or list(SECTIONS)
 
         fake = Faker("pt_BR")
-        Faker.seed(20260709)  # determinístico — mesmos nomes em toda execução
+        Faker.seed(20260709)  # determinístico - mesmos nomes em toda execução
 
         clinics = (
             self._seed_clinics(fake, options["clinics"])
@@ -147,7 +141,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Seed concluído."))
 
     # ------------------------------------------------------------------ #
-    # F0 — clínicas, usuários e vínculos
+    # F0 - clínicas, usuários e vínculos
     # ------------------------------------------------------------------ #
 
     def _seed_clinics(self, fake, quantity) -> list[Clinic]:
@@ -166,7 +160,7 @@ class Command(BaseCommand):
     def _seed_users_and_memberships(
         self, fake, clinics, *, doctors, attendants, password, create_memberships
     ):
-        # Admin da plataforma — não tem Membership (plano administrativo)
+        # Admin da plataforma - não tem Membership (plano administrativo)
         self._get_or_create_user(
             fake,
             email="admin@medessence.dev",
@@ -174,7 +168,7 @@ class Command(BaseCommand):
             is_platform_admin=True,
         )
 
-        # Gestor com vínculo em TODAS as clínicas — exercita o seletor do front
+        # Gestor com vínculo em TODAS as clínicas - exercita o seletor do front
         manager = self._get_or_create_user(fake, email="gestor@medessence.dev", password=password)
         if create_memberships:
             for clinic in clinics:
@@ -220,7 +214,7 @@ class Command(BaseCommand):
         return membership
 
     # ------------------------------------------------------------------ #
-    # F1 — catálogos, pacientes e agenda
+    # F1 - catálogos, pacientes e agenda
     # ------------------------------------------------------------------ #
 
     def _seed_catalogs(self, clinic):
@@ -325,7 +319,7 @@ class Command(BaseCommand):
         if not practitioners:
             self.stdout.write(
                 self.style.WARNING(
-                    f"  ! {clinic.slug}: sem profissionais — rode a seção catalogs antes."
+                    f"  ! {clinic.slug}: sem profissionais - rode a seção catalogs antes."
                 )
             )
             return
@@ -367,11 +361,11 @@ class Command(BaseCommand):
                     self._log("Appointment", external_id, created=True)
 
     # ------------------------------------------------------------------ #
-    # F2 — inbox (canal, conversas, mensagens, respostas rápidas, templates)
+    # F2 - inbox (canal, conversas, mensagens, respostas rápidas, templates)
     # ------------------------------------------------------------------ #
 
     def _seed_inbox(self, clinic):
-        # Canal FAKE por clínica (dev sem número real) — unicidade por clínica.
+        # Canal FAKE por clínica (dev sem número real) - unicidade por clínica.
         channel, created = Channel.objects.get_or_create(
             clinic=clinic,
             defaults={

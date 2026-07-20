@@ -1,12 +1,12 @@
 """
 Jobs Celery do inbox (§13).
 
-  process_whatsapp_webhook  (webhooks) — parse + ingestão idempotente
-  fetch_media_asset         (media)    — resolve URL temporária, baixa, re-hospeda
-  send_whatsapp_message     (outbound) — envio com retry/backoff em 429
-  refresh_wa_templates      (sync, beat 6h) — cache de templates aprovados
+  process_whatsapp_webhook  (webhooks) - parse + ingestão idempotente
+  fetch_media_asset         (media)    - resolve URL temporária, baixa, re-hospeda
+  send_whatsapp_message     (outbound) - envio com retry/backoff em 429
+  refresh_wa_templates      (sync, beat 6h) - cache de templates aprovados
 
-O provedor entra sempre pelo registry — as tasks não conhecem Datafy.
+O provedor entra sempre pelo registry - as tasks não conhecem Datafy.
 """
 
 import logging
@@ -18,10 +18,7 @@ from celery import shared_task
 from django.core.files.base import ContentFile
 from django.utils import timezone
 
-from apps.integrations.whatsapp.exceptions import (
-    WhatsAppRateLimitedError,
-    WhatsAppUnavailableError,
-)
+from apps.integrations.whatsapp.exceptions import WhatsAppRateLimitedError, WhatsAppUnavailableError
 
 logger = logging.getLogger(__name__)
 

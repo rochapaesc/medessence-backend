@@ -1,10 +1,10 @@
 """
 Serviços do inbox:
-  1. Denormalização da conversa a partir das mensagens (RF-INB-1) — signal.
-  2. Ingestão de eventos do webhook (§7) — idempotente por wamid.
+  1. Denormalização da conversa a partir das mensagens (RF-INB-1) - signal.
+  2. Ingestão de eventos do webhook (§7) - idempotente por wamid.
   3. Envio de mensagens OUT via provider (§7).
 
-O provedor entra sempre pelo registry (`get_whatsapp_provider(channel)`) —
+O provedor entra sempre pelo registry (`get_whatsapp_provider(channel)`) -
 este módulo não conhece Datafy.
 """
 
@@ -55,7 +55,7 @@ def apply_message_to_conversation(message, *, created: bool) -> None:
 
 
 # --------------------------------------------------------------------- #
-# Ingestão de eventos do webhook (§7) — idempotente por wamid
+# Ingestão de eventos do webhook (§7) - idempotente por wamid
 # --------------------------------------------------------------------- #
 
 
@@ -114,7 +114,7 @@ def _ingest_message(channel, event, sender_kind) -> bool:
         clinic=channel.clinic, provider_message_id=event.provider_message_id
     ).first()
     if existing is not None:
-        return False  # reentrega — idempotente
+        return False  # reentrega - idempotente
 
     conversation = _get_or_create_conversation(channel, event)
 

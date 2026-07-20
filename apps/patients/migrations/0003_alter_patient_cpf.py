@@ -13,6 +13,6 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='patient',
             name='cpf',
-            field=models.CharField(blank=True, db_index=True, help_text='personalIdentifier do EHR — pode ser CPF, DNI ou passaporte.', max_length=32, verbose_name='Documento (CPF)'),
+            field=models.CharField(blank=True, db_index=True, help_text='personalIdentifier do EHR - pode ser CPF, DNI ou passaporte.', max_length=32, verbose_name='Documento (CPF)'),
         ),
     ]

@@ -13,7 +13,7 @@ from apps.core.models import BaseModel
 
 class Membership(BaseModel):
     """
-    Vínculo user↔clinic — a autorização do plano clínica (§3.1).
+    Vínculo user↔clinic - a autorização do plano clínica (§3.1).
 
     `is_active=False` revoga o acesso preservando o histórico.
     `practitioner` liga o papel de médico à sua carteira/agenda (M3).
@@ -37,7 +37,7 @@ class Membership(BaseModel):
         choices=MembershipRole.choices,
     )
     is_active = BooleanField(verbose_name="Ativo", default=True)
-    practitioner = ForeignKey(  # M3 — carteira/agenda do médico
+    practitioner = ForeignKey(  # M3 - carteira/agenda do médico
         "scheduling.Practitioner",
         verbose_name="Profissional",
         null=True,

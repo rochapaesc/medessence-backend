@@ -36,7 +36,7 @@ def _to_json_safe(value):
 
     Usa DjangoJSONEncoder para lidar com date, datetime, Decimal, UUID, etc.,
     e faz round-trip via json.loads para garantir que o valor final não dependa
-    de encoder customizado — o driver do Postgres usa o json.dumps padrão.
+    de encoder customizado - o driver do Postgres usa o json.dumps padrão.
     """
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -90,7 +90,7 @@ def log_action(
 ) -> None:
     """
     Registra uma ação no log de auditoria.
-    NUNCA propaga exceção — falha de auditoria não deve quebrar a request.
+    NUNCA propaga exceção - falha de auditoria não deve quebrar a request.
 
     `clinic` escopa o log no tenant (nula em eventos globais, ex.: login).
     """

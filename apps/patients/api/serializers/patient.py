@@ -10,7 +10,7 @@ from apps.patients.models import Patient, PatientTag, Tag
 
 
 class PatientReadSerializer(ModelSerializer):
-    """Linha da listagem (RF-PAC-1) — enxuto, com status calculado e tags."""
+    """Linha da listagem (RF-PAC-1) - enxuto, com status calculado e tags."""
 
     status = SerializerMethodField()
     tags = SerializerMethodField()
@@ -32,7 +32,7 @@ class PatientReadSerializer(ModelSerializer):
         ]
 
     def get_status(self, obj):
-        # Janela da clínica ativa vem do contexto (viewset escopado) —
+        # Janela da clínica ativa vem do contexto (viewset escopado) -
         # evita uma query de clinic por linha da listagem.
         clinic = self.context.get("clinic")
         if clinic is not None:
@@ -45,7 +45,7 @@ class PatientReadSerializer(ModelSerializer):
 
 
 class PatientDetailSerializer(PatientReadSerializer):
-    """Ficha do paciente (RF-PAC-6) — campos completos."""
+    """Ficha do paciente (RF-PAC-6) - campos completos."""
 
     class Meta(PatientReadSerializer.Meta):
         fields = [
@@ -69,7 +69,7 @@ class PatientWriteSerializer(ModelSerializer):
     pelo viewset escopado; o write-through para o EHR entra na fase do
     adapter (a mutação passará a enfileirar SyncOperation).
 
-    `tag_ids` substitui o conjunto de tags LOCAIS do paciente — atribuições
+    `tag_ids` substitui o conjunto de tags LOCAIS do paciente - atribuições
     espelhadas do EHR (origin=EHR) não são tocadas por aqui.
     """
 
@@ -121,7 +121,7 @@ class PatientWriteSerializer(ModelSerializer):
         }
         for tag_id, assignment in current.items():
             if tag_id not in wanted_ids:
-                assignment.delete()  # soft — a unicidade parcial permite recriar
+                assignment.delete()  # soft - a unicidade parcial permite recriar
         for tag in tags:
             if tag.pk not in current:
                 PatientTag.objects.create(patient=patient, tag=tag, origin=TagOrigin.LOCAL)

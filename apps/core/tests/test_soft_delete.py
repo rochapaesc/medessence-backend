@@ -1,4 +1,4 @@
-"""Soft delete do BaseModel — managers, delete e restore."""
+"""Soft delete do BaseModel - managers, delete e restore."""
 
 from apps.tenants.models import Clinic
 

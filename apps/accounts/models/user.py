@@ -6,7 +6,7 @@ from apps.accounts.managers.user import UserManager
 
 class User(AbstractBaseUser, PermissionsMixin):
     """
-    Usuário global — o papel de clínica mora no Membership, nunca aqui.
+    Usuário global - o papel de clínica mora no Membership, nunca aqui.
     O mesmo usuário pode ser gestor numa clínica e médico em outra.
     Paciente não é usuário do sistema.
     """

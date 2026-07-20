@@ -93,7 +93,7 @@ class Migration(migrations.Migration):
                 ('license_number', models.CharField(blank=True, max_length=40, verbose_name='Registro (CRM)')),
                 ('external_id', models.CharField(blank=True, max_length=64, verbose_name='ID no EHR')),
                 ('clinic', models.ForeignKey(on_delete=django.db.models.deletion.RESTRICT, related_name='%(class)ss', to='tenants.clinic', verbose_name='Clínica')),
-                ('user', models.ForeignKey(blank=True, help_text='Liga o profissional ao login — carteira do médico.', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='practitioners', to=settings.AUTH_USER_MODEL, verbose_name='Usuário')),
+                ('user', models.ForeignKey(blank=True, help_text='Liga o profissional ao login - carteira do médico.', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='practitioners', to=settings.AUTH_USER_MODEL, verbose_name='Usuário')),
             ],
             options={
                 'verbose_name': 'Profissional',
@@ -128,7 +128,7 @@ class Migration(migrations.Migration):
                 ('starts_at', models.DateTimeField(db_index=True, verbose_name='Início')),
                 ('duration_min', models.PositiveSmallIntegerField(default=30, verbose_name='Duração (min)')),
                 ('status', models.CharField(choices=[('scheduled', 'Agendada'), ('confirmed', 'Confirmada'), ('in_progress', 'Em atendimento'), ('completed', 'Realizada'), ('no_show', 'Faltou'), ('canceled', 'Cancelada')], default='scheduled', max_length=15, verbose_name='Status')),
-                ('source_status', models.CharField(blank=True, help_text='Código numérico observado (10, 81, 90, 100…) — P4.', max_length=8, verbose_name='Status cru do EHR')),
+                ('source_status', models.CharField(blank=True, help_text='Código numérico observado (10, 81, 90, 100…) - P4.', max_length=8, verbose_name='Status cru do EHR')),
                 ('remotely', models.BooleanField(default=False, verbose_name='Remoto')),
                 ('external_id', models.CharField(blank=True, max_length=64, verbose_name='ID no EHR')),
                 ('raw_payload', models.JSONField(blank=True, default=dict, verbose_name='Payload cru')),

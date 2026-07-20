@@ -26,7 +26,7 @@ class Conversation(TenantScopedModel):
     para a listagem por recência (RF-INB-1) não varrer a thread.
 
     `patient` é opcional: o número pode não estar vinculado, ou atender N
-    pacientes (desambiguação manual via PatientContact — RF-INB-7).
+    pacientes (desambiguação manual via PatientContact - RF-INB-7).
     """
 
     channel = ForeignKey(

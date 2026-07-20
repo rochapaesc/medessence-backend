@@ -1,5 +1,5 @@
 """
-Disparo manual de pulls — para desenvolvimento e operação.
+Disparo manual de pulls - para desenvolvimento e operação.
 
 Uso:
     python manage.py sync clinica-1                  # todos, na ordem certa
@@ -47,7 +47,7 @@ class Command(BaseCommand):
             raise CommandError(f"Clínica '{options['clinic_slug']}' não encontrada.")
         if not clinic.ehr_provider:
             raise CommandError(
-                f"Clínica '{clinic.slug}' sem EHR configurado — defina ehr_provider "
+                f"Clínica '{clinic.slug}' sem EHR configurado - defina ehr_provider "
                 "e ehr_credentials no admin."
             )
 

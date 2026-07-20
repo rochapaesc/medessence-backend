@@ -6,7 +6,7 @@ from apps.integrations.whatsapp.exceptions import WhatsAppNotConfiguredError
 def get_whatsapp_provider(channel) -> WhatsAppProvider:
     """
     Resolve o adapter do canal. Trocar de provedor = escrever um adapter e
-    registrá-lo aqui — nada acoplado a terceiro fora deste pacote (§5).
+    registrá-lo aqui - nada acoplado a terceiro fora deste pacote (§5).
     """
     if channel.provider == WhatsAppProviderKind.DATAFY:
         from apps.integrations.whatsapp.datafy.adapter import DatafyAdapter

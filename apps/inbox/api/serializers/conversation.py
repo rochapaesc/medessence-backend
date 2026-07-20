@@ -1,7 +1,4 @@
-from rest_framework.serializers import (
-    ModelSerializer,
-    SerializerMethodField,
-)
+from rest_framework.serializers import ModelSerializer, SerializerMethodField
 
 from apps.inbox.models import Conversation
 from apps.patients.models import Contact
@@ -14,7 +11,7 @@ class ContactSummarySerializer(ModelSerializer):
 
 
 class ConversationSerializer(ModelSerializer):
-    """Linha da lista de conversas (RF-INB-1) — enxuta, com flags de UI."""
+    """Linha da lista de conversas (RF-INB-1) - enxuta, com flags de UI."""
 
     contact = ContactSummarySerializer(read_only=True)
     patient_name = SerializerMethodField()

@@ -1,5 +1,5 @@
 """
-Consumer do inbox (§12) — papel único: empurrar eventos do servidor para a
+Consumer do inbox (§12) - papel único: empurrar eventos do servidor para a
 tela. Nenhuma regra de negócio; a fonte da verdade é a API REST (o cliente faz
 catch-up via REST ao reconectar).
 """

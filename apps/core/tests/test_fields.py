@@ -1,4 +1,4 @@
-"""EncryptedJSONField — round-trip e cifra em repouso."""
+"""EncryptedJSONField - round-trip e cifra em repouso."""
 
 from django.db import connection
 

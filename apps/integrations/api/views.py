@@ -1,5 +1,5 @@
 """
-API de integrações — disparo manual do sync com o EHR (§13).
+API de integrações - disparo manual do sync com o EHR (§13).
 
 Complementa, sem substituir, o agendamento automático do beat: o botão do
 front enfileira os mesmos tasks `sync_clinic` da clínica ativa. O lock por

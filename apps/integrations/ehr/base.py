@@ -1,5 +1,5 @@
 """
-Port EHR (§5) — a fronteira entre o MedEssence e qualquer prontuário.
+Port EHR (§5) - a fronteira entre o MedEssence e qualquer prontuário.
 
 Adapters normalizam na entrada (o banco NUNCA vê formato de terceiro) e
 desnormalizam na saída. Os DTOs abaixo são a linguagem comum: campos já
@@ -55,9 +55,9 @@ class EHRAppointment:
     starts_at: datetime  # aware
     ends_at: datetime | None = None
     duration_min: int | None = None
-    # A vSaúde embute os catálogos na agenda ({id, name}) — os nomes abaixo
+    # A vSaúde embute os catálogos na agenda ({id, name}) - os nomes abaixo
     # permitem upsert dos catálogos sem chamadas extras.
-    practitioner_name: str = ""  # não há endpoint de profissionais — vem da agenda
+    practitioner_name: str = ""  # não há endpoint de profissionais - vem da agenda
     practitioner_license: str = ""
     care_unit_external_id: str = ""
     care_unit_name: str = ""
@@ -101,14 +101,14 @@ class EHRInsuranceCompany:
 
 @runtime_checkable
 class EHRProvider(Protocol):
-    """Interface de leitura da F1 — um adapter por provedor."""
+    """Interface de leitura da F1 - um adapter por provedor."""
 
     def list_patients(self, page: int) -> EHRPage:
         """Página de pacientes (1-indexada). Vazia encerra a varredura."""
         ...
 
     def get_patient(self, external_id: str) -> EHRPatient | None:
-        """Refresh pontual — usado quando a agenda referencia paciente ausente."""
+        """Refresh pontual - usado quando a agenda referencia paciente ausente."""
         ...
 
     def list_tags(self) -> list[EHRTag]:
@@ -116,7 +116,7 @@ class EHRProvider(Protocol):
         ...
 
     def list_appointments(self, start: date, end: date) -> list[EHRAppointment]:
-        """Agenda na janela [start, end] — pull deslizante D-7 → D+60."""
+        """Agenda na janela [start, end] - pull deslizante D-7 → D+60."""
         ...
 
     def list_procedures(self) -> list[EHRProcedure]: ...
@@ -126,6 +126,6 @@ class EHRProvider(Protocol):
     def list_insurance_companies(self) -> list[EHRInsuranceCompany]:
         """
         Convênios. A vSaúde não tem endpoint documentado para isso
-        (pendência P12) — o adapter real retorna lista vazia até lá.
+        (pendência P12) - o adapter real retorna lista vazia até lá.
         """
         ...

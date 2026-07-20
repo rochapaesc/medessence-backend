@@ -3,7 +3,7 @@ Parser do formato Meta Cloud API (§7) → `WhatsAppEvent` normalizado.
 
 A Datafy é proxy da Meta, então o payload do webhook segue o formato
 `entry[].changes[].value.{messages, message_echoes, statuses}`. Este módulo
-é o ÚNICO lugar que conhece esse formato — o inbox recebe só DTOs.
+é o ÚNICO lugar que conhece esse formato - o inbox recebe só DTOs.
 """
 
 from datetime import UTC, datetime

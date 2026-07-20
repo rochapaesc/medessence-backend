@@ -3,7 +3,7 @@ Middleware ASGI de autenticação do WebSocket (§12).
 
 Contexto pela query string (`/ws/inbox/?token=...&clinic_id=...`): valida o
 JWT (SimpleJWT) e resolve o Membership ativo (mesma regra do §3.1, mas por
-query string em vez de header). Sem regra de negócio — só popula o scope.
+query string em vez de header). Sem regra de negócio - só popula o scope.
 """
 
 from urllib.parse import parse_qs

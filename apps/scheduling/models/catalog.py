@@ -1,16 +1,10 @@
-from django.db.models import (
-    CASCADE,
-    BooleanField,
-    CharField,
-    ForeignKey,
-    PositiveSmallIntegerField,
-)
+from django.db.models import CASCADE, BooleanField, CharField, ForeignKey, PositiveSmallIntegerField
 
 from apps.core.models import TenantScopedModel
 
 
 class CareUnit(TenantScopedModel):
-    """Unidade de atendimento (catálogo do EHR — sync_catalogs diário)."""
+    """Unidade de atendimento (catálogo do EHR - sync_catalogs diário)."""
 
     name = CharField(verbose_name="Nome", max_length=160)
     external_id = CharField(verbose_name="ID no EHR", max_length=32)
@@ -40,7 +34,7 @@ class Procedure(TenantScopedModel):
 
 
 class InsuranceCompany(TenantScopedModel):
-    """Convênio (M1) — exigido pelo payload de criação de agendamento."""
+    """Convênio (M1) - exigido pelo payload de criação de agendamento."""
 
     name = CharField(verbose_name="Nome", max_length=160)
     external_id = CharField(verbose_name="ID no EHR", max_length=32)
@@ -54,7 +48,7 @@ class InsuranceCompany(TenantScopedModel):
 
 
 class InsurancePlan(TenantScopedModel):
-    """Plano do convênio (M1) — nullable no payload da vSaúde."""
+    """Plano do convênio (M1) - nullable no payload da vSaúde."""
 
     company = ForeignKey(
         InsuranceCompany,

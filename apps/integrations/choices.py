@@ -3,7 +3,7 @@ from django.db.models import TextChoices
 
 class SyncDirection(TextChoices):
     PUSH = "push", "Push (nós → EHR)"
-    # PULL reservado — pulls são jobs, não entram na fila de operações
+    # PULL reservado - pulls são jobs, não entram na fila de operações
 
 
 class SyncResource(TextChoices):

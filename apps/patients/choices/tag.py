@@ -10,7 +10,7 @@ class TagSyncScope(TextChoices):
 
 
 class TagOrigin(TextChoices):
-    """Origem de uma ATRIBUIÇÃO de tag — o diff do pull só toca nas do EHR."""
+    """Origem de uma ATRIBUIÇÃO de tag - o diff do pull só toca nas do EHR."""
 
     EHR = "ehr", "EHR"
     LOCAL = "local", "Local"

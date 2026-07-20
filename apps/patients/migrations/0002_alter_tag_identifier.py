@@ -13,6 +13,6 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='tag',
             name='identifier',
-            field=models.BigIntegerField(blank=True, help_text='Bit da tag no EHR — chega a 2^62. BigInteger é exato e suficiente: a vSaúde (.NET) usa long signed de 64 bits, teto em 2^62.', null=True, verbose_name='Identifier (bitmask)'),
+            field=models.BigIntegerField(blank=True, help_text='Bit da tag no EHR - chega a 2^62. BigInteger é exato e suficiente: a vSaúde (.NET) usa long signed de 64 bits, teto em 2^62.', null=True, verbose_name='Identifier (bitmask)'),
         ),
     ]

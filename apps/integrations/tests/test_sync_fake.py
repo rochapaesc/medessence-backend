@@ -1,5 +1,5 @@
 """
-Motor de pull ponta a ponta com o provider FAKE — idempotência, diff de
+Motor de pull ponta a ponta com o provider FAKE - idempotência, diff de
 tags (§10.3), vínculo de contatos (RF-PAC-7) e mapeamento de status (P4).
 """
 

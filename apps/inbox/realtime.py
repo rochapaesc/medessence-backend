@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def _broadcast(clinic_id: int, data: dict) -> None:
     layer = get_channel_layer()
-    if layer is None:  # ambiente sem channel layer (ex.: shell simples) — no-op
+    if layer is None:  # ambiente sem channel layer (ex.: shell simples) - no-op
         return
     try:
         async_to_sync(layer.group_send)(

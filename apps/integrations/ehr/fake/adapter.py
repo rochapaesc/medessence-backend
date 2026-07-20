@@ -1,12 +1,12 @@
 """
-Provider FAKE — gerador determinístico para desenvolvimento.
+Provider FAKE - gerador determinístico para desenvolvimento.
 
 Permite exercitar o motor de pull completo (SyncRun, upserts, diff de tags,
 vínculo de contatos, janela da agenda) sem API externa: basta uma clínica
 com `ehr_provider=fake` e rodar `manage.py sync <slug>`.
 
 Determinístico por clínica (seed = pk): rodar duas vezes retorna os mesmos
-dados — o pull deve ser idempotente sobre eles. Casos cobertos de propósito:
+dados - o pull deve ser idempotente sobre eles. Casos cobertos de propósito:
     - tag no bit 2^62 (limite do bitmask, §10.3);
     - telefone compartilhado entre dois pacientes (RF-PAC-7);
     - paciente sem telefone; consulta cancelada (status cru "100").

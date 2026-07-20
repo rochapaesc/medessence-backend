@@ -1,5 +1,5 @@
 """
-Client HTTP da vSaúde — contrato OFICIAL (docs/vsaude-swagger.json,
+Client HTTP da vSaúde - contrato OFICIAL (docs/vsaude-swagger.json,
 baixado da própria API em 09/07/2026).
 
 Convenções reais observadas + swagger:
@@ -68,7 +68,7 @@ class VSaudeClient:
         except ValueError as exc:
             raise EHRError(f"Resposta não-JSON da vSaúde em {path}.") from exc
 
-        # Envelope ABP — o campo "success" nem sempre vem; erro só se False.
+        # Envelope ABP - o campo "success" nem sempre vem; erro só se False.
         if isinstance(envelope, dict) and ("success" in envelope or "result" in envelope):
             if envelope.get("success", True) is False:
                 error = envelope.get("error") or {}

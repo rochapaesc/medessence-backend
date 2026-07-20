@@ -17,7 +17,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
         POST /{id}/read/          zera as não lidas (RF-INB-4)
         POST /{id}/assign/        assume o atendimento (RF-INB-5/8)
-        POST /{id}/mark-waiting/  marca como aguardando atendente (manual — F2)
+        POST /{id}/mark-waiting/  marca como aguardando atendente (manual - F2)
         POST /{id}/link-patient/  desambigua o vínculo contato↔paciente (RF-INB-7)
         GET  /counters/           contadores do inbox (RNF-5)
     """
@@ -94,7 +94,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
     @action(detail=False, methods=["get"], url_path="counters")
     def counters(self, request):
-        """Contadores do inbox (RNF-5) — endpoint dedicado."""
+        """Contadores do inbox (RNF-5) - endpoint dedicado."""
         queryset = self.get_queryset()
         return Response(
             {

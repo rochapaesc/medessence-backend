@@ -7,11 +7,11 @@ from apps.core.models import AuditLog
 
 class AuditLogViewSet(ClinicScopedReadOnlyViewSet):
     """
-    Somente leitura — logs são imutáveis por design.
+    Somente leitura - logs são imutáveis por design.
 
     Plano clínica: o gestor consulta a auditoria da PRÓPRIA clínica
     (o escopo vem do contexto ativo; logs globais, com clinic nula,
-    não aparecem aqui — pertencem ao plano plataforma, F5).
+    não aparecem aqui - pertencem ao plano plataforma, F5).
     """
 
     model = AuditLog

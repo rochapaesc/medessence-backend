@@ -43,7 +43,7 @@ class Migration(migrations.Migration):
                 ('direction', models.CharField(choices=[('push', 'Push (nós → EHR)')], default='push', max_length=10, verbose_name='Direção')),
                 ('resource_type', models.CharField(choices=[('patient', 'Paciente'), ('appointment', 'Consulta'), ('tag', 'Tag'), ('patient_tags', 'Tags do paciente')], max_length=20, verbose_name='Recurso')),
                 ('local_id', models.BigIntegerField(verbose_name='ID local')),
-                ('payload', models.JSONField(help_text='Formato NOSSO — o adapter desnormaliza na saída.', verbose_name='Payload')),
+                ('payload', models.JSONField(help_text='Formato NOSSO - o adapter desnormaliza na saída.', verbose_name='Payload')),
                 ('status', models.CharField(choices=[('pending', 'Pendente'), ('running', 'Executando'), ('success', 'Sucesso'), ('failed', 'Falhou')], default='pending', max_length=10, verbose_name='Status')),
                 ('attempts', models.PositiveSmallIntegerField(default=0, verbose_name='Tentativas')),
                 ('last_error', models.TextField(blank=True, verbose_name='Último erro')),

@@ -1,11 +1,11 @@
 """
-Motor de pull (§10.2) — EHR → nós.
+Motor de pull (§10.2) - EHR → nós.
 
 Cada pull é idempotente (upsert por `(clinic, external_id)`) e grava um
 `SyncRun` com estatísticas, visível no admin e no futuro painel de sync.
-O provedor entra pelo registry — este módulo não conhece vSaúde.
+O provedor entra pelo registry - este módulo não conhece vSaúde.
 
-Propriedade por campo (§10.1): demográficos e agenda têm o EHR como dono —
+Propriedade por campo (§10.1): demográficos e agenda têm o EHR como dono -
 o pull SOBRESCREVE o local. Tags são bidirecionais: o diff só toca nas
 atribuições espelhadas (origin=EHR), preservando as locais.
 """
@@ -102,7 +102,7 @@ def _upsert_simple(clinic, model, items, defaults_fn) -> dict:
 def _upsert_tags(clinic, ehr_tags) -> dict:
     """
     Upsert do catálogo por `identifier` (§10.3). Tag removida no EHR vira
-    LOCAL_ONLY aqui — as atribuições existentes são preservadas.
+    LOCAL_ONLY aqui - as atribuições existentes são preservadas.
     """
     created = updated = 0
     seen_identifiers = set()
@@ -192,7 +192,7 @@ def pull_patients(clinic) -> SyncRun:
 
 
 def upsert_patient(clinic, ehr_patient) -> tuple[Patient, bool]:
-    """Upsert por (clinic, external_id) — o EHR é o dono dos demográficos."""
+    """Upsert por (clinic, external_id) - o EHR é o dono dos demográficos."""
     from apps.patients.choices import PatientSource
 
     patient, created = Patient.all_objects.update_or_create(
@@ -296,7 +296,7 @@ def pull_appointments(clinic, start=None, end=None) -> SyncRun:
                 continue
 
             if ehr_appointment.practitioner_name:
-                # A vSaúde embute o profissional na agenda — o pull mantém
+                # A vSaúde embute o profissional na agenda - o pull mantém
                 # nome/registro atualizados (EHR é o dono).
                 practitioner, _ = Practitioner.objects.update_or_create(
                     clinic=clinic,
@@ -391,7 +391,7 @@ def _by_external(model, clinic, external_id):
 def _catalog_from_embed(model, clinic, external_id, name):
     """
     Resolve item de catálogo referenciado na agenda. Com nome embutido
-    (vSaúde), faz upsert — catálogo se mantém vivo mesmo sem pull dedicado.
+    (vSaúde), faz upsert - catálogo se mantém vivo mesmo sem pull dedicado.
     """
     if not external_id:
         return None

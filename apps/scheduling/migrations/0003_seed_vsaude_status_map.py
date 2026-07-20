@@ -6,7 +6,7 @@ Semântica descoberta nas strings de localização do próprio sistema
 Padrão: unidade = quem executou a ação (1–9 paciente, X0 profissional,
 X1 funcionário).
 
-Decisão do produto: 100 ("Passou do horário" — expirou sem finalização)
+Decisão do produto: 100 ("Passou do horário" - expirou sem finalização)
 NÃO conta como comparecimento → NO_SHOW.
 
 A migration também remapeia consultas já importadas e recalcula o

@@ -1,8 +1,8 @@
 """
-Jobs de sync (§13) — fan-out por tenant com lock em Redis.
+Jobs de sync (§13) - fan-out por tenant com lock em Redis.
 
 O beat dispara os `schedule_*` (globais), que enfileiram um `sync_clinic`
-POR clínica com EHR configurado — `clinic_id` sempre explícito (§3.1).
+POR clínica com EHR configurado - `clinic_id` sempre explícito (§3.1).
 O lock por (kind, clinic) impede execuções sobrepostas do mesmo pull.
 """
 
@@ -16,7 +16,7 @@ from apps.integrations.ehr.exceptions import EHRRateLimitedError, EHRUnavailable
 
 logger = logging.getLogger(__name__)
 
-LOCK_TTL = 60 * 20  # 20 min — maior que qualquer pull razoável
+LOCK_TTL = 60 * 20  # 20 min - maior que qualquer pull razoável
 
 
 def _acquire_lock(kind: str, clinic_id: int):
@@ -46,7 +46,7 @@ def sync_clinic(clinic_id: int, kind: str):
 
     lock = _acquire_lock(kind, clinic_id)
     if lock is False:
-        logger.info("Sync %s de %s já em execução — pulando.", kind, clinic.slug)
+        logger.info("Sync %s de %s já em execução - pulando.", kind, clinic.slug)
         return "skipped: locked"
 
     try:

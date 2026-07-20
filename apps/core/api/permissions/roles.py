@@ -4,7 +4,7 @@ from apps.core.context import resolve_active_membership
 
 
 class IsPlatformAdmin(BasePermission):
-    """Plano plataforma — dono do SaaS. Não passa pelo contexto de clínica."""
+    """Plano plataforma - dono do SaaS. Não passa pelo contexto de clínica."""
 
     message = "Apenas administradores da plataforma podem acessar este recurso."
 
@@ -16,7 +16,7 @@ class IsPlatformAdmin(BasePermission):
 class IsClinicMember(BasePermission):
     """
     Qualquer papel do plano clínica. Resolver o contexto aqui garante que
-    TODA request escopada valida o Membership antes de tocar o queryset —
+    TODA request escopada valida o Membership antes de tocar o queryset -
     e que os erros do §3.1 (403/400) saem no lugar certo.
     """
 
@@ -53,7 +53,7 @@ class IsClinicManager(RolePermission):
 
 
 class IsDoctor(RolePermission):
-    """Médico (gestor incluso — quem pode o mais, pode o menos)."""
+    """Médico (gestor incluso - quem pode o mais, pode o menos)."""
 
     @property
     def allowed_roles(self):

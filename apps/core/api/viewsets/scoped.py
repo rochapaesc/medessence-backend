@@ -1,11 +1,11 @@
 """
-Viewsets do plano clínica — escopo por tenant em todo queryset (§3/§3.1).
+Viewsets do plano clínica - escopo por tenant em todo queryset (§3/§3.1).
 
 O contrato:
     - Leitura: `get_queryset()` SEMPRE filtra pela clínica ativa, inclusive
       via lookup indireto (`clinic_lookup = "conversation__clinic"`).
     - Escrita: o campo `clinic` é read_only nos serializers e INJETADO aqui
-      do contexto ativo — nunca aceito do payload.
+      do contexto ativo - nunca aceito do payload.
     - O contexto é resolvido uma vez em `initial()` (após autenticação e
       permissões) e fica em `self.clinic` / `self.membership`.
 """

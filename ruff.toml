@@ -17,7 +17,7 @@ select = [
     "I",   # isort
     "N",   # pep8-naming
     "DJ",  # flake8-django
-    "S",   # bandit (segurança) — substitui o `make security`
+    "S",   # bandit (segurança) - substitui o `make security`
     "B",   # flake8-bugbear (bugs comuns)
     "C4",  # flake8-comprehensions (simplifica list/dict comprehensions)
     "UP",  # pyupgrade (moderniza sintaxe)
@@ -26,10 +26,10 @@ select = [
 
 ignore = [
     "S101",   # uso de assert (comum em testes)
-    "S105",   # hardcoded password — muito verboso em settings
+    "S105",   # hardcoded password - muito verboso em settings
     "S106",
     "S107",
-    "DJ001",  # nullable CharField — padrão em alguns casos Django
+    "DJ001",  # nullable CharField - padrão em alguns casos Django
     "B008",   # chamada de função em default de argumento (comum no DRF/FastAPI)
 ]
 

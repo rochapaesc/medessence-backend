@@ -13,7 +13,7 @@ def _fernet() -> Fernet:
     key = getattr(settings, "FIELD_ENCRYPTION_KEY", None)
     if not key:
         raise ImproperlyConfigured(
-            "FIELD_ENCRYPTION_KEY não configurada — necessária para EncryptedJSONField."
+            "FIELD_ENCRYPTION_KEY não configurada - necessária para EncryptedJSONField."
         )
     return Fernet(key.encode() if isinstance(key, str) else key)
 
@@ -24,7 +24,7 @@ class EncryptedJSONField(models.TextField):
 
     Usado para credenciais de integração por tenant (ex.: Clinic.ehr_credentials,
     Channel.credentials). O valor em Python é um dict/list normal; no banco fica
-    um token Fernet opaco — sem filtro/índice sobre o conteúdo, por design.
+    um token Fernet opaco - sem filtro/índice sobre o conteúdo, por design.
     """
 
     description = "JSON cifrado em repouso (Fernet)"
@@ -46,7 +46,7 @@ class EncryptedJSONField(models.TextField):
             return json.loads(_fernet().decrypt(value.encode()).decode())
         except InvalidToken as exc:
             raise ImproperlyConfigured(
-                "Falha ao decifrar EncryptedJSONField — a FIELD_ENCRYPTION_KEY "
+                "Falha ao decifrar EncryptedJSONField - a FIELD_ENCRYPTION_KEY "
                 "não corresponde à chave usada na escrita."
             ) from exc
 
@@ -69,5 +69,5 @@ class EncryptedJSONField(models.TextField):
     def formfield(self, **kwargs):
         # No admin, valida JSON na entrada (erro claro em vez de salvar string)
         kwargs.setdefault("form_class", forms.JSONField)
-        kwargs.setdefault("help_text", 'JSON com aspas duplas — ex.: {"api_key": "..."}')
+        kwargs.setdefault("help_text", 'JSON com aspas duplas - ex.: {"api_key": "..."}')
         return super().formfield(**kwargs)

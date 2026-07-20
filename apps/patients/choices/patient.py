@@ -14,7 +14,7 @@ class PatientSource(TextChoices):
 
 class PatientStatus(TextChoices):
     """
-    Status CALCULADO (RF-PAC-2, decisão de 09/07/2026) — não é coluna no
+    Status CALCULADO (RF-PAC-2, decisão de 09/07/2026) - não é coluna no
     banco; deriva de `last_appointment_at`: ativo (consulta nos últimos
     90 dias), inativo (acima de 90 dias, ou nunca consultou).
     """

@@ -3,12 +3,7 @@ Adapter Datafy → DTOs do port (§5). A saída monta o corpo da Meta Cloud API;
 a entrada (`parse_webhook`) delega ao parser do formato Meta.
 """
 
-from apps.integrations.whatsapp.base import (
-    MediaURL,
-    SendResult,
-    Template,
-    WhatsAppEvent,
-)
+from apps.integrations.whatsapp.base import MediaURL, SendResult, Template, WhatsAppEvent
 from apps.integrations.whatsapp.datafy.client import DatafyClient
 from apps.integrations.whatsapp.events import parse_meta_webhook
 
@@ -73,7 +68,7 @@ class DatafyAdapter:
     def resolve_media(self, media_id: str) -> MediaURL:
         # Endpoint simplificado da Datafy: URL da CDN válida por 30 dias e
         # baixável SEM Authorization. (O mirror `/v1/{id}` devolve URL Meta de
-        # ~5 min que EXIGE `Bearer` no download — por isso não o usamos.)
+        # ~5 min que EXIGE `Bearer` no download - por isso não o usamos.)
         data = self.client.get(f"/media/{media_id}")
         return MediaURL(
             url=data.get("url", ""),
@@ -82,7 +77,7 @@ class DatafyAdapter:
         )
 
     def list_templates(self) -> list[Template]:
-        # Endpoint simplificado da Datafy (associa à WABA pelo token — dispensa
+        # Endpoint simplificado da Datafy (associa à WABA pelo token - dispensa
         # o waba_id na URL).
         data = self.client.get("/templates")
         return [

@@ -6,7 +6,7 @@ from apps.integrations.choices import SyncRunKind
 
 class SyncRun(TenantScopedModel):
     """
-    Histórico de execuções de pull por tenant — alimenta o painel de sync
+    Histórico de execuções de pull por tenant - alimenta o painel de sync
     (RNF-7, RF-ADM-3). Criado pelas tasks de sync (fase do adapter).
     """
 

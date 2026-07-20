@@ -16,7 +16,7 @@ class AuditAction(TextChoices):
     UPDATE = "UPDATE", "Atualização"
     DELETE = "DELETE", "Exclusão"
     RESTORE = "RESTORE", "Restauração"
-    # Leitura de conteúdo clínico (LGPD §15) — usada a partir da F4
+    # Leitura de conteúdo clínico (LGPD §15) - usada a partir da F4
     READ = "READ", "Leitura"
     LOGIN = "LOGIN", "Login"
     LOGIN_FAILED = "LOGIN_FAILED", "Login falhou"
@@ -24,7 +24,7 @@ class AuditAction(TextChoices):
 
 
 class AuditLog(Model):
-    """Imutável por design — não herda de BaseModel (sem soft delete/update)."""
+    """Imutável por design - não herda de BaseModel (sem soft delete/update)."""
 
     user = ForeignKey(
         "accounts.User",

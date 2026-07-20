@@ -80,7 +80,7 @@ class Appointment(TenantScopedModel):
         verbose_name="Status cru do EHR",
         max_length=8,
         blank=True,
-        help_text="Código numérico observado (10, 81, 90, 100…) — P4.",
+        help_text="Código numérico observado (10, 81, 90, 100…) - P4.",
     )
     remotely = BooleanField(verbose_name="Remoto", default=False)
     external_id = CharField(verbose_name="ID no EHR", max_length=64, blank=True)
@@ -104,7 +104,7 @@ class Appointment(TenantScopedModel):
         ]
 
     def __str__(self):
-        return f"{self.patient} — {self.starts_at:%d/%m/%Y %H:%M}"
+        return f"{self.patient} - {self.starts_at:%d/%m/%Y %H:%M}"
 
     @property
     def counts_for_last_appointment(self) -> bool:

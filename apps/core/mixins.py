@@ -13,7 +13,7 @@ class AuditMixin:
     atualização e exclusão no log de auditoria.
 
     Coopera com a cadeia de `perform_*` (chama `super()`), então compõe com
-    o escopo por clínica — a injeção da clínica ativa no create continua
+    o escopo por clínica - a injeção da clínica ativa no create continua
     acontecendo no viewset escopado.
 
     Uso:
@@ -46,7 +46,7 @@ class AuditMixin:
         )
 
     def perform_update(self, serializer):
-        # Snapshot ANTES do save — apenas dos campos que serão alterados
+        # Snapshot ANTES do save - apenas dos campos que serão alterados
         changed_fields = list(serializer.validated_data.keys())
         before = snapshot_instance(serializer.instance, fields=changed_fields)
 
@@ -68,7 +68,7 @@ class AuditMixin:
         )
 
     def perform_destroy(self, instance):
-        # Snapshot completo ANTES de deletar — depois o objeto pode ficar inacessível
+        # Snapshot completo ANTES de deletar - depois o objeto pode ficar inacessível
         before = snapshot_instance(instance)
         resource_id = instance.pk
 
@@ -95,7 +95,7 @@ class ProtectRelationsMixin:
         class TagViewSet(ProtectRelationsMixin, AuditMixin, ClinicScopedModelViewSet):
             protect_on_delete = {"patient_tags": "atribuição"}  # related_name -> rótulo
 
-    Desativar continua liberado — só o excluir é bloqueado.
+    Desativar continua liberado - só o excluir é bloqueado.
     """
 
     # related_name (reverso) -> rótulo legível no singular
@@ -126,7 +126,7 @@ class SoftDeleteMixin:
 
     Permissão configurável por `restore_permission_classes` (default: admin da
     plataforma; em recursos de clínica, use `[IsClinicManager]`). Em viewsets
-    escopados a busca respeita a clínica ativa — sem restore cross-tenant.
+    escopados a busca respeita a clínica ativa - sem restore cross-tenant.
     """
 
     restore_permission_classes = [IsPlatformAdmin]

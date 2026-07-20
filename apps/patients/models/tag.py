@@ -1,11 +1,4 @@
-from django.db.models import (
-    CASCADE,
-    BigIntegerField,
-    CharField,
-    ForeignKey,
-    Q,
-    UniqueConstraint,
-)
+from django.db.models import CASCADE, BigIntegerField, CharField, ForeignKey, Q, UniqueConstraint
 
 from apps.core.choices import SyncStatus
 from apps.core.models import BaseModel, TenantScopedModel
@@ -28,7 +21,7 @@ class Tag(TenantScopedModel):
         null=True,
         blank=True,
         help_text=(
-            "Bit da tag no EHR — chega a 2^62. BigInteger é exato e suficiente: "
+            "Bit da tag no EHR - chega a 2^62. BigInteger é exato e suficiente: "
             "a vSaúde (.NET) usa long signed de 64 bits, teto em 2^62."
         ),
     )
@@ -55,7 +48,7 @@ class Tag(TenantScopedModel):
 
 
 class PatientTag(BaseModel):
-    """Atribuição de tag a paciente — bidirecional assíncrona com o EHR."""
+    """Atribuição de tag a paciente - bidirecional assíncrona com o EHR."""
 
     patient = ForeignKey(
         "patients.Patient",
@@ -86,7 +79,7 @@ class PatientTag(BaseModel):
         verbose_name = "Tag do paciente"
         verbose_name_plural = "Tags dos pacientes"
         constraints = [
-            # M5 — unicidade entre vivos: o diff do sync pressupõe 1 atribuição por par
+            # M5 - unicidade entre vivos: o diff do sync pressupõe 1 atribuição por par
             UniqueConstraint(
                 fields=["patient", "tag"],
                 condition=Q(deleted_at__isnull=True),

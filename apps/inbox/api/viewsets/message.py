@@ -1,9 +1,5 @@
 from django.utils import timezone
-from rest_framework.mixins import (
-    CreateModelMixin,
-    ListModelMixin,
-    RetrieveModelMixin,
-)
+from rest_framework.mixins import CreateModelMixin, ListModelMixin, RetrieveModelMixin
 
 from apps.core.api.viewsets import ClinicScopedMixin
 from apps.core.api.viewsets.base import BaseGenericViewSet
@@ -23,7 +19,7 @@ class MessageViewSet(
     BaseGenericViewSet,
 ):
     """
-    Thread de mensagens (RF-INB-2). Somente listar/ver/criar — mensagens são
+    Thread de mensagens (RF-INB-2). Somente listar/ver/criar - mensagens são
     imutáveis após criadas. Filtre por `?conversation=<id>`.
 
     Na Fatia A o create apenas PERSISTE a mensagem do atendente (OUT/AGENT);

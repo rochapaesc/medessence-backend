@@ -9,7 +9,7 @@ from apps.scheduling.models import CareUnit, InsuranceCompany, Practitioner, Pro
 
 
 class PractitionerViewSet(ClinicScopedReadOnlyViewSet):
-    """Catálogo de profissionais — alimenta filtros e o form de agendamento."""
+    """Catálogo de profissionais - alimenta filtros e o form de agendamento."""
 
     model = Practitioner
     serializer_class = PractitionerSerializer

@@ -86,7 +86,7 @@ class PatientQuerySet(SoftDeleteQuerySet):
     ) -> dict:
         """
         Contadores (RF-PAC-1/RF-DSH-1). `to_reactivate` (lapsado) = inativo que
-        JÁ compareceu antes — exclui quem nunca teve consulta (novo/sem
+        JÁ compareceu antes - exclui quem nunca teve consulta (novo/sem
         histórico), removendo o viés no número de reativação. Por isso
         `active + inactive = total`, mas `to_reactivate ≤ inactive`.
         """
@@ -124,7 +124,7 @@ class Patient(TenantScopedModel):
         max_length=32,
         blank=True,
         db_index=True,
-        help_text="personalIdentifier do EHR — pode ser CPF, DNI ou passaporte.",
+        help_text="personalIdentifier do EHR - pode ser CPF, DNI ou passaporte.",
     )
     birth_date = DateField(verbose_name="Nascimento", null=True, blank=True)
     gender = CharField(
@@ -136,7 +136,7 @@ class Patient(TenantScopedModel):
         max_length=20,
         blank=True,
         db_index=True,
-        help_text="E.164 — vincula o Contact do WhatsApp.",
+        help_text="E.164 - vincula o Contact do WhatsApp.",
     )
     city = CharField(verbose_name="Cidade", max_length=120, blank=True)
     state = CharField(verbose_name="UF", max_length=2, blank=True)
@@ -161,7 +161,7 @@ class Patient(TenantScopedModel):
         null=True,
         blank=True,
         db_index=True,
-        help_text="Denormalizado da agenda — deriva o status ativo/inativo (90 dias).",
+        help_text="Denormalizado da agenda - deriva o status ativo/inativo (90 dias).",
     )
     next_appointment_at = DateTimeField(
         verbose_name="Próxima consulta",
@@ -169,7 +169,7 @@ class Patient(TenantScopedModel):
         blank=True,
         db_index=True,
         help_text=(
-            "Denormalizado da agenda — próxima consulta futura (não cancelada). "
+            "Denormalizado da agenda - próxima consulta futura (não cancelada). "
             "Um retorno agendado mantém o paciente ativo, sem viés de reativação."
         ),
     )

@@ -13,6 +13,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='patient',
             name='next_appointment_at',
-            field=models.DateTimeField(blank=True, db_index=True, help_text='Denormalizado da agenda — próxima consulta futura (não cancelada). Um retorno agendado mantém o paciente ativo, sem viés de reativação.', null=True, verbose_name='Próxima consulta'),
+            field=models.DateTimeField(blank=True, db_index=True, help_text='Denormalizado da agenda - próxima consulta futura (não cancelada). Um retorno agendado mantém o paciente ativo, sem viés de reativação.', null=True, verbose_name='Próxima consulta'),
         ),
     ]

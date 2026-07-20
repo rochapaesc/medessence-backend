@@ -13,6 +13,6 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='patient',
             name='last_appointment_at',
-            field=models.DateTimeField(blank=True, db_index=True, help_text='Denormalizado da agenda — deriva o status ativo/inativo (90 dias).', null=True, verbose_name='Última consulta'),
+            field=models.DateTimeField(blank=True, db_index=True, help_text='Denormalizado da agenda - deriva o status ativo/inativo (90 dias).', null=True, verbose_name='Última consulta'),
         ),
     ]

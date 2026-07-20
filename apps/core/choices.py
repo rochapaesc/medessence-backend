@@ -7,7 +7,7 @@ class SyncStatus(TextChoices):
 
     SYNCED: em dia com o EHR (ou recurso sem integração).
     PENDING: mutação local aguardando push (selo "aguardando sincronização" na UI).
-    FAILED: push esgotou os retries — visível no painel de sync.
+    FAILED: push esgotou os retries - visível no painel de sync.
     """
 
     SYNCED = "synced", "Sincronizado"

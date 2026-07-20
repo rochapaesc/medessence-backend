@@ -35,7 +35,7 @@ def make_user(email: str, **extra) -> User:
 
 @pytest.fixture
 def manager_two_clinics(db, clinic_a, clinic_b):
-    """Gestor com vínculo ativo nas duas clínicas — exige X-Clinic-Id."""
+    """Gestor com vínculo ativo nas duas clínicas - exige X-Clinic-Id."""
     user = make_user("gestor@teste.dev")
     Membership.objects.create(user=user, clinic=clinic_a, role=MembershipRole.MANAGER)
     Membership.objects.create(user=user, clinic=clinic_b, role=MembershipRole.MANAGER)
@@ -44,7 +44,7 @@ def manager_two_clinics(db, clinic_a, clinic_b):
 
 @pytest.fixture
 def manager_single_clinic(db, clinic_a):
-    """Gestor com um único vínculo — contexto auto-resolvido."""
+    """Gestor com um único vínculo - contexto auto-resolvido."""
     user = make_user("gestor.unico@teste.dev")
     Membership.objects.create(user=user, clinic=clinic_a, role=MembershipRole.MANAGER)
     return user

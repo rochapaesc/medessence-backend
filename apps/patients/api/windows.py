@@ -1,7 +1,7 @@
 """
 Janela de atividade selecionável em tempo de leitura (RF-PAC-2).
 
-O `?window=` sobrepõe a janela ativa apenas para AQUELA consulta — não altera
+O `?window=` sobrepõe a janela ativa apenas para AQUELA consulta - não altera
 a configuração da clínica (`Clinic.active_window_days`) nem do profissional.
 Valores permitidos: 3/6/12 meses (90/180/360 dias), o padrão do mercado.
 """
@@ -22,7 +22,5 @@ def parse_window(request):
     except (TypeError, ValueError):
         raise ValidationError({"window": "Janela inválida."})
     if value not in ALLOWED_WINDOWS:
-        raise ValidationError(
-            {"window": f"Janela deve ser uma de {ALLOWED_WINDOWS} dias."}
-        )
+        raise ValidationError({"window": f"Janela deve ser uma de {ALLOWED_WINDOWS} dias."})
     return value

@@ -7,7 +7,7 @@ Mapeamentos reais:
       gender int, phone com "+", address {city, state, ...},
       insurance {name}, tags = LISTA de identifiers (não bitmask) → OR;
     - Agenda (ScheduleService/GetAll): POST {from, range, showCanceled...};
-      `range` é janela-calendário (3 = mês do `from`) — a janela D-7→D+60 é
+      `range` é janela-calendário (3 = mês do `from`) - a janela D-7→D+60 é
       coberta por chamadas mensais com dedup; catálogos vêm EMBUTIDOS
       ({id, name}) em doctor/careUnit/procedure/insuranceCompany;
     - Catálogos: MedicalProcedureService (name em `description`),
@@ -99,7 +99,7 @@ class VSaudeAdapter:
         bitmask = 0
         for identifier in tag_identifiers:
             bitmask |= int(identifier)
-        # Limites dos campos do model — dado real extrapola contrato observado
+        # Limites dos campos do model - dado real extrapola contrato observado
         return EHRPatient(
             external_id=str(payload.get("id", ""))[:64],
             name=_clean_name(payload.get("name"))[:200],

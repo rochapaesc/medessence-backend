@@ -1,5 +1,5 @@
 """
-Port WhatsApp (§5) — a fronteira entre o MedEssence e qualquer provedor de
+Port WhatsApp (§5) - a fronteira entre o MedEssence e qualquer provedor de
 mensageria (Datafy é proxy da Meta Cloud API).
 
 Adapters normalizam o formato de terceiro na ENTRADA (`parse_webhook` →
@@ -64,16 +64,16 @@ class Template:
 
 @runtime_checkable
 class WhatsAppProvider(Protocol):
-    """Interface da F2 — um adapter por provedor (resolvido por canal)."""
+    """Interface da F2 - um adapter por provedor (resolvido por canal)."""
 
     def send_text(self, to: str, body: str, reply_to: str | None = None) -> SendResult:
-        """Texto livre — só válido com a janela de 24h aberta (RF-INB-3)."""
+        """Texto livre - só válido com a janela de 24h aberta (RF-INB-3)."""
         ...
 
     def send_template(
         self, to: str, name: str, language: str, components: list | None = None
     ) -> SendResult:
-        """Template aprovado — único envio permitido fora da janela de 24h."""
+        """Template aprovado - único envio permitido fora da janela de 24h."""
         ...
 
     def send_media(
@@ -85,7 +85,7 @@ class WhatsAppProvider(Protocol):
         ...
 
     def resolve_media(self, media_id: str) -> MediaURL:
-        """URL temporária (~30 dias) do ativo — para re-hospedar (RF-INB-6)."""
+        """URL temporária (~30 dias) do ativo - para re-hospedar (RF-INB-6)."""
         ...
 
     def list_templates(self) -> list[Template]:

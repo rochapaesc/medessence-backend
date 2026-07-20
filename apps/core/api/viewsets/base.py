@@ -94,7 +94,7 @@ class BaseCreateDestroyViewSet(
     RetrieveModelMixin,
 ):
     """
-    Criação, leitura e exclusão — sem update.
+    Criação, leitura e exclusão - sem update.
     Para recursos imutáveis após a criação.
     """
 

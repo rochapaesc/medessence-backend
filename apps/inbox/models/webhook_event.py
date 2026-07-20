@@ -15,7 +15,7 @@ from apps.inbox.choices import WebhookSource
 class WebhookEvent(Model):
     """
     Log CRU e imutável de todo webhook recebido, antes de qualquer parse
-    (RNF-3): permite replay e diagnóstico. Segue o padrão do `AuditLog` — NÃO
+    (RNF-3): permite replay e diagnóstico. Segue o padrão do `AuditLog` - NÃO
     herda de `BaseModel`: um log de webhook nunca é editado nem soft-deletado
     (só nasce e marca `processed_at`/`error`). Não é TenantScoped: a clínica
     pode ser nula até o processamento resolver o canal.

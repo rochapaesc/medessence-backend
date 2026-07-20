@@ -2,7 +2,7 @@
 autenticação do WebSocket (JWT + membership).
 
 Os testes exercitam o channel layer diretamente (InMemoryChannelLayer) via
-async_to_sync — sem WebSocket real, mas cobrindo notify_* → group_send, os
+async_to_sync - sem WebSocket real, mas cobrindo notify_* → group_send, os
 nomes de grupo por clínica e o gate de autenticação do middleware.
 """
 

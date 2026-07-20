@@ -10,7 +10,7 @@ from apps.inbox.models import Conversation, Message
 
 
 class MessageSerializer(ModelSerializer):
-    """Balão da thread (RF-INB-2) — leitura."""
+    """Balão da thread (RF-INB-2) - leitura."""
 
     media_url = SerializerMethodField()
 
@@ -46,7 +46,7 @@ class MessageCreateSerializer(ModelSerializer):
     PERSISTIDA como OUT/AGENT; o envio real (task `send_whatsapp_message`)
     entra na Fatia B.
 
-    Regra da janela de 24h (RF-INB-3): fora dela, só template aprovado —
+    Regra da janela de 24h (RF-INB-3): fora dela, só template aprovado -
     texto livre é recusado com erro claro.
     """
 

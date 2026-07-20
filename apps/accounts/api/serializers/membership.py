@@ -11,7 +11,7 @@ class ClinicSummarySerializer(ModelSerializer):
 
 
 class MembershipSerializer(ModelSerializer):
-    """Vínculo do usuário logado — alimenta o seletor de clínica do front."""
+    """Vínculo do usuário logado - alimenta o seletor de clínica do front."""
 
     clinic = ClinicSummarySerializer(read_only=True)
     role_display = CharField(source="get_role_display", read_only=True)

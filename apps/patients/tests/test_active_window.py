@@ -106,7 +106,7 @@ def test_atividade_da_carteira_e_relativa_ao_profissional(
     # Na clínica (90d): ativo (consulta de 10 dias atrás)
     assert api_client.get(f"{URL}counters/").data["active"] == 1
 
-    # Na carteira da Dra. A (90d, sem override): inativo — a consulta COM ELA é antiga
+    # Na carteira da Dra. A (90d, sem override): inativo - a consulta COM ELA é antiga
     carteira = api_client.get(f"{URL}counters/", {"practitioner": dra.pk})
     assert carteira.data == {"total": 1, "active": 0, "inactive": 1, "to_reactivate": 1}
 
@@ -133,22 +133,34 @@ def test_retorno_futuro_mantem_ativo_sem_vies_de_reativacao(
 
     # Lapsado: só consulta antiga (200d) → inativo COM histórico.
     Appointment.objects.create(
-        clinic=clinic_a, patient=lapsado, practitioner=dra,
-        starts_at=now - timedelta(days=200), status=AppointmentStatus.COMPLETED,
+        clinic=clinic_a,
+        patient=lapsado,
+        practitioner=dra,
+        starts_at=now - timedelta(days=200),
+        status=AppointmentStatus.COMPLETED,
     )
     # Com retorno: consulta antiga (200d) + retorno agendado (futuro) → ativo.
     Appointment.objects.create(
-        clinic=clinic_a, patient=com_retorno, practitioner=dra,
-        starts_at=now - timedelta(days=200), status=AppointmentStatus.COMPLETED,
+        clinic=clinic_a,
+        patient=com_retorno,
+        practitioner=dra,
+        starts_at=now - timedelta(days=200),
+        status=AppointmentStatus.COMPLETED,
     )
     Appointment.objects.create(
-        clinic=clinic_a, patient=com_retorno, practitioner=dra,
-        starts_at=now + timedelta(days=7), status=AppointmentStatus.SCHEDULED,
+        clinic=clinic_a,
+        patient=com_retorno,
+        practitioner=dra,
+        starts_at=now + timedelta(days=7),
+        status=AppointmentStatus.SCHEDULED,
     )
     # Novo: só consulta futura, sem histórico → ativo, fora da reativação.
     Appointment.objects.create(
-        clinic=clinic_a, patient=novo_agendado, practitioner=dra,
-        starts_at=now + timedelta(days=3), status=AppointmentStatus.SCHEDULED,
+        clinic=clinic_a,
+        patient=novo_agendado,
+        practitioner=dra,
+        starts_at=now + timedelta(days=3),
+        status=AppointmentStatus.SCHEDULED,
     )
     api_client.force_authenticate(manager_single_clinic)
 

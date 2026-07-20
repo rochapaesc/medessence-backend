@@ -37,7 +37,7 @@ class Clinic(BaseModel):
     )
     ehr_credentials = EncryptedJSONField(
         verbose_name="Credenciais do EHR",
-        help_text='Ex.: {"api_key": "..."} — cifrado em repouso.',
+        help_text='Ex.: {"api_key": "..."} - cifrado em repouso.',
     )
     ehr_external_tenant_id = CharField(
         verbose_name="ID externo no EHR",

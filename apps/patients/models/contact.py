@@ -1,18 +1,11 @@
-from django.db.models import (
-    CASCADE,
-    BooleanField,
-    CharField,
-    ForeignKey,
-    Q,
-    UniqueConstraint,
-)
+from django.db.models import CASCADE, BooleanField, CharField, ForeignKey, Q, UniqueConstraint
 
 from apps.core.models import BaseModel, TenantScopedModel
 
 
 class Contact(TenantScopedModel):
     """
-    Um número de WhatsApp; pode atender N pacientes (RF-PAC-7 — responsável
+    Um número de WhatsApp; pode atender N pacientes (RF-PAC-7 - responsável
     familiar). O vínculo com Patient é N:N via PatientContact.
     """
 
@@ -59,7 +52,7 @@ class PatientContact(BaseModel):
         verbose_name = "Vínculo contato-paciente"
         verbose_name_plural = "Vínculos contato-paciente"
         constraints = [
-            # M4 — unicidade entre registros vivos (soft delete não bloqueia recriação)
+            # M4 - unicidade entre registros vivos (soft delete não bloqueia recriação)
             UniqueConstraint(
                 fields=["patient", "contact"],
                 condition=Q(deleted_at__isnull=True),

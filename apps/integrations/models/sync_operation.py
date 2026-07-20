@@ -14,7 +14,7 @@ from apps.tenants.choices import EHRProviderKind
 
 class SyncOperation(TenantScopedModel):
     """
-    Fila de write-back para o EHR (§10.2) — a razão de o sistema seguir
+    Fila de write-back para o EHR (§10.2) - a razão de o sistema seguir
     usável com o EHR fora do ar (RNF-3). Mutação local em recurso de dono
     compartilhado/EHR cria uma operação PENDING; a task processa com retry
     exponencial; falha definitiva fica FAILED, visível no painel de sync.
@@ -41,7 +41,7 @@ class SyncOperation(TenantScopedModel):
     local_id = BigIntegerField(verbose_name="ID local")
     payload = JSONField(
         verbose_name="Payload",
-        help_text="Formato NOSSO — o adapter desnormaliza na saída.",
+        help_text="Formato NOSSO - o adapter desnormaliza na saída.",
     )
     status = CharField(
         verbose_name="Status",

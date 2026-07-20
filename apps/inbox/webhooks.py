@@ -3,7 +3,7 @@ Endpoint de webhook do WhatsApp (§7).
 
 Sem verify token da Meta: a URL por canal é a credencial
 (`/webhooks/whatsapp/{uuid}/{secret}/`). Responde 200 IMEDIATO e joga o
-processamento na fila (RNF-4) — o payload cru fica em WebhookEvent para replay.
+processamento na fila (RNF-4) - o payload cru fica em WebhookEvent para replay.
 """
 
 import hmac

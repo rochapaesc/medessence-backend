@@ -1,10 +1,5 @@
 from django.conf import settings
-from django.db.models import (
-    SET_NULL,
-    CharField,
-    ForeignKey,
-    PositiveSmallIntegerField,
-)
+from django.db.models import SET_NULL, CharField, ForeignKey, PositiveSmallIntegerField
 
 from apps.core.models import TenantScopedModel
 
@@ -26,7 +21,7 @@ class Practitioner(TenantScopedModel):
         verbose_name="Registro (CRM)",
         max_length=120,
         blank=True,
-        help_text="licenceNumber do EHR — pode incluir RQE e texto livre.",
+        help_text="licenceNumber do EHR - pode incluir RQE e texto livre.",
     )
     external_id = CharField(verbose_name="ID no EHR", max_length=64, blank=True)
     user = ForeignKey(
@@ -36,7 +31,7 @@ class Practitioner(TenantScopedModel):
         blank=True,
         on_delete=SET_NULL,
         related_name="practitioners",
-        help_text="Liga o profissional ao login — carteira do médico.",
+        help_text="Liga o profissional ao login - carteira do médico.",
     )
 
     class Meta:

@@ -6,7 +6,7 @@ from apps.patients.models import Tag
 class TagSerializer(ModelSerializer):
     """
     Catálogo de tags da clínica. `sync_scope`/`identifier`/`external_id` são
-    controlados pelo motor de sync (fase do adapter) — read-only na API.
+    controlados pelo motor de sync (fase do adapter) - read-only na API.
     """
 
     class Meta:

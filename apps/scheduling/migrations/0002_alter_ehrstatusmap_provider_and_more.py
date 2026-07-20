@@ -18,6 +18,6 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='practitioner',
             name='license_number',
-            field=models.CharField(blank=True, help_text='licenceNumber do EHR — pode incluir RQE e texto livre.', max_length=120, verbose_name='Registro (CRM)'),
+            field=models.CharField(blank=True, help_text='licenceNumber do EHR - pode incluir RQE e texto livre.', max_length=120, verbose_name='Registro (CRM)'),
         ),
     ]

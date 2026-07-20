@@ -2,7 +2,7 @@ from django.db.models import TextChoices
 
 
 class AppointmentStatus(TextChoices):
-    """Status normalizado — o código cru do EHR fica em `source_status` e a
+    """Status normalizado - o código cru do EHR fica em `source_status` e a
     tradução é administrável via EHRStatusMap (P4: calibrar 10/81/90/100)."""
 
     SCHEDULED = "scheduled", "Agendada"
