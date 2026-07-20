@@ -65,7 +65,10 @@ def ehr_clinic(db):
             provider=EHRProviderKind.FAKE, source_status=source, status=status
         )
     return Clinic.objects.create(
-        name="Clínica Integrada", slug="clinica-integrada", ehr_provider=EHRProviderKind.FAKE
+        name="Clínica Integrada",
+        slug="clinica-integrada",
+        ehr_provider=EHRProviderKind.FAKE,
+        ehr_push_enabled=True,  # testes exercitam o write-through
     )
 
 
@@ -364,3 +367,16 @@ def test_pull_catalogs_traz_profissionais_e_ofertas(ehr_clinic):
         procedure__external_id="fake-proc-1",
     ).get()
     assert str(offer.price) == "400.00"  # preço por profissional p/ o form
+
+
+def test_push_desligado_nao_enfileira_mesmo_com_ehr(api_client, ehr_clinic, ehr_manager):
+    """Trava da fase só-leitura: provider configurado mas push OFF → local puro."""
+    ehr_clinic.ehr_push_enabled = False
+    ehr_clinic.save(update_fields=["ehr_push_enabled"])
+    api_client.force_authenticate(ehr_manager)
+
+    response = api_client.post(PATIENTS_URL, {"name": "Paciente Só Leitura"}, format="json")
+    assert response.status_code == 201
+    patient = Patient.objects.get(pk=response.data["id"])
+    assert patient.sync_status == SyncStatus.SYNCED  # sem selo pendente
+    assert SyncOperation.objects.count() == 0  # nada vai ao EHR

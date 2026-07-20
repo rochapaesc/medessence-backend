@@ -1,4 +1,4 @@
-from django.db.models import CharField, PositiveSmallIntegerField, SlugField
+from django.db.models import BooleanField, CharField, PositiveSmallIntegerField, SlugField
 
 from apps.core.fields import EncryptedJSONField
 from apps.core.models import BaseModel
@@ -43,6 +43,15 @@ class Clinic(BaseModel):
         verbose_name="ID externo no EHR",
         max_length=64,
         blank=True,
+    )
+    ehr_push_enabled = BooleanField(
+        verbose_name="Escrita no EHR habilitada",
+        default=False,
+        help_text=(
+            "Trava de segurança do write-through: desligada, mutações locais "
+            "NÃO são empurradas ao EHR (fase de validação só-leitura). O pull "
+            "continua normal. Ligar só depois de validar a leitura."
+        ),
     )
 
     class Meta:

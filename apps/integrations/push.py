@@ -35,10 +35,11 @@ MAX_ATTEMPTS = 8
 
 def enqueue_push(clinic, resource_type: str, local_id: int, payload: dict):
     """
-    Enfileira uma operação de push. Clínica sem EHR → None (standalone:
-    a mutação local é o fim do fluxo). Dispara o processamento pós-commit.
+    Enfileira uma operação de push. Clínica sem EHR ou com a escrita
+    DESLIGADA (`ehr_push_enabled=False`, fase de validação só-leitura) →
+    None: a mutação local é o fim do fluxo. Dispara o push pós-commit.
     """
-    if not clinic.ehr_provider:
+    if not clinic.ehr_provider or not clinic.ehr_push_enabled:
         return None
     operation = SyncOperation.objects.create(
         clinic=clinic,
