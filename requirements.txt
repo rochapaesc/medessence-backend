@@ -70,7 +70,9 @@ uritemplate==4.2.0
 urllib3==2.7.0
 vine==5.1.0
 wcwidth==0.6.0
-uvicorn==0.34.0
+uvicorn[standard]==0.34.0  # [standard] traz websockets/uvloop/httptools (WS do Channels)
+uvicorn-worker==0.3.0
 pytest==8.4.2
 pytest-django==4.11.1
-nh3==0.2.18
+nh3==0.2.18 
+whitenoise==6.12.0  # serve /static/ sob ASGI em produção (sem nginx)

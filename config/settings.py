@@ -26,7 +26,7 @@ DJANGO_APPS = [
 ]
 
 THIRD_PART_APPS = [
-    "channels",  # tempo real (§12) — habilita o ASGI_APPLICATION do Channels
+    "channels",  # tempo real (§12) - habilita o ASGI_APPLICATION do Channels
     "rest_framework",
     "django_filters",
     "rest_framework_simplejwt",
@@ -153,7 +153,7 @@ LOGGING = {
         "level": LOG_LEVEL,
     },
     "loggers": {
-        # Django interno — warnings e acima para evitar ruído
+        # Django interno - warnings e acima para evitar ruído
         "django": {
             "handlers": ["console"],
             "level": "INFO",
@@ -208,8 +208,11 @@ LOGGING = {
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Serve /static/ do STATIC_ROOT sob qualquer servidor ASGI/WSGI (produção
+    # sem nginx). Em DEBUG quem serve é o ASGIStaticFilesHandler do asgi.py,
+    # que lê direto das pastas dos apps (sem precisar de collectstatic).
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    # CorsMiddleware precisa vir ANTES do CommonMiddleware
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -282,13 +285,23 @@ MEDIA_URL = "/media/"
 
 MEDIA_ROOT = BASE_DIR / "media/"
 
+# WhiteNoise: comprime (gzip/brotli) e versiona os estáticos com hash no nome,
+# permitindo cache imutável de longo prazo. Aplica-se em produção (o manifesto
+# é gerado no collectstatic); em DEBUG quem serve é o ASGIStaticFilesHandler.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "accounts.User"
 LOGIN_URL = "/secure-admin/login/"
 LOGOUT_REDIRECT_URL = "swagger-ui"
 
-# Chave Fernet (base64, 32 bytes) usada pelo EncryptedJSONField — credenciais de
+# Chave Fernet (base64, 32 bytes) usada pelo EncryptedJSONField - credenciais de
 # integração (Clinic.ehr_credentials, Channel.credentials) cifradas em repouso.
 # Gere com:
 #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -319,7 +332,7 @@ CACHES = {
     },
 }
 
-# Channel layer do tempo real (§12) — mesmo Redis, DB separado (/1) do
+# Channel layer do tempo real (§12) - mesmo Redis, DB separado (/1) do
 # cache/broker (/0). O front recebe eventos; a fonte da verdade é a API REST.
 CHANNEL_LAYERS = {
     "default": {
@@ -368,7 +381,7 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.integrations.tasks.schedule_daily_syncs",
         "schedule": crontab(hour=3, minute=0),
     },
-    # Cache de templates aprovados do WhatsApp (§13) — a cada 6h.
+    # Cache de templates aprovados do WhatsApp (§13) - a cada 6h.
     "refresh-wa-templates": {
         "task": "apps.inbox.tasks.refresh_wa_templates",
         "schedule": crontab(minute=0, hour="*/6"),
@@ -391,10 +404,10 @@ SERVER_EMAIL = config("SERVER_EMAIL", default="noreply@mail.licittudo.com.br")
 ASAAS_API_KEY = "$" + config("ASAAS_API_KEY", default="")
 ASAAS_API_URL = config("ASAAS_API_URL", default="https://api-sandbox.asaas.com")
 
-# Base URL padrão da vSaúde — pode ser sobrescrita por clínica em
+# Base URL padrão da vSaúde - pode ser sobrescrita por clínica em
 # Clinic.ehr_credentials["base_url"] (instalações self-hosted).
 VSAUDE_API_URL = config("VSAUDE_API_URL", default="")
 
-# Base URL padrão da Datafy — sobrescrita por canal em
+# Base URL padrão da Datafy - sobrescrita por canal em
 # Channel.credentials["base_url"]. A calibrar com número/WABA real.
 DATAFY_API_URL = config("DATAFY_API_URL", default="")

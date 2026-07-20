@@ -1,11 +1,10 @@
 """
-ASGI do projeto — HTTP (Django) + WebSocket (Channels, §12).
+ASGI config for config project.
 
-O projeto já nasceu ASGI; a Fatia C só liga o roteamento WebSocket. Em
-produção rode um servidor ASGI (uvicorn/gunicorn+UvicornWorker):
+It exposes the ASGI callable as a module-level variable named ``application``.
 
-    uvicorn config.asgi:application
-    gunicorn config.asgi:application -k uvicorn.workers.UvicornWorker
+For more information on this file, see
+https://docs.djangoproject.com/en/5.2/howto/deployment/asgi/
 """
 
 import os
@@ -18,13 +17,19 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django_asgi_app = get_asgi_application()
 
 from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
+from django.conf import settings  # noqa: E402
+from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler  # noqa: E402
 
 from apps.inbox.routing import websocket_urlpatterns  # noqa: E402
 from apps.inbox.ws_auth import JWTClinicMiddleware  # noqa: E402
 
+# Em DEBUG replicamos o runserver (serve estáticos pelos finders); em produção
+# quem serve é o WhiteNoise/nginx.
+http_app = ASGIStaticFilesHandler(django_asgi_app) if settings.DEBUG else django_asgi_app
+
 application = ProtocolTypeRouter(
     {
-        "http": django_asgi_app,
+        "http": http_app,
         "websocket": JWTClinicMiddleware(URLRouter(websocket_urlpatterns)),
     }
 )
