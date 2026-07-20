@@ -13,13 +13,23 @@ atribuições espelhadas (origin=EHR), preservando as locais.
 import logging
 from datetime import timedelta
 
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.integrations.choices import SyncRunKind
 from apps.integrations.ehr.registry import get_ehr_provider
 from apps.integrations.models import SyncRun
 from apps.patients.choices import TagOrigin, TagSyncScope
-from apps.patients.models import Contact, Patient, PatientContact, PatientTag, Tag
+from apps.patients.models import (
+    ClinicalEntry,
+    ClinicalOrigin,
+    Contact,
+    Patient,
+    PatientContact,
+    PatientTag,
+    PrescriptionModel,
+    Tag,
+)
 from apps.scheduling.choices import AppointmentStatus
 from apps.scheduling.models import (
     Appointment,
@@ -36,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 APPOINTMENTS_WINDOW_PAST = timedelta(days=7)  # janela deslizante D-7 → D+60
 APPOINTMENTS_WINDOW_FUTURE = timedelta(days=60)
+# 1ª sincronização (clínica sem espelho de agenda): busca TODO o histórico
+# até este limite - dali em diante a janela deslizante cobre o que muda.
+APPOINTMENTS_BACKFILL = timedelta(days=365 * 5)
 
 
 def run_sync(clinic, kind: str, executor) -> SyncRun:
@@ -87,9 +100,33 @@ def pull_catalogs(clinic) -> SyncRun:
         )
         stats["insurances"] = _upsert_insurances(clinic, provider.list_insurance_companies())
         stats["professionals"] = _upsert_professionals(clinic, provider)
+        stats["prescription_models"] = _upsert_prescription_models(clinic, provider)
         return stats
 
     return run_sync(clinic, SyncRunKind.CATALOGS, _execute)
+
+
+def _upsert_prescription_models(clinic, provider) -> dict:
+    created = updated = 0
+    models = provider.list_prescription_models()
+    for model in models:
+        _, was_created = PrescriptionModel.all_objects.update_or_create(
+            clinic=clinic,
+            external_id=model.external_id,
+            defaults={
+                "name": model.name,
+                "content": model.content,
+                "hint": model.hint,
+                "medications": model.medications,
+                "smart": model.smart,
+                "special_prescription": model.special_prescription,
+                "origin": ClinicalOrigin.EHR,
+                "deleted_at": None,
+            },
+        )
+        created += was_created
+        updated += not was_created
+    return {"fetched": len(models), "created": created, "updated": updated}
 
 
 def _upsert_professionals(clinic, provider) -> dict:
@@ -124,6 +161,8 @@ def _upsert_professionals(clinic, provider) -> dict:
                 defaults={
                     "duration_min": offer.duration_min,
                     "price": offer.price or None,
+                    "description": offer.description,
+                    "comments": offer.comments,
                     "allow_online": offer.allow_online,
                     "is_active": offer.is_active,
                 },
@@ -280,6 +319,12 @@ def upsert_patient(clinic, ehr_patient) -> tuple[Patient, bool]:
             "state": ehr_patient.state,
             "address": ehr_patient.address,
             "profession": ehr_patient.profession,
+            "blood_type": ehr_patient.blood_type,
+            "weight_kg": ehr_patient.weight_kg or None,
+            "height_cm": ehr_patient.height_cm or None,
+            "guardians": ehr_patient.guardians,
+            "emergency_contacts": ehr_patient.emergency_contacts,
+            "birth_info": ehr_patient.birth_info,
             "comments_html": ehr_patient.comments_html,
             "insurance_name": ehr_patient.insurance_name,
             "source": PatientSource.EHR,
@@ -344,7 +389,16 @@ def _sync_ehr_tag_assignments(clinic, patient, bitmask: int) -> None:
 def pull_appointments(clinic, start=None, end=None) -> SyncRun:
     provider = get_ehr_provider(clinic)
     today = timezone.now().date()
-    start = start or (today - APPOINTMENTS_WINDOW_PAST)
+    is_backfill = False
+    if start is None:
+        # 1ª sincronização pega TODO o histórico (uma única vez, marcada no
+        # SyncRun); depois, só a janela deslizante - dados que podem mudar
+        # + eventos futuros.
+        already_backfilled = SyncRun.objects.filter(
+            clinic=clinic, kind=SyncRunKind.APPOINTMENTS, stats__backfill=True
+        ).exists()
+        is_backfill = not already_backfilled
+        start = today - (APPOINTMENTS_BACKFILL if is_backfill else APPOINTMENTS_WINDOW_PAST)
     end = end or (today + APPOINTMENTS_WINDOW_FUTURE)
 
     def _execute():
@@ -359,6 +413,8 @@ def pull_appointments(clinic, start=None, end=None) -> SyncRun:
             "patients_fetched": 0,
             "unmapped_statuses": [],
         }
+        if is_backfill:
+            stats["backfill"] = True
 
         for ehr_appointment in provider.list_appointments(start, end):
             stats["fetched"] += 1
@@ -427,6 +483,8 @@ def pull_appointments(clinic, start=None, end=None) -> SyncRun:
                     "status": status,
                     "source_status": ehr_appointment.source_status,
                     "remotely": ehr_appointment.remotely,
+                    "price": ehr_appointment.price or None,
+                    "comments_html": ehr_appointment.comments_html,
                     "raw_payload": ehr_appointment.raw,
                     "deleted_at": None,
                 },
@@ -494,11 +552,79 @@ def _insurance_plan_from_embed(clinic, ehr_appointment):
 
 
 # --------------------------------------------------------------------- #
+# Espelho clínico (docs/vsaude-clinico.md) - somente leitura (§10.1)
+# --------------------------------------------------------------------- #
+
+MEDICAL_RECORDS_SWEEP_LIMIT = 200  # varredura de fundo: prioriza os mais quentes
+
+
+def pull_medical_records(clinic, patient=None) -> SyncRun:
+    """
+    Linha do tempo clínica: sob demanda (`patient`) ao abrir a ficha, ou
+    varredura priorizando pacientes com consulta recente/futura (limite por
+    execução - a fila anda a cada rodada).
+    """
+    provider = get_ehr_provider(clinic)
+
+    def _execute():
+        stats = {"patients": 0, "fetched": 0, "created": 0, "updated": 0}
+        if patient is not None:
+            targets = [patient]
+        else:
+            cutoff = timezone.now() - timedelta(days=90)
+            targets = list(
+                Patient.objects.filter(clinic=clinic)
+                .exclude(external_id="")
+                # consulta recente OU retorno marcado - os "mais quentes"
+                .filter(Q(last_appointment_at__gte=cutoff) | Q(next_appointment_at__isnull=False))
+                .order_by("-last_appointment_at")[:MEDICAL_RECORDS_SWEEP_LIMIT]
+            )
+
+        for target in targets:
+            entries = provider.get_clinical_entries(target.external_id)
+            stats["patients"] += 1
+            for entry in entries:
+                practitioner = None
+                if entry.creator_external_id:
+                    practitioner = Practitioner.objects.filter(
+                        clinic=clinic, external_id=entry.creator_external_id
+                    ).first()
+                _, was_created = ClinicalEntry.all_objects.update_or_create(
+                    clinic=clinic,
+                    source=entry.source,
+                    external_id=entry.external_id,
+                    defaults={
+                        "patient": target,
+                        "practitioner": practitioner,
+                        "kind": entry.kind,
+                        "origin": ClinicalOrigin.EHR,
+                        "date": entry.date or timezone.now(),
+                        "text": entry.text,
+                        "title": entry.title,
+                        "description": entry.description,
+                        "document_url": entry.document_url,
+                        "form_answers": entry.form_answers,
+                        "creator_name": entry.creator_name,
+                        "creator_license": entry.creator_license,
+                        "raw_payload": entry.raw,
+                        "deleted_at": None,
+                    },
+                )
+                stats["fetched"] += 1
+                stats["created"] += was_created
+                stats["updated"] += not was_created
+        return stats
+
+    return run_sync(clinic, SyncRunKind.MEDICAL_RECORDS, _execute)
+
+
+# --------------------------------------------------------------------- #
 
 PULLS = {
     "catalogs": pull_catalogs,
     "patients": pull_patients,
     "appointments": pull_appointments,
+    "medical_records": pull_medical_records,
 }
 
 

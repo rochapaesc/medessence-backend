@@ -6,6 +6,7 @@ from django.db.models import (
     ForeignKey,
     JSONField,
     PositiveSmallIntegerField,
+    TextField,
     UniqueConstraint,
 )
 
@@ -80,6 +81,12 @@ class PractitionerProcedure(TenantScopedModel):
     duration_min = PositiveSmallIntegerField(verbose_name="Duração (min)", null=True, blank=True)
     price = DecimalField(
         verbose_name="Preço", max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    description = TextField(
+        verbose_name="Descrição", blank=True, help_text="HTML sanitizado do EHR."
+    )
+    comments = TextField(
+        verbose_name="Orientações", blank=True, help_text="Instruções pós-agendamento."
     )
     allow_online = BooleanField(verbose_name="Agenda online", default=False)
     is_active = BooleanField(verbose_name="Ativo", default=True)

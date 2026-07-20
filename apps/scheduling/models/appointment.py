@@ -4,10 +4,12 @@ from django.db.models import (
     BooleanField,
     CharField,
     DateTimeField,
+    DecimalField,
     ForeignKey,
     JSONField,
     PositiveSmallIntegerField,
     Q,
+    TextField,
     UniqueConstraint,
 )
 
@@ -83,6 +85,19 @@ class Appointment(TenantScopedModel):
         help_text="Código numérico observado (10, 81, 90, 100…) - P4.",
     )
     remotely = BooleanField(verbose_name="Remoto", default=False)
+    price = DecimalField(
+        verbose_name="Preço",
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Preenchido do procedimento do profissional; editável no form.",
+    )
+    comments_html = TextField(
+        verbose_name="Observações",
+        blank=True,
+        help_text="HTML sanitizado - vai no `comments` do EHR.",
+    )
     external_id = CharField(verbose_name="ID no EHR", max_length=64, blank=True)
     raw_payload = JSONField(verbose_name="Payload cru", default=dict, blank=True)
     sync_status = CharField(

@@ -4,6 +4,7 @@ from django.db.models import (
     CharField,
     DateField,
     DateTimeField,
+    DecimalField,
     EmailField,
     JSONField,
     Max,
@@ -142,6 +143,28 @@ class Patient(TenantScopedModel):
     state = CharField(verbose_name="UF", max_length=2, blank=True)
     address = JSONField(verbose_name="Endereço", default=dict, blank=True)
     profession = CharField(verbose_name="Profissão", max_length=120, blank=True)
+    blood_type = CharField(verbose_name="Tipo sanguíneo", max_length=3, blank=True)
+    weight_kg = DecimalField(
+        verbose_name="Peso (kg)", max_digits=5, decimal_places=1, null=True, blank=True
+    )
+    height_cm = DecimalField(
+        verbose_name="Altura (cm)", max_digits=5, decimal_places=1, null=True, blank=True
+    )
+    guardians = JSONField(
+        verbose_name="Responsáveis",
+        default=dict,
+        blank=True,
+        help_text='{"mother": {"name", "phone"}, "father": ..., "partner": ..., "sponsor": ...}',
+    )
+    emergency_contacts = JSONField(
+        verbose_name="Contatos de emergência", default=list, blank=True
+    )
+    birth_info = JSONField(
+        verbose_name="Dados do nascimento",
+        default=dict,
+        blank=True,
+        help_text="Pediatria: idade gestacional, peso/altura ao nascer, perímetro cefálico, ordem.",
+    )
     comments_html = TextField(
         verbose_name="Observações",
         blank=True,

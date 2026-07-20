@@ -29,11 +29,14 @@ from django.utils import timezone as dj_timezone
 from apps.core.html import sanitize_html
 from apps.integrations.ehr.base import (
     EHRAppointment,
+    EHRAvailability,
     EHRCareUnit,
+    EHRClinicalEntry,
     EHRInsuranceCompany,
     EHRInsurancePlan,
     EHRPage,
     EHRPatient,
+    EHRPrescriptionModel,
     EHRProcedure,
     EHRProfessional,
     EHRProfessionalProcedure,
@@ -126,6 +129,27 @@ class VSaudeAdapter:
         parsed = self._parse_datetime(value)
         return parsed.date() if parsed else None
 
+    @staticmethod
+    def _decimal_str(value) -> str:
+        """'115' / 115 / '115,5' → '115.5'; lixo → vazio."""
+        if value in (None, ""):
+            return ""
+        try:
+            return str(float(str(value).replace(",", ".")))
+        except (TypeError, ValueError):
+            return ""
+
+    def _normalize_guardians(self, payload: dict) -> dict:
+        guardians = {}
+        for role in ("mother", "father", "partner", "sponsor"):
+            person = payload.get(role) or {}
+            if person.get("name"):
+                guardians[role] = {
+                    "name": _clean_name(person.get("name"))[:200],
+                    "phone": _clean_phone(person.get("phoneNumber"))[:20],
+                }
+        return guardians
+
     def _normalize_patient(self, payload: dict) -> EHRPatient:
         address = payload.get("address") or {}
         insurance = payload.get("insurance") or {}
@@ -135,6 +159,12 @@ class VSaudeAdapter:
             bitmask |= int(identifier)
         # Limites dos campos do model - dado real extrapola contrato observado
         return EHRPatient(
+            blood_type=(payload.get("bloodType") or "")[:3],
+            weight_kg=self._decimal_str(payload.get("weight")),
+            height_cm=self._decimal_str(payload.get("height")),
+            guardians=self._normalize_guardians(payload),
+            emergency_contacts=payload.get("emergencyContacts") or [],
+            birth_info=payload.get("birthInfo") or {},
             external_id=str(payload.get("id", ""))[:64],
             name=_clean_name(payload.get("name"))[:200],
             cpf=(payload.get("personalIdentifier") or "")[:32],
@@ -177,6 +207,8 @@ class VSaudeAdapter:
             insurance_plan_name=_clean_name(insurance_plan.get("name"))[:160],
             source_status=str(payload.get("status", ""))[:8],
             remotely=bool(payload.get("remotely", False)),
+            price=self._decimal_str(payload.get("price")),
+            comments_html=sanitize_html(payload.get("comments")),
             raw=payload,
         )
 
@@ -302,11 +334,127 @@ class VSaudeAdapter:
                     name=_clean_name(procedure.get("name")),
                     duration_min=item.get("duration") or procedure.get("duration"),
                     price=f"{float(price):.2f}",
+                    description=sanitize_html(procedure.get("description")),
+                    comments=sanitize_html(item.get("comments")),
                     allow_online=bool(item.get("allowOnlineSchedule", False)),
                     is_active=bool(item.get("isActive", True)),
                 )
             )
         return result
+
+    # ------------------ clínico (leitura, docs/vsaude-clinico.md) --------- #
+
+    DISCRIMINATOR_KINDS: ClassVar[dict] = {
+        "NoteMedicalRecord": "note",
+        "PrescriptionMedicalRecord": "prescription",
+        "ExamMedicalRecord": "exam",
+        "FormResponseMedicalRecord": "form_response",
+    }
+
+    def get_clinical_entries(self, patient_external_id: str) -> list[EHRClinicalEntry]:
+        entries = []
+
+        # Fonte 1: prontuário (grupos por data, itens por discriminator).
+        result = (
+            self.client.post(
+                "MedicalRecordEntryService/Get", {"patientId": patient_external_id}
+            )
+            or {}
+        )
+        for group in result.get("records") or []:
+            for item in group.get("items") or []:
+                kind = self.DISCRIMINATOR_KINDS.get(item.get("discriminator") or "")
+                if kind is None:
+                    continue  # discriminator desconhecido - fica no raw do run
+                creator = item.get("creator") or {}
+                entries.append(
+                    EHRClinicalEntry(
+                        external_id=str(item.get("id", ""))[:64],
+                        kind=kind,
+                        source="record",
+                        date=self._parse_datetime(item.get("date") or group.get("date")),
+                        text=sanitize_html(item.get("text")) if kind == "note" else "",
+                        title=_clean_name(item.get("title"))[:200],
+                        description=item.get("description") or "",
+                        document_url=(item.get("link") or "")[:500],
+                        form_answers=item.get("answers") or [],
+                        creator_external_id=str(creator.get("id", ""))[:64],
+                        creator_name=_clean_name(creator.get("name"))[:200],
+                        creator_license=_clean_license(creator.get("licenceNumber"))[:120],
+                        raw=item,
+                    )
+                )
+
+        # Fonte 2: exames solicitados (descrição; sem link).
+        exams = (
+            self.client.get(
+                "ExaminationService/GetExaminations", {"PatientId": patient_external_id}
+            )
+            or []
+        )
+        for item in exams:
+            if item.get("isDeleted"):
+                continue
+            entries.append(
+                EHRClinicalEntry(
+                    external_id=str(item.get("id", ""))[:64],
+                    kind="exam",
+                    source="examination",
+                    date=self._parse_datetime(item.get("creationTime")),
+                    title=_clean_name(item.get("description"))[:200],
+                    description=sanitize_html(item.get("examinationDescription")),
+                    creator_external_id=str(item.get("doctorId", ""))[:64],
+                    raw=item,
+                )
+            )
+        return entries
+
+    def list_prescription_models(self) -> list[EHRPrescriptionModel]:
+        items = list(self.client.post_paginated("PrescriptionModelService/GetAll"))
+        return [
+            EHRPrescriptionModel(
+                external_id=str(item.get("id", ""))[:64],
+                name=_clean_name(item.get("name"))[:200],
+                content=sanitize_html(item.get("content")),
+                hint=sanitize_html(item.get("hint")),
+                medications=item.get("medications") or [],
+                smart=bool(item.get("smart", False)),
+                special_prescription=bool(item.get("specialPrescription", False)),
+            )
+            for item in items
+            if not item.get("isDeleted", False)
+        ]
+
+    def get_availability(
+        self,
+        professional_external_id: str,
+        procedure_external_id: str,
+        care_unit_external_id: str,
+        date: str,
+    ) -> EHRAvailability:
+        def _int_or_none(value):
+            try:
+                return int(value) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        result = (
+            self.client.post(
+                "ScheduleService/GetAvailability",
+                {
+                    "professionalId": professional_external_id,
+                    "procedureId": _int_or_none(procedure_external_id),
+                    "careUnitId": _int_or_none(care_unit_external_id),
+                    "date": f"{date}T00:00:00Z",
+                },
+            )
+            or {}
+        )
+        return EHRAvailability(
+            date=date,
+            has_availability=bool(result.get("proposedDateHasAvailability", False)),
+            times=result.get("times") or [],
+        )
 
     # ------------------- escrita (write-through, §10.2) ------------------- #
 

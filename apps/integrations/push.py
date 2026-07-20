@@ -238,11 +238,14 @@ def _appointment_data(appointment) -> dict:
     from apps.scheduling.models import PractitionerProcedure
 
     price = ""
-    offer = PractitionerProcedure.objects.filter(
-        practitioner=appointment.practitioner, procedure=appointment.procedure
-    ).first()
-    if offer and offer.price is not None:
-        price = str(offer.price)
+    if appointment.price is not None:
+        price = str(appointment.price)
+    else:
+        offer = PractitionerProcedure.objects.filter(
+            practitioner=appointment.practitioner, procedure=appointment.procedure
+        ).first()
+        if offer and offer.price is not None:
+            price = str(offer.price)
     return {
         "patient_external_id": appointment.patient.external_id,
         "practitioner_external_id": appointment.practitioner.external_id,
@@ -261,6 +264,7 @@ def _appointment_data(appointment) -> dict:
         "starts_at": appointment.starts_at.isoformat(),
         "duration_min": appointment.duration_min,
         "price": price,
+        "comments_html": appointment.comments_html,
         "remotely": appointment.remotely,
     }
 

@@ -21,11 +21,14 @@ from faker import Faker
 
 from apps.integrations.ehr.base import (
     EHRAppointment,
+    EHRAvailability,
     EHRCareUnit,
+    EHRClinicalEntry,
     EHRInsuranceCompany,
     EHRInsurancePlan,
     EHRPage,
     EHRPatient,
+    EHRPrescriptionModel,
     EHRProcedure,
     EHRProfessional,
     EHRProfessionalProcedure,
@@ -182,6 +185,97 @@ class FakeAdapter:
             )
             for i, (name, duration) in enumerate(PROCEDURES, start=1)
         ]
+
+    def get_clinical_entries(self, patient_external_id: str) -> list[EHRClinicalEntry]:
+        """Linha do tempo determinística: nota + prescrição + 2 exames + form."""
+        base_date = timezone.now() - timedelta(days=30)
+        prefix = f"{patient_external_id}-ce"
+        creator = {"ext": "fake-prof-1", "name": "Dr(a). Fake 1", "license": "CRM-FK 0001"}
+        return [
+            EHRClinicalEntry(
+                external_id=f"{prefix}-note",
+                kind="note",
+                source="record",
+                date=base_date,
+                text="<p>Evolução de teste do paciente.</p>",
+                creator_external_id=creator["ext"],
+                creator_name=creator["name"],
+                creator_license=creator["license"],
+                raw={"fake": True},
+            ),
+            EHRClinicalEntry(
+                external_id=f"{prefix}-presc",
+                kind="prescription",
+                source="record",
+                date=base_date,
+                document_url="https://fake.ehr/doc/presc-1",
+                creator_external_id=creator["ext"],
+                creator_name=creator["name"],
+                raw={"fake": True},
+            ),
+            EHRClinicalEntry(
+                external_id=f"{prefix}-exam-rec",
+                kind="exam",
+                source="record",
+                date=base_date - timedelta(days=60),
+                document_url="https://fake.ehr/doc/exam-1",
+                creator_external_id=creator["ext"],
+                creator_name=creator["name"],
+                raw={"fake": True},
+            ),
+            EHRClinicalEntry(
+                external_id=f"{prefix}-exam-req",
+                kind="exam",
+                source="examination",
+                date=base_date - timedelta(days=59),
+                title="Hemograma completo",
+                description="<p>Jejum de 8 horas.</p>",
+                creator_external_id=creator["ext"],
+                raw={"fake": True},
+            ),
+            EHRClinicalEntry(
+                external_id=f"{prefix}-form",
+                kind="form_response",
+                source="record",
+                date=base_date,
+                title="Triagem",
+                form_answers=[
+                    {"label": "Queixa principal", "answer": "Rotina", "fieldType": "textbox"},
+                ],
+                creator_external_id=creator["ext"],
+                creator_name=creator["name"],
+                raw={"fake": True},
+            ),
+        ]
+
+    def list_prescription_models(self) -> list[EHRPrescriptionModel]:
+        return [
+            EHRPrescriptionModel(
+                external_id="fake-pm-1",
+                name="Receita padrão",
+                content="<p>Uso contínuo conforme orientação.</p>",
+                medications=[{"name": "Medicamento A", "dosage": "1x ao dia"}],
+            ),
+            EHRPrescriptionModel(
+                external_id="fake-pm-2",
+                name="Receita controlada",
+                content="<p>Modelo de receita especial.</p>",
+                special_prescription=True,
+            ),
+        ]
+
+    def get_availability(
+        self,
+        professional_external_id: str,
+        procedure_external_id: str,
+        care_unit_external_id: str,
+        date: str,
+    ) -> EHRAvailability:
+        return EHRAvailability(
+            date=date,
+            has_availability=True,
+            times=["09:00", "09:30", "10:00", "14:00", "14:30"],
+        )
 
     # -------------------- escrita (registro em memória) ------------------- #
     # Estado de escrita fica em dicts DE CLASSE, particionados por clínica:

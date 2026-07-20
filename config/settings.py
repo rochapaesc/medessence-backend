@@ -192,7 +192,8 @@ LOGGING = {
             "level": "WARNING",
             "propagate": False,
         },
-        # Celery
+        # Celery: recebimento/conclusão de tasks visíveis no docker logs do
+        # worker (sem isto o logger fica órfão e o worker parece "mudo").
         "celery": {
             "handlers": ["console"],
             "level": "INFO",
@@ -375,7 +376,7 @@ CELERY_TASK_QUEUES = CELERY_QUEUES
 CELERY_BEAT_SCHEDULE = {
     "sync-appointments-fanout": {
         "task": "apps.integrations.tasks.schedule_appointment_syncs",
-        "schedule": crontab(minute="*/10"),
+        "schedule": crontab(minute="*/5"),  # agenda muda rápido - 5 min
     },
     "sync-daily-fanout": {
         "task": "apps.integrations.tasks.schedule_daily_syncs",

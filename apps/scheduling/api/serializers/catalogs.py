@@ -45,6 +45,8 @@ class PractitionerProcedureSerializer(ModelSerializer):
             "name",
             "duration_min",
             "price",
+            "description",
+            "comments",
             "allow_online",
             "is_active",
         ]

@@ -1,5 +1,6 @@
 from rest_framework.serializers import CharField, ModelSerializer, ValidationError
 
+from apps.core.html import sanitize_html
 from apps.scheduling.models import Appointment
 
 
@@ -8,6 +9,12 @@ class AppointmentReadSerializer(ModelSerializer):
     practitioner_name = CharField(source="practitioner.name", read_only=True)
     care_unit_name = CharField(source="care_unit.name", read_only=True, default=None)
     procedure_name = CharField(source="procedure.name", read_only=True, default=None)
+    insurance_company_name = CharField(
+        source="insurance_company.name", read_only=True, default=None
+    )
+    insurance_plan_name = CharField(
+        source="insurance_plan.name", read_only=True, default=None
+    )
 
     class Meta:
         model = Appointment
@@ -23,11 +30,15 @@ class AppointmentReadSerializer(ModelSerializer):
             "procedure_name",
             "insurance_company",
             "insurance_plan",
+            "insurance_company_name",
+            "insurance_plan_name",
             "starts_at",
             "duration_min",
             "status",
             "source_status",
             "remotely",
+            "price",
+            "comments_html",
             "sync_status",
             "external_id",
         ]
@@ -54,7 +65,12 @@ class AppointmentWriteSerializer(ModelSerializer):
             "duration_min",
             "status",
             "remotely",
+            "price",
+            "comments_html",
         ]
+
+    def validate_comments_html(self, value):
+        return sanitize_html(value)
 
     def validate(self, attrs):
         plan = attrs.get("insurance_plan") or (self.instance and self.instance.insurance_plan)

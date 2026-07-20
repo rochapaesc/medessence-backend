@@ -19,11 +19,12 @@ from apps.integrations.choices import SyncRunKind
 from apps.integrations.models import SyncRun
 
 # Tipos disparados pelo botão (task kind → SyncRun.kind persistido).
-SYNC_KINDS = ["catalogs", "patients", "appointments"]
+SYNC_KINDS = ["catalogs", "patients", "appointments", "medical_records"]
 STATUS_KINDS = [
     SyncRunKind.CATALOGS,
     SyncRunKind.PATIENTS_FULL,
     SyncRunKind.APPOINTMENTS,
+    SyncRunKind.MEDICAL_RECORDS,
 ]
 
 

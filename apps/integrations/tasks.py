@@ -49,8 +49,10 @@ def sync_clinic(clinic_id: int, kind: str):
         logger.info("Sync %s de %s já em execução - pulando.", kind, clinic.slug)
         return "skipped: locked"
 
+    logger.info("Pull %s INICIADO para %s", kind, clinic.slug)
     try:
         run = PULLS[kind](clinic)
+        logger.info("Pull %s CONCLUÍDO para %s: %s", kind, clinic.slug, dict(run.stats))
         return {"run_id": run.pk, "stats": run.stats}
     finally:
         if lock:

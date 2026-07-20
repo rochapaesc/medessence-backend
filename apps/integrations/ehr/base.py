@@ -43,6 +43,12 @@ class EHRPatient:
     comments_html: str = ""  # já sanitizado
     insurance_name: str = ""
     tags_bitmask: int = 0  # decodificado pelo catálogo no motor de pull
+    blood_type: str = ""
+    weight_kg: str = ""  # decimal serializado ("115.0"); vazio = ausente
+    height_cm: str = ""
+    guardians: dict = field(default_factory=dict)  # {mother/father/partner/sponsor: {name, phone}}
+    emergency_contacts: list = field(default_factory=list)
+    birth_info: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict)
 
 
@@ -75,6 +81,8 @@ class EHRAppointment:
     insurance_plan_name: str = ""
     source_status: str = ""  # código cru (5/10/20/30/81/100…) → EHRStatusMap
     remotely: bool = False
+    price: str = ""  # decimal serializado; vazio = ausente
+    comments_html: str = ""  # já sanitizado
     raw: dict = field(default_factory=dict)
 
 
@@ -98,6 +106,49 @@ class EHRCareUnit:
 
 
 @dataclass(frozen=True)
+class EHRClinicalEntry:
+    """
+    Entrada da linha do tempo clínica, já normalizada dos discriminators
+    do provedor (Note/Prescription/Exam/FormResponse na vSaúde). `source`
+    distingue fontes múltiplas do mesmo kind (record | examination).
+    """
+
+    external_id: str
+    kind: str  # note | prescription | exam | form_response (ClinicalEntryKind)
+    date: datetime | None
+    source: str = "record"
+    text: str = ""  # HTML sanitizado (notas)
+    title: str = ""
+    description: str = ""
+    document_url: str = ""
+    form_answers: list = field(default_factory=list)
+    creator_external_id: str = ""  # casa com Practitioner.external_id
+    creator_name: str = ""
+    creator_license: str = ""
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EHRPrescriptionModel:
+    external_id: str
+    name: str
+    content: str = ""  # HTML sanitizado
+    hint: str = ""
+    medications: list = field(default_factory=list)
+    smart: bool = False
+    special_prescription: bool = False
+
+
+@dataclass(frozen=True)
+class EHRAvailability:
+    """Horários livres de um dia (form Nova consulta)."""
+
+    date: str  # ISO date
+    has_availability: bool = False
+    times: list = field(default_factory=list)  # ["09:00", ...] ou objetos do provedor
+
+
+@dataclass(frozen=True)
 class EHRProfessional:
     external_id: str
     name: str
@@ -115,6 +166,8 @@ class EHRProfessionalProcedure:
     name: str
     duration_min: int | None = None
     price: str = ""  # decimal serializado ("400.00"); vazio = sem preço
+    description: str = ""  # HTML sanitizado
+    comments: str = ""  # orientações pós-agendamento (HTML sanitizado)
     allow_online: bool = False
     is_active: bool = True
 
@@ -165,6 +218,27 @@ class EHRProvider(Protocol):
 
     def list_professionals(self) -> list[EHRProfessional]:
         """Catálogo de profissionais - inclui quem nunca atendeu."""
+        ...
+
+    def get_clinical_entries(self, patient_external_id: str) -> list[EHRClinicalEntry]:
+        """
+        Linha do tempo clínica do paciente (prontuário + exames solicitados),
+        já normalizada. Espelho somente leitura (§10.1).
+        """
+        ...
+
+    def list_prescription_models(self) -> list[EHRPrescriptionModel]:
+        """Catálogo de modelos de prescrição."""
+        ...
+
+    def get_availability(
+        self,
+        professional_external_id: str,
+        procedure_external_id: str,
+        care_unit_external_id: str,
+        date: str,
+    ) -> EHRAvailability:
+        """Horários livres do profissional num dia (form Nova consulta)."""
         ...
 
     def list_professional_procedures(
