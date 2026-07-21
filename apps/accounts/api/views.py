@@ -63,7 +63,7 @@ class MeMembershipsView(ListAPIView):
 
     def get_queryset(self):
         return (
-            Membership.objects.select_related("clinic")
+            Membership.objects.select_related("clinic", "practitioner")
             .filter(
                 user=self.request.user,
                 is_active=True,

@@ -4,6 +4,8 @@ from rest_framework.serializers import (
     SerializerMethodField,
 )
 
+from apps.core.api.serializers import ClinicalContentGateMixin
+from apps.core.masking import mask_cpf
 from apps.patients.api.serializers.tag import TagSummarySerializer
 from apps.patients.choices import TagOrigin
 from apps.patients.models import Patient, PatientTag, Tag
@@ -14,6 +16,13 @@ class PatientReadSerializer(ModelSerializer):
 
     status = SerializerMethodField()
     tags = SerializerMethodField()
+    # O CPF sai mascarado de toda leitura - vale para todos os papéis. O valor
+    # cheio nunca chega ao cliente, então não aparece nem no devtools; quem
+    # precisa dele inteiro (push ao EHR, busca) roda no servidor.
+    cpf = SerializerMethodField()
+
+    def get_cpf(self, obj):
+        return mask_cpf(obj.cpf)
 
     class Meta:
         model = Patient
@@ -44,8 +53,13 @@ class PatientReadSerializer(ModelSerializer):
         return TagSummarySerializer([a.tag for a in assignments], many=True).data
 
 
-class PatientDetailSerializer(PatientReadSerializer):
+class PatientDetailSerializer(ClinicalContentGateMixin, PatientReadSerializer):
     """Ficha do paciente (RF-PAC-6) - campos completos."""
+
+    # P10: `comments_html` é texto livre de quem atende - conteúdo clínico
+    # fora da linha do tempo. O atendente segue podendo ESCREVER (o write
+    # serializer não é gateado), mas não lê de volta.
+    clinical_content_fields = ("comments_html",)
 
     class Meta(PatientReadSerializer.Meta):
         fields = [
@@ -85,6 +99,15 @@ class PatientWriteSerializer(ModelSerializer):
         write_only=True,
         queryset=Tag.objects.all(),
     )
+
+    def to_representation(self, instance):
+        # `cpf` continua gravável, mas a resposta do create/update sai
+        # mascarada como qualquer leitura: o front insere este objeto direto na
+        # lista, e o CPF cheio apareceria na tela e no payload.
+        data = super().to_representation(instance)
+        if "cpf" in data:
+            data["cpf"] = mask_cpf(data["cpf"])
+        return data
 
     class Meta:
         model = Patient

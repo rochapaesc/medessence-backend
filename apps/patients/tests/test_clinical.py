@@ -252,3 +252,94 @@ def test_paciente_com_campos_ampliados(api_client, manager_single_clinic, clinic
     assert detail.data["weight_kg"] == "82.5"
     assert detail.data["guardians"]["mother"]["name"] == "Mãe Teste"
     assert detail.data["address"]["neighborhood"] == "Centro"
+
+
+# --------------------- P10: conteúdo clínico por papel ------------------ #
+#
+# RF-PRO-4: médico e gestor veem o conteúdo; atendente vê APENAS metadados
+# (tipo, data, profissional). O gate mora na serialização - o front esconder
+# não bastaria, a API responderia igual para quem chamasse direto.
+
+CONTEUDO_CLINICO = ["text", "title", "description", "document_url", "form_answers"]
+METADADOS = ["id", "patient", "practitioner", "practitioner_name", "kind", "date"]
+
+
+@pytest.fixture
+def entrada_clinica(db, clinic_a):
+    """Prescrição com todos os campos de conteúdo preenchidos."""
+    patient = Patient.objects.create(clinic=clinic_a, name="Paciente P10")
+    practitioner = Practitioner.objects.create(clinic=clinic_a, name="Dra. Alana Camargo")
+    return ClinicalEntry.objects.create(
+        clinic=clinic_a,
+        patient=patient,
+        practitioner=practitioner,
+        kind="prescription",
+        date=timezone.now(),
+        text="<p>Losartana 50mg - 1cp pela manhã</p>",
+        title="Receita comum - 3 itens",
+        description="Uso contínuo",
+        document_url="https://ehr.exemplo.dev/receita/1.pdf",
+        form_answers=[{"label": "Alergias", "answer": "Dipirona"}],
+        creator_name="Dra. Alana Camargo",
+    )
+
+
+def test_atendente_ve_so_metadados_da_linha_do_tempo(
+    api_client, attendant_a, entrada_clinica
+):
+    api_client.force_authenticate(attendant_a)
+
+    listed = api_client.get(ENTRIES_URL, {"patient": entrada_clinica.patient_id})
+    assert listed.status_code == 200
+    (row,) = listed.data["results"]
+
+    for field in CONTEUDO_CLINICO:
+        assert field not in row, f"conteúdo clínico vazou para o atendente: {field}"
+    for field in METADADOS:
+        assert field in row, f"metadado sumiu para o atendente: {field}"
+    assert row["practitioner_name"] == "Dra. Alana Camargo"
+    assert row["kind"] == "prescription"
+
+
+def test_gestor_ve_conteudo_clinico(api_client, manager_single_clinic, entrada_clinica):
+    api_client.force_authenticate(manager_single_clinic)
+
+    listed = api_client.get(ENTRIES_URL, {"patient": entrada_clinica.patient_id})
+    (row,) = listed.data["results"]
+
+    for field in CONTEUDO_CLINICO:
+        assert field in row
+    assert "Losartana" in row["text"]
+    assert row["document_url"].endswith(".pdf")
+
+
+def test_medico_ve_conteudo_clinico(api_client, clinic_a, entrada_clinica):
+    from conftest import make_user
+
+    doctor = make_user("medico.p10@teste.dev")
+    Membership.objects.create(user=doctor, clinic=clinic_a, role="doctor")
+    api_client.force_authenticate(doctor)
+
+    listed = api_client.get(ENTRIES_URL, {"patient": entrada_clinica.patient_id})
+    (row,) = listed.data["results"]
+
+    assert "Losartana" in row["text"]
+    assert row["title"] == "Receita comum - 3 itens"
+
+
+def test_atendente_nao_le_observacoes_da_ficha(
+    api_client, attendant_a, manager_single_clinic, clinic_a
+):
+    """`comments_html` é texto livre de quem atende - conteúdo clínico."""
+    patient = Patient.objects.create(
+        clinic=clinic_a,
+        name="Paciente Observações",
+        comments_html="<p>Alergia a dipirona.</p>",
+    )
+    url = f"/api/v1/patients/{patient.pk}/"
+
+    api_client.force_authenticate(attendant_a)
+    assert "comments_html" not in api_client.get(url).data
+
+    api_client.force_authenticate(manager_single_clinic)
+    assert "Alergia" in api_client.get(url).data["comments_html"]
