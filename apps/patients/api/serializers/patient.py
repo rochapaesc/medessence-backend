@@ -127,13 +127,16 @@ class PatientWriteSerializer(ModelSerializer):
 
     def _sync_local_tags(self, patient, tags):
         wanted_ids = {tag.pk for tag in tags}
-        current = {
-            assignment.tag_id: assignment
-            for assignment in patient.patient_tags.filter(origin=TagOrigin.LOCAL)
-        }
-        for tag_id, assignment in current.items():
-            if tag_id not in wanted_ids:
+        # Todas as atribuições VIVAS (a unicidade `uniq_patient_tag` é por
+        # (patient, tag) SEM olhar origem): usamos isso para não colidir com um
+        # espelho do EHR ao (re)criar uma LOCAL do mesmo par.
+        existing = {a.tag_id: a for a in patient.patient_tags.all()}
+        # Remove só as LOCAIS que saíram do conjunto desejado (EHR não é tocada).
+        for tag_id, assignment in existing.items():
+            if assignment.origin == TagOrigin.LOCAL and tag_id not in wanted_ids:
                 assignment.delete()  # soft - a unicidade parcial permite recriar
+        # Cria só as que não têm NENHUMA atribuição viva (evita a IntegrityError
+        # quando a tag já veio espelhada do EHR).
         for tag in tags:
-            if tag.pk not in current:
+            if tag.pk not in existing:
                 PatientTag.objects.create(patient=patient, tag=tag, origin=TagOrigin.LOCAL)

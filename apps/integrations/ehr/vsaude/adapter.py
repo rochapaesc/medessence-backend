@@ -19,6 +19,7 @@ HTML sanitizado; nomes com colapso de espaços; datas naive → fuso da clínica
 """
 
 import re
+import time
 from datetime import date, datetime, timedelta
 from typing import ClassVar
 from zoneinfo import ZoneInfo
@@ -84,6 +85,20 @@ RANGE_MONTHLY = 3
 
 # Só consultas médicas entram no espelho (o GetAll pode trazer outros tipos)
 APPOINTMENT_DISCRIMINATOR = "MedicalAppointment"
+
+# Pausa entre chamadas mensais da agenda - o backfill percorre muitos meses e
+# sem isto estoura o rate limit da vSaúde (429).
+APPOINTMENTS_PACE_SECONDS = 0.3
+
+# Algumas clínicas NÃO usam o flag `remotely` da vSaúde: marcam o atendimento
+# online por uma "unidade"/procedimento de telemedicina (ex.: "Atendimento
+# Online (Telemedicina)", "Retorno Online"). Detectamos pelo nome.
+REMOTE_HINTS = ("telemedicina", "teleconsulta", "online", "remoto")
+
+
+def _looks_remote(*texts) -> bool:
+    haystack = " ".join((t or "") for t in texts).lower()
+    return any(hint in haystack for hint in REMOTE_HINTS)
 
 
 def _clean_name(value: str | None) -> str:
@@ -206,7 +221,11 @@ class VSaudeAdapter:
             insurance_plan_external_id=str(insurance_plan.get("id") or "")[:32],
             insurance_plan_name=_clean_name(insurance_plan.get("name"))[:160],
             source_status=str(payload.get("status", ""))[:8],
-            remotely=bool(payload.get("remotely", False)),
+            # MODALIDADE vem do nome da unidade/procedimento (telemedicina/online).
+            # O flag `remotely` da vSaúde é IGNORADO: observado como true também em
+            # unidades FÍSICAS (parece indicar "agendado remotamente/pelo paciente",
+            # não teleconsulta), então não serve para presencial × online.
+            remotely=_looks_remote(care_unit.get("name"), procedure.get("name")),
             price=self._decimal_str(payload.get("price")),
             comments_html=sanitize_html(payload.get("comments")),
             raw=payload,
@@ -250,7 +269,11 @@ class VSaudeAdapter:
         # janela e filtra/deduplica localmente.
         seen: dict[str, EHRAppointment] = {}
         cursor = start.replace(day=1)
+        first = True
         while cursor <= end:
+            if not first:
+                time.sleep(APPOINTMENTS_PACE_SECONDS)
+            first = False
             items = (
                 self.client.post(
                     "ScheduleService/GetAll",
@@ -458,9 +481,12 @@ class VSaudeAdapter:
 
     # ------------------- escrita (write-through, §10.2) ------------------- #
 
+    # Rotas de transição da vSaúde (ScheduleService/<rota>). "Em atendimento"
+    # (in_progress) NÃO tem rota própria - a vSaúde vai de Waiting → Finalize;
+    # o código 9/90 não é setável por rota dedicada, então fica só LOCAL.
     TRANSITION_ROUTES: ClassVar[dict] = {
         "confirmed": "Accept",
-        "in_progress": "Waiting",
+        "waiting": "Waiting",  # Aguardando atendimento
         "completed": "Finalize",
         "canceled": "Cancel",
         "no_show": "CounterPartDidNotShowUp",
@@ -614,7 +640,9 @@ class VSaudeAdapter:
     def transition_appointment(self, external_id: str, target_status: str) -> None:
         route = self.TRANSITION_ROUTES.get(target_status)
         if route is None:
-            raise EHRError(f"vSaúde: transição sem rota para '{target_status}'.")
+            # Status sem rota na vSaúde (ex.: "em atendimento") — a mudança fica
+            # só LOCAL; nada a empurrar. Não é erro.
+            return
         self.client.post(f"ScheduleService/{route}", {"id": external_id})
 
     def get_appointment(self, external_id: str) -> EHRAppointment | None:

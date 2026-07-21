@@ -101,6 +101,23 @@ def test_normalizacao_de_consulta(clinic):
     assert appointment.care_unit_name == "Matriz"
     assert appointment.insurance_plan_external_id == ""  # None → vazio
     assert appointment.starts_at.isoformat().startswith("2026-07-09T12:00")
+    assert appointment.remotely is False  # Matriz + Consulta = presencial
+
+
+def test_online_inferido_por_telemedicina(clinic):
+    """Modalidade vem da UNIDADE/procedimento; o flag `remotely` da vSaúde é
+    IGNORADO (observado true até em unidade física)."""
+    adapter = VSaudeAdapter(clinic, client=DummyClient())
+    by_unit = {
+        **APPOINTMENT_PAYLOAD,
+        "careUnit": {"id": 9, "name": "Atendimento Online (Telemedicina)"},
+    }
+    assert adapter._normalize_appointment(by_unit).remotely is True
+    by_proc = {**APPOINTMENT_PAYLOAD, "procedure": {"id": 1, "name": "Retorno Online"}}
+    assert adapter._normalize_appointment(by_proc).remotely is True
+    # Flag remotely=True numa unidade FÍSICA (Matriz) NÃO é teleconsulta.
+    physical_flagged = {**APPOINTMENT_PAYLOAD, "remotely": True}
+    assert adapter._normalize_appointment(physical_flagged).remotely is False
 
 
 def test_list_patients_via_post_paginado(clinic):
@@ -256,7 +273,11 @@ def test_transition_mapeia_acao_para_rota(clinic):
     assert body == {"id": "appt-1"}
 
 
-def test_transition_desconhecida_falha(clinic):
-    adapter = VSaudeAdapter(clinic, client=RecordingClient())
-    with pytest.raises(EHRError):
-        adapter.transition_appointment("appt-1", "scheduled")
+def test_transition_sem_rota_e_noop(clinic):
+    """Status sem rota na vSaúde (ex.: 'in_progress'/'scheduled') = no-op LOCAL,
+    sem chamada HTTP e sem erro (a vSaúde não expõe rota de 'em atendimento')."""
+    client = RecordingClient()
+    adapter = VSaudeAdapter(clinic, client=client)
+    adapter.transition_appointment("appt-1", "in_progress")
+    adapter.transition_appointment("appt-1", "scheduled")
+    assert client.calls == []

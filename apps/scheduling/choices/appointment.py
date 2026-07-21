@@ -7,6 +7,7 @@ class AppointmentStatus(TextChoices):
 
     SCHEDULED = "scheduled", "Agendada"
     CONFIRMED = "confirmed", "Confirmada"
+    WAITING = "waiting", "Aguardando atendimento"
     IN_PROGRESS = "in_progress", "Em atendimento"
     COMPLETED = "completed", "Realizada"
     NO_SHOW = "no_show", "Faltou"

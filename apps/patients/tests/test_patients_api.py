@@ -115,6 +115,25 @@ def test_tag_ids_sincroniza_atribuicoes_locais(api_client, manager_single_clinic
     assert PatientTag.all_objects.filter(patient=patient).count() == 2  # histórico preservado
 
 
+def test_tag_ids_nao_duplica_quando_ja_espelhada_do_ehr(
+    api_client, manager_single_clinic, clinic_a
+):
+    """Regressão: adicionar via tag_ids uma tag que JÁ existe espelhada do EHR
+    (origin=EHR) não pode violar uniq_patient_tag (par patient+tag é único
+    entre vivos, independente da origem)."""
+    tag = Tag.objects.create(clinic=clinic_a, name="Hipertensa")
+    patient = Patient.objects.create(clinic=clinic_a, name="Paciente EHR")
+    PatientTag.objects.create(patient=patient, tag=tag, origin=TagOrigin.EHR)
+    api_client.force_authenticate(manager_single_clinic)
+
+    response = api_client.patch(f"{URL}{patient.pk}/", {"tag_ids": [tag.pk]}, format="json")
+
+    assert response.status_code == 200  # não estoura IntegrityError
+    live = PatientTag.objects.filter(patient=patient, tag=tag)
+    assert live.count() == 1  # continua uma só - o espelho do EHR, preservado
+    assert live.first().origin == TagOrigin.EHR
+
+
 def test_tag_de_outra_clinica_e_rejeitada(api_client, manager_two_clinics, clinic_a, clinic_b):
     tag_b = Tag.objects.create(clinic=clinic_b, name="Alheia")
     api_client.force_authenticate(manager_two_clinics)

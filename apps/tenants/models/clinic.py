@@ -1,4 +1,10 @@
-from django.db.models import BooleanField, CharField, PositiveSmallIntegerField, SlugField
+from django.db.models import (
+    BooleanField,
+    CharField,
+    DateField,
+    PositiveSmallIntegerField,
+    SlugField,
+)
 
 from apps.core.fields import EncryptedJSONField
 from apps.core.models import BaseModel
@@ -51,6 +57,16 @@ class Clinic(BaseModel):
             "Trava de segurança do write-through: desligada, mutações locais "
             "NÃO são empurradas ao EHR (fase de validação só-leitura). O pull "
             "continua normal. Ligar só depois de validar a leitura."
+        ),
+    )
+    appointments_backfilled_until = DateField(
+        verbose_name="Agenda importada até (para trás)",
+        null=True,
+        blank=True,
+        help_text=(
+            "Marca-d'água do backfill resumível da agenda: cada sincronização "
+            "recua um pedaço e grava aqui, até o limite de histórico. Vazio = "
+            "backfill ainda não começou."
         ),
     )
 

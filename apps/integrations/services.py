@@ -46,9 +46,11 @@ logger = logging.getLogger(__name__)
 
 APPOINTMENTS_WINDOW_PAST = timedelta(days=7)  # janela deslizante D-7 → D+60
 APPOINTMENTS_WINDOW_FUTURE = timedelta(days=60)
-# 1ª sincronização (clínica sem espelho de agenda): busca TODO o histórico
-# até este limite - dali em diante a janela deslizante cobre o que muda.
-APPOINTMENTS_BACKFILL = timedelta(days=365 * 5)
+# Piso do backfill da agenda: até quão para trás o histórico é trazido. Como o
+# backfill agora é RESUMÍVEL (um pedaço por sync, marca-d'água em Clinic), pode
+# ser generoso sem estourar o rate limit - cada execução recua só BACKFILL_CHUNK.
+APPOINTMENTS_BACKFILL = timedelta(days=365 * 3)
+BACKFILL_CHUNK = timedelta(days=90)  # quanto a agenda recua a cada sincronização
 
 
 def run_sync(clinic, kind: str, executor) -> SyncRun:
@@ -389,17 +391,31 @@ def _sync_ehr_tag_assignments(clinic, patient, bitmask: int) -> None:
 def pull_appointments(clinic, start=None, end=None) -> SyncRun:
     provider = get_ehr_provider(clinic)
     today = timezone.now().date()
-    is_backfill = False
-    if start is None:
-        # 1ª sincronização pega TODO o histórico (uma única vez, marcada no
-        # SyncRun); depois, só a janela deslizante - dados que podem mudar
-        # + eventos futuros.
-        already_backfilled = SyncRun.objects.filter(
-            clinic=clinic, kind=SyncRunKind.APPOINTMENTS, stats__backfill=True
-        ).exists()
-        is_backfill = not already_backfilled
-        start = today - (APPOINTMENTS_BACKFILL if is_backfill else APPOINTMENTS_WINDOW_PAST)
-    end = end or (today + APPOINTMENTS_WINDOW_FUTURE)
+
+    # Janelas desta execução. Chamada manual (start/end) = janela única. Automática
+    # = janela deslizante D-7→D+60 (sempre) + UM pedaço de backfill resumível:
+    # recua BACKFILL_CHUNK a partir da marca-d'água e grava o avanço, até o piso
+    # APPOINTMENTS_BACKFILL. Assim o histórico entra aos poucos, sem rajada de 429.
+    backfill_to = None
+    if start is not None or end is not None:
+        windows = [
+            (
+                start or (today - APPOINTMENTS_WINDOW_PAST),
+                end or (today + APPOINTMENTS_WINDOW_FUTURE),
+            )
+        ]
+    else:
+        windows = [
+            (today - APPOINTMENTS_WINDOW_PAST, today + APPOINTMENTS_WINDOW_FUTURE)
+        ]
+        floor = today - APPOINTMENTS_BACKFILL
+        watermark = clinic.appointments_backfilled_until or (
+            today - APPOINTMENTS_WINDOW_PAST
+        )
+        if watermark > floor:
+            chunk_start = max(floor, watermark - BACKFILL_CHUNK)
+            windows.append((chunk_start, watermark))
+            backfill_to = chunk_start
 
     def _execute():
         status_map = {
@@ -413,10 +429,19 @@ def pull_appointments(clinic, start=None, end=None) -> SyncRun:
             "patients_fetched": 0,
             "unmapped_statuses": [],
         }
-        if is_backfill:
-            stats["backfill"] = True
 
-        for ehr_appointment in provider.list_appointments(start, end):
+        def _iter_windows():
+            # Dedup por external_id: as janelas podem se tocar no boundary
+            # (chunk termina onde a janela deslizante começa).
+            seen: set[str] = set()
+            for w_start, w_end in windows:
+                for appt in provider.list_appointments(w_start, w_end):
+                    if appt.external_id in seen:
+                        continue
+                    seen.add(appt.external_id)
+                    yield appt
+
+        for ehr_appointment in _iter_windows():
             stats["fetched"] += 1
             patient = _resolve_patient(clinic, provider, ehr_appointment.patient_external_id, stats)
             if patient is None:
@@ -491,6 +516,13 @@ def pull_appointments(clinic, start=None, end=None) -> SyncRun:
             )
             stats["created"] += was_created
             stats["updated"] += not was_created
+
+        if backfill_to is not None:
+            clinic.appointments_backfilled_until = backfill_to
+            clinic.save(
+                update_fields=["appointments_backfilled_until", "updated_at"]
+            )
+            stats["backfilled_until"] = backfill_to.isoformat()
 
         return stats
 

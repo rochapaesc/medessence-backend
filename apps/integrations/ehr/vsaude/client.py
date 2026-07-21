@@ -9,6 +9,8 @@ Convenções reais observadas + swagger:
     - Get pontual é GET com query param (Id/id).
 """
 
+import time
+
 import requests
 from django.conf import settings
 
@@ -22,6 +24,8 @@ from apps.integrations.ehr.exceptions import (
 
 DEFAULT_TIMEOUT = 30  # segundos
 PAGE_SIZE = 100
+MAX_429_RETRIES = 4  # absorve rajadas (ex.: backfill de vários meses)
+RETRY_AFTER_CAP = 15  # s - teto do respeito ao header Retry-After
 
 
 class VSaudeClient:
@@ -58,17 +62,40 @@ class VSaudeClient:
         """DELETE (ex.: PatientService/Delete?Id=...)."""
         return self._request("DELETE", path, params=params or {})
 
+    @staticmethod
+    def _retry_delay(response, attempt: int) -> float:
+        """Respeita Retry-After (segundos); senão backoff exponencial, com teto."""
+        header = response.headers.get("Retry-After")
+        if header:
+            try:
+                return min(float(header), RETRY_AFTER_CAP)
+            except ValueError:
+                pass
+        return min(2**attempt, RETRY_AFTER_CAP)
+
     def _request(self, method: str, path: str, **kwargs):
         url = f"{self.base_url}/{path.lstrip('/')}"
-        try:
-            response = self.session.request(method, url, timeout=DEFAULT_TIMEOUT, **kwargs)
-        except requests.RequestException as exc:
-            raise EHRUnavailableError(f"vSaúde inacessível: {exc}") from exc
+        # Rajada de 429 (backfill): recua e reтenta a MESMA request algumas
+        # vezes antes de desistir - o beat cobre o que sobrar.
+        for attempt in range(MAX_429_RETRIES + 1):
+            try:
+                response = self.session.request(
+                    method, url, timeout=DEFAULT_TIMEOUT, **kwargs
+                )
+            except requests.RequestException as exc:
+                raise EHRUnavailableError(f"vSaúde inacessível: {exc}") from exc
+            if response.status_code == 429 and attempt < MAX_429_RETRIES:
+                time.sleep(self._retry_delay(response, attempt))
+                continue
+            break
 
         if response.status_code in (401, 403):
             raise EHRAuthError("API key da vSaúde recusada (401/403).")
         if response.status_code == 429:
-            raise EHRRateLimitedError("Rate limit da vSaúde atingido (429).")
+            raise EHRRateLimitedError(
+                "Muitas requisições à vSaúde no momento — o restante entra na "
+                "próxima sincronização automática."
+            )
         if response.status_code >= 500:
             raise EHRUnavailableError(f"vSaúde indisponível ({response.status_code}).")
         if response.status_code >= 400:

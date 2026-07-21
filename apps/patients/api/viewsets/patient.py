@@ -42,7 +42,10 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
             .prefetch_related(
                 Prefetch(
                     "patient_tags",
-                    queryset=PatientTag.objects.select_related("tag"),
+                    # Ordem de INSERÇÃO (created_at) — como o usuário adicionou.
+                    queryset=PatientTag.objects.select_related("tag").order_by(
+                        "created_at", "id"
+                    ),
                 )
             )
             .order_by("name")
