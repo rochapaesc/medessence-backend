@@ -125,6 +125,33 @@ def test_pull_appointments_mapeia_status_e_recalcula_paciente(fake_clinic):
     assert run2.stats["created"] == 0
 
 
+def test_pull_nao_regride_consulta_em_atendimento(fake_clinic):
+    """Guarda anti-regressão (RF-AGE-5): "Em atendimento" é LOCAL-only - o
+    pull não devolve a consulta aos estados pré-atendimento; só avanço entra."""
+    pull_catalogs(fake_clinic)
+    pull_patients(fake_clinic)
+    pull_appointments(fake_clinic)
+
+    appointment = Appointment.objects.filter(
+        clinic=fake_clinic, source_status="10"  # mapeia p/ scheduled
+    ).first()
+    assert appointment is not None
+    appointment.status = AppointmentStatus.IN_PROGRESS
+    appointment.save(update_fields=["status"])
+
+    pull_appointments(fake_clinic)  # EHR continua reportando "10"
+    appointment.refresh_from_db()
+    assert appointment.status == AppointmentStatus.IN_PROGRESS  # não regrediu
+
+    # Avanço vindo do EHR entra normalmente (simulado trocando o mapa)
+    EHRStatusMap.objects.filter(
+        provider=EHRProviderKind.FAKE, source_status="10"
+    ).update(status=AppointmentStatus.COMPLETED)
+    pull_appointments(fake_clinic)
+    appointment.refresh_from_db()
+    assert appointment.status == AppointmentStatus.COMPLETED
+
+
 def test_agenda_busca_paciente_ausente_pontualmente(fake_clinic):
     """Agenda antes do pull de pacientes → refresh pontual via get_patient."""
     pull_catalogs(fake_clinic)

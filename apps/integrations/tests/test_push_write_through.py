@@ -56,7 +56,7 @@ def ehr_clinic(db):
     for source, status in [
         ("10", AppointmentStatus.SCHEDULED),
         ("30", AppointmentStatus.CONFIRMED),
-        ("9", AppointmentStatus.IN_PROGRESS),
+        ("9", AppointmentStatus.WAITING),  # paridade vSaúde: 9 = aguardando
         ("81", AppointmentStatus.COMPLETED),
         ("50", AppointmentStatus.CANCELED),
         ("6", AppointmentStatus.NO_SHOW),
@@ -251,7 +251,9 @@ def test_transicao_por_patch_aciona_rota_e_confirma_codigo(
     assert appointment.source_status == "81"  # código gravado pelo EHR
 
 
-def test_remarcar_gera_update_nao_transicao(client_ehr, ehr_clinic, scheduling_setup):
+def test_editar_em_lugar_gera_update_nao_transicao(client_ehr, ehr_clinic, scheduling_setup):
+    """Editar (mudar a data EM-LUGAR) → op update no MESMO registro. O
+    "Remarcar" do produto não passa por aqui: duplica via POST (RF-AGE-5)."""
     created = _create_appointment(client_ehr, scheduling_setup)
     process_clinic_operations(ehr_clinic)
     pk = created.data["id"]
@@ -289,6 +291,105 @@ def test_delete_consulta_propaga(client_ehr, ehr_clinic, scheduling_setup):
     assert client_ehr.delete(f"{APPOINTMENTS_URL}{pk}/").status_code == 204
     process_clinic_operations(ehr_clinic)
     assert external_id not in FakeAdapter._appointments[ehr_clinic.pk]
+
+
+def test_remarcar_duplicador_vira_create_novo(client_ehr, ehr_clinic, scheduling_setup):
+    """Remarcar DUPLICA (decisão de produto, RF-AGE-5): o segundo POST vira
+    Create novo no EHR com external_id PRÓPRIO; a original não é tocada."""
+    original = _create_appointment(client_ehr, scheduling_setup)
+    process_clinic_operations(ehr_clinic)
+    original_ext = Appointment.objects.get(pk=original.data["id"]).external_id
+
+    duplicate = _create_appointment(
+        client_ehr,
+        scheduling_setup,
+        starts_at=(timezone.now() + timedelta(days=9)).isoformat(),
+    )
+    assert duplicate.status_code == 201
+    assert process_clinic_operations(ehr_clinic)["succeeded"] == 1
+
+    dup = Appointment.objects.get(pk=duplicate.data["id"])
+    assert dup.external_id and dup.external_id != original_ext
+
+    # Os DOIS registros vivem no EHR - nada foi remarcado em-lugar
+    store = FakeAdapter._appointments[ehr_clinic.pk]
+    assert original_ext in store and dup.external_id in store
+    assert Appointment.objects.get(pk=original.data["id"]).source_status == "10"
+
+
+def test_transicao_waiting_confirma_codigo_9(client_ehr, ehr_clinic, scheduling_setup):
+    """Aguardando atendimento tem rota própria e confirma o código 9."""
+    created = _create_appointment(client_ehr, scheduling_setup)
+    process_clinic_operations(ehr_clinic)
+    pk = created.data["id"]
+
+    client_ehr.patch(f"{APPOINTMENTS_URL}{pk}/", {"status": "waiting"}, format="json")
+    assert process_clinic_operations(ehr_clinic)["failed"] == 0
+
+    appointment = Appointment.objects.get(pk=pk)
+    assert appointment.status == AppointmentStatus.WAITING
+    assert appointment.source_status == "9"
+
+
+def test_in_progress_e_local_only_sem_regressao(client_ehr, ehr_clinic, scheduling_setup):
+    """RF-AGE-5: in_progress não tem rota - a op conclui SEM tocar o EHR e
+    sem a confirmação regredir o status otimista local."""
+    created = _create_appointment(client_ehr, scheduling_setup)
+    process_clinic_operations(ehr_clinic)
+    pk = created.data["id"]
+
+    client_ehr.patch(f"{APPOINTMENTS_URL}{pk}/", {"status": "waiting"}, format="json")
+    process_clinic_operations(ehr_clinic)
+
+    client_ehr.patch(f"{APPOINTMENTS_URL}{pk}/", {"status": "in_progress"}, format="json")
+    assert process_clinic_operations(ehr_clinic)["failed"] == 0
+
+    appointment = Appointment.objects.get(pk=pk)
+    assert appointment.status == AppointmentStatus.IN_PROGRESS  # não regrediu
+    assert appointment.source_status == "9"  # EHR segue em "aguardando"
+    assert appointment.sync_status == SyncStatus.SYNCED
+    ehr_record = FakeAdapter._appointments[ehr_clinic.pk][appointment.external_id]
+    assert ehr_record.source_status == "9"  # transição sem rota não tocou lá
+
+
+def test_op_waiting_atrasada_nao_regride_in_progress(client_ehr, ehr_clinic, scheduling_setup):
+    """Corrida real: a op de waiting ainda está na fila quando o usuário já
+    puxou a consulta para in_progress - a confirmação não pode regredir."""
+    created = _create_appointment(client_ehr, scheduling_setup)
+    process_clinic_operations(ehr_clinic)
+    pk = created.data["id"]
+
+    # Duas transições ANTES de o worker rodar
+    client_ehr.patch(f"{APPOINTMENTS_URL}{pk}/", {"status": "waiting"}, format="json")
+    client_ehr.patch(f"{APPOINTMENTS_URL}{pk}/", {"status": "in_progress"}, format="json")
+    assert process_clinic_operations(ehr_clinic)["failed"] == 0
+
+    appointment = Appointment.objects.get(pk=pk)
+    assert appointment.status == AppointmentStatus.IN_PROGRESS
+    assert appointment.source_status == "9"  # waiting FOI empurrado ao EHR
+
+
+def test_consulta_sem_convenio_cai_no_particular(ehr_clinic, scheduling_setup):
+    """§10.2: sem convênio → convênio "Particular" do tenant no payload (o
+    app web da vSaúde manda o id do Particular, nunca null)."""
+    from apps.integrations.push import _appointment_data
+
+    appointment = Appointment.objects.create(
+        clinic=ehr_clinic,
+        patient=scheduling_setup["patient"],
+        practitioner=scheduling_setup["practitioner"],
+        procedure=scheduling_setup["procedure"],
+        care_unit=scheduling_setup["care_unit"],
+        starts_at=timezone.now() + timedelta(days=2),
+        duration_min=30,
+    )
+    data = _appointment_data(appointment)
+    assert data["insurance_company_external_id"] == "fake-ins-1"
+
+    # Clínica sem convênio "Particular" no catálogo → segue vazio
+    InsuranceCompany.objects.filter(clinic=ehr_clinic).update(name="Unimed")
+    data = _appointment_data(appointment)
+    assert data["insurance_company_external_id"] == ""
 
 
 # ------------------- delete bidirecional (EHR → nós) ------------------ #

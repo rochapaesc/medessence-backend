@@ -292,9 +292,12 @@ class FakeAdapter:
     # Ação semântica → código cru "gravado" pelo fake (compatível com o
     # mapa da vSaúde p/ facilitar leitura; sem EHRStatusMap p/ 'fake', o
     # confirmador mantém o status otimista - comportamento esperado).
+    # PARIDADE com a vSaúde real (RF-AGE-5): waiting grava "9" e
+    # "in_progress" NÃO tem rota - fica fora do dict de propósito, para o
+    # dev exercitar o caminho local-only + guarda anti-regressão.
     TRANSITION_CODES: ClassVar[dict] = {
         "confirmed": "30",
-        "in_progress": "9",
+        "waiting": "9",
         "completed": "81",
         "canceled": "50",
         "no_show": "6",
@@ -418,12 +421,15 @@ class FakeAdapter:
     def delete_appointment(self, external_id: str) -> None:
         self._appointments.setdefault(self.clinic.pk, {}).pop(external_id, None)
 
-    def transition_appointment(self, external_id: str, target_status: str) -> None:
+    def transition_appointment(self, external_id: str, target_status: str) -> bool:
+        code = self.TRANSITION_CODES.get(target_status)
+        if code is None:
+            # Sem rota no provedor (ex.: in_progress) - transição LOCAL-only.
+            return False
         store = self._appointments.setdefault(self.clinic.pk, {})
         base = store.get(external_id)
-        code = self.TRANSITION_CODES.get(target_status, "10")
         if base is None:
-            return
+            return True
         store[external_id] = EHRAppointment(
             external_id=external_id,
             patient_external_id=base.patient_external_id,
@@ -436,6 +442,7 @@ class FakeAdapter:
             remotely=base.remotely,
             raw=base.raw,
         )
+        return True
 
     def get_appointment(self, external_id: str) -> EHRAppointment | None:
         return self._appointments.get(self.clinic.pk, {}).get(external_id)

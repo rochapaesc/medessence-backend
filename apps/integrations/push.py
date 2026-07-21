@@ -235,7 +235,7 @@ def _push_patient_tags(clinic, provider, operation) -> None:
 
 
 def _appointment_data(appointment) -> dict:
-    from apps.scheduling.models import PractitionerProcedure
+    from apps.scheduling.models import InsuranceCompany, PractitionerProcedure
 
     price = ""
     if appointment.price is not None:
@@ -246,6 +246,21 @@ def _appointment_data(appointment) -> dict:
         ).first()
         if offer and offer.price is not None:
             price = str(offer.price)
+
+    insurance_company = appointment.insurance_company
+    if insurance_company is None:
+        # Consulta sem convênio → convênio "Particular" do tenant. O app web
+        # da vSaúde manda o id do "Particular" mesmo em consulta particular
+        # (captura 21/07/2026, §10.2); insuranceCompanyId null arrisca
+        # rejeição. Sem "Particular" no catálogo, segue vazio (ex.: fake).
+        insurance_company = (
+            InsuranceCompany.objects.filter(
+                clinic=appointment.clinic, name__iexact="particular"
+            )
+            .exclude(external_id="")
+            .first()
+        )
+
     return {
         "patient_external_id": appointment.patient.external_id,
         "practitioner_external_id": appointment.practitioner.external_id,
@@ -256,7 +271,7 @@ def _appointment_data(appointment) -> dict:
             appointment.care_unit.external_id if appointment.care_unit else ""
         ),
         "insurance_company_external_id": (
-            appointment.insurance_company.external_id if appointment.insurance_company else ""
+            insurance_company.external_id if insurance_company else ""
         ),
         "insurance_plan_external_id": (
             appointment.insurance_plan.external_id if appointment.insurance_plan else ""
@@ -279,6 +294,7 @@ def _map_status(clinic, source_status: str) -> str | None:
 
 
 def _push_appointment(clinic, provider, operation) -> None:
+    from apps.scheduling.choices import PRE_ATTENDANCE_STATUSES, AppointmentStatus
     from apps.scheduling.models import Appointment
 
     payload = operation.payload or {}
@@ -316,15 +332,25 @@ def _push_appointment(clinic, provider, operation) -> None:
         update_fields += ["external_id", "source_status"]
     elif action == "transition":
         target = payload.get("target_status") or ""
-        provider.transition_appointment(appointment.external_id, target)
-        confirmed = provider.get_appointment(appointment.external_id)
-        if confirmed is not None:
-            appointment.source_status = confirmed.source_status
-            update_fields.append("source_status")
-            mapped = _map_status(clinic, confirmed.source_status)
-            if mapped:  # sem mapa → mantém o status otimista local
-                appointment.status = mapped
-                update_fields.append("status")
+        pushed = provider.transition_appointment(appointment.external_id, target)
+        # Sem rota no provedor (ex.: in_progress, RF-AGE-5) a transição é
+        # LOCAL-only: não re-busca, senão a confirmação regrediria o status.
+        if pushed:
+            confirmed = provider.get_appointment(appointment.external_id)
+            if confirmed is not None:
+                appointment.source_status = confirmed.source_status
+                update_fields.append("source_status")
+                mapped = _map_status(clinic, confirmed.source_status)
+                # Sem mapa → mantém o otimista local. Guarda anti-regressão
+                # também aqui: uma op de "waiting" enfileirada pode executar
+                # DEPOIS de o usuário já ter puxado a consulta para
+                # "em atendimento" localmente.
+                if mapped and not (
+                    appointment.status == AppointmentStatus.IN_PROGRESS
+                    and mapped in PRE_ATTENDANCE_STATUSES
+                ):
+                    appointment.status = mapped
+                    update_fields.append("status")
     else:
         provider.update_appointment(appointment.external_id, _appointment_data(appointment))
 

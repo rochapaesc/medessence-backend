@@ -30,7 +30,7 @@ from apps.patients.models import (
     PrescriptionModel,
     Tag,
 )
-from apps.scheduling.choices import AppointmentStatus
+from apps.scheduling.choices import PRE_ATTENDANCE_STATUSES, AppointmentStatus
 from apps.scheduling.models import (
     Appointment,
     CareUnit,
@@ -422,6 +422,15 @@ def pull_appointments(clinic, start=None, end=None) -> SyncRun:
             entry.source_status: entry.status
             for entry in EHRStatusMap.objects.filter(provider=clinic.ehr_provider)
         }
+        # Guarda anti-regressão (RF-AGE-5): "Em atendimento" é LOCAL-only e o
+        # EHR nunca fica sabendo dele - o upsert não pode devolver essas
+        # consultas para aguardando/confirmada/agendada. Conjunto minúsculo:
+        # só as consultas EM ATENDIMENTO agora.
+        in_progress_ids = set(
+            Appointment.all_objects.filter(
+                clinic=clinic, status=AppointmentStatus.IN_PROGRESS
+            ).values_list("external_id", flat=True)
+        )
         stats = {
             "fetched": 0,
             "created": 0,
@@ -471,7 +480,12 @@ def pull_appointments(clinic, start=None, end=None) -> SyncRun:
             if status is None:
                 if ehr_appointment.source_status not in stats["unmapped_statuses"]:
                     stats["unmapped_statuses"].append(ehr_appointment.source_status)
-                status = AppointmentStatus.SCHEDULED  # P4: calibrar EHRStatusMap
+                status = AppointmentStatus.SCHEDULED  # sem mapa → calibrar via admin
+            if (
+                ehr_appointment.external_id in in_progress_ids
+                and status in PRE_ATTENDANCE_STATUSES
+            ):
+                status = AppointmentStatus.IN_PROGRESS
 
             duration = ehr_appointment.duration_min or 30
             if not ehr_appointment.duration_min and ehr_appointment.ends_at:

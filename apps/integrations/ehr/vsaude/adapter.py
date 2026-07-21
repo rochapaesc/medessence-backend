@@ -482,8 +482,9 @@ class VSaudeAdapter:
     # ------------------- escrita (write-through, §10.2) ------------------- #
 
     # Rotas de transição da vSaúde (ScheduleService/<rota>). "Em atendimento"
-    # (in_progress) NÃO tem rota própria - a vSaúde vai de Waiting → Finalize;
-    # o código 9/90 não é setável por rota dedicada, então fica só LOCAL.
+    # (in_progress) NÃO tem rota NEM código na vSaúde (o "90" do levantamento
+    # original não existe - via API ela vai de Waiting direto a Finalize):
+    # a transição é LOCAL-only e devolve False (RF-AGE-5).
     TRANSITION_ROUTES: ClassVar[dict] = {
         "confirmed": "Accept",
         "waiting": "Waiting",  # Aguardando atendimento
@@ -637,13 +638,14 @@ class VSaudeAdapter:
             {"Id": external_id, "DeleteAllRecurrences": "false"},
         )
 
-    def transition_appointment(self, external_id: str, target_status: str) -> None:
+    def transition_appointment(self, external_id: str, target_status: str) -> bool:
         route = self.TRANSITION_ROUTES.get(target_status)
         if route is None:
             # Status sem rota na vSaúde (ex.: "em atendimento") — a mudança fica
             # só LOCAL; nada a empurrar. Não é erro.
-            return
+            return False
         self.client.post(f"ScheduleService/{route}", {"id": external_id})
+        return True
 
     def get_appointment(self, external_id: str) -> EHRAppointment | None:
         payload = self.client.get("ScheduleService/Get", {"id": external_id})

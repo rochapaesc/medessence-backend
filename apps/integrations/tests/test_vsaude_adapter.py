@@ -267,17 +267,22 @@ def test_update_appointment_nao_envia_price(clinic):
 def test_transition_mapeia_acao_para_rota(clinic):
     client = RecordingClient()
     adapter = VSaudeAdapter(clinic, client=client)
-    adapter.transition_appointment("appt-1", "completed")
+    assert adapter.transition_appointment("appt-1", "completed") is True
     _, path, body = client.last("POST")
     assert path == "ScheduleService/Finalize"
     assert body == {"id": "appt-1"}
 
+    assert adapter.transition_appointment("appt-1", "waiting") is True
+    _, path, _ = client.last("POST")
+    assert path == "ScheduleService/Waiting"
+
 
 def test_transition_sem_rota_e_noop(clinic):
-    """Status sem rota na vSaúde (ex.: 'in_progress'/'scheduled') = no-op LOCAL,
-    sem chamada HTTP e sem erro (a vSaúde não expõe rota de 'em atendimento')."""
+    """Status sem rota na vSaúde (ex.: 'in_progress'/'scheduled') = LOCAL-only:
+    devolve False, sem chamada HTTP e sem erro - o caller NÃO confirma por Get
+    (guarda anti-regressão, RF-AGE-5)."""
     client = RecordingClient()
     adapter = VSaudeAdapter(clinic, client=client)
-    adapter.transition_appointment("appt-1", "in_progress")
-    adapter.transition_appointment("appt-1", "scheduled")
+    assert adapter.transition_appointment("appt-1", "in_progress") is False
+    assert adapter.transition_appointment("appt-1", "scheduled") is False
     assert client.calls == []

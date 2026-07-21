@@ -288,10 +288,14 @@ class EHRProvider(Protocol):
 
     def delete_appointment(self, external_id: str) -> None: ...
 
-    def transition_appointment(self, external_id: str, target_status: str) -> None:
+    def transition_appointment(self, external_id: str, target_status: str) -> bool:
         """
-        Ação semântica → rota do provedor. `target_status` no nosso
-        vocabulário: confirmed/in_progress/completed/canceled/no_show.
+        Ação semântica → rota do provedor. `target_status` no nosso vocabulário:
+        confirmed/waiting/in_progress/completed/canceled/no_show. Devolve True
+        quando EMPURROU uma rota ao EHR (o caller então confirma por Get);
+        False quando o status não tem rota no provedor (ex.: in_progress na
+        vSaúde) - transição LOCAL-only, sem re-busca de confirmação
+        (guarda anti-regressão, RF-AGE-5).
         """
         ...
 
