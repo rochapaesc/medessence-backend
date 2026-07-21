@@ -210,6 +210,21 @@ def test_create_patient_payload_tem_tags_e_insurance(clinic):
     assert body["tags"] == []  # Create inclui tags
     assert body["insurance"] == {"isCompany": False}
     assert body["personalIdentifier"] == "11122233344"
+    # CALIBRADO ao vivo (21/07/2026): objetos aninhados como null derrubam o
+    # handler da vSaúde (500 "erro interno") - sempre objetos, nem que vazios.
+    for key in ("address", "birthInfo", "mother", "father", "partner", "sponsor"):
+        assert body[key] is not None
+
+
+def test_remove_tag_e_put(clinic):
+    """CALIBRADO ao vivo (21/07/2026): RemoveTag só aceita PUT (POST/DELETE →
+    405), com o mesmo corpo do AddTag."""
+    client = RecordingClient()
+    adapter = VSaudeAdapter(clinic, client=client)
+    adapter.remove_patient_tag("pat-1", "VIP")
+    _, path, body = client.last("PUT")
+    assert path == "PatientService/RemoveTag"
+    assert body == {"patientId": "pat-1", "tag": "VIP"}
 
 
 def test_update_patient_nao_envia_tags(clinic):

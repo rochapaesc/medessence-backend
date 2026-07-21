@@ -538,6 +538,14 @@ class VSaudeAdapter:
         # NÃO enviar `tags` aqui: o payload capturado de Update não inclui a
         # chave, e as atribuições são geridas à parte (AddTag/RemoveTag). O
         # Create adiciona tags=[] explicitamente.
+
+        # Objetos aninhados NUNCA vão como null: o CreatePatientRequest não os
+        # marca nullable e o handler da vSaúde estoura em NRE → 500 "erro
+        # interno" genérico (calibração ao vivo, 21/07/2026). O app web envia
+        # objetos vazios (ex.: address {country: BR, ...}) - espelha o mínimo.
+        for key in ("address", "birthInfo", "mother", "father", "partner", "sponsor"):
+            if payload.get(key) is None:
+                payload[key] = {}
         return payload
 
     def search_patients(self, keyword: str) -> list[EHRPatient]:
@@ -578,8 +586,9 @@ class VSaudeAdapter:
         )
 
     def remove_patient_tag(self, patient_external_id: str, tag_name: str) -> None:
-        # Payload assumido análogo ao AddTag (calibrar na 1ª chamada real).
-        self.client.post(
+        # CALIBRADO ao vivo (21/07/2026): RemoveTag é PUT com o mesmo corpo do
+        # AddTag - POST e DELETE respondem 405.
+        self.client.put(
             "PatientService/RemoveTag",
             {"patientId": patient_external_id, "tag": tag_name},
         )

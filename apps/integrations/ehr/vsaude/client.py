@@ -97,7 +97,12 @@ class VSaudeClient:
                 "próxima sincronização automática."
             )
         if response.status_code >= 500:
-            raise EHRUnavailableError(f"vSaúde indisponível ({response.status_code}).")
+            # ABP devolve erro de VALIDAÇÃO como 500 com a razão no corpo -
+            # expõe o começo do corpo (vai p/ op.last_error, calibração §10.2)
+            # em vez de descartar.
+            raise EHRUnavailableError(
+                f"vSaúde indisponível ({response.status_code}): {response.text[:300]}"
+            )
         if response.status_code >= 400:
             raise EHRError(f"vSaúde retornou {response.status_code}: {response.text[:300]}")
 
