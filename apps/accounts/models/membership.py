@@ -1,9 +1,11 @@
+from django.core.exceptions import ValidationError
 from django.db.models import (
     RESTRICT,
     SET_NULL,
     BooleanField,
     CharField,
     ForeignKey,
+    Q,
     UniqueConstraint,
 )
 
@@ -51,7 +53,63 @@ class Membership(BaseModel):
         verbose_name_plural = "Vínculos"
         constraints = [
             UniqueConstraint(fields=["user", "clinic"], name="uniq_membership_user_clinic"),
+            # Uma carteira tem UM dono: dois vínculos vivos não apontam para o
+            # mesmo profissional (a agenda/carteira dele ficaria compartilhada).
+            UniqueConstraint(
+                fields=["clinic", "practitioner"],
+                condition=Q(deleted_at__isnull=True, practitioner__isnull=False),
+                name="uniq_membership_clinic_practitioner",
+            ),
         ]
+
+    def clean(self):
+        """
+        O profissional do vínculo TEM de ser da mesma clínica (M3). Sem isto,
+        trocar a clínica de um vínculo no admin carrega o profissional antigo
+        junto e a carteira do médico vem vazia na API (`practitioner` inválido
+        no filtro) - foi exatamente o que aconteceu em 21/07/2026.
+        """
+        super().clean()
+        if self.practitioner_id is None:
+            return
+
+        if self.clinic_id and self.practitioner.clinic_id != self.clinic_id:
+            raise ValidationError(
+                {
+                    "practitioner": (
+                        f"'{self.practitioner.name}' é profissional de outra clínica "
+                        f"({self.practitioner.clinic}). Escolha um profissional de "
+                        f"{self.clinic}."
+                    )
+                }
+            )
+        if self.role != MembershipRole.DOCTOR:
+            raise ValidationError(
+                {
+                    "practitioner": (
+                        "Só o papel Médico tem profissional vinculado "
+                        "(a carteira/agenda dele)."
+                    )
+                }
+            )
+
+        taken = (
+            Membership.objects.filter(
+                clinic_id=self.clinic_id, practitioner_id=self.practitioner_id
+            )
+            .exclude(pk=self.pk)
+            .select_related("user")
+            .first()
+        )
+        if taken is not None:
+            raise ValidationError(
+                {
+                    "practitioner": (
+                        f"'{self.practitioner.name}' já é a carteira de "
+                        f"{taken.user.email} nesta clínica."
+                    )
+                }
+            )
 
     def __str__(self):
         return f"{self.user} @ {self.clinic} ({self.get_role_display()})"
