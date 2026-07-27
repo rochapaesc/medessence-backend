@@ -6,10 +6,17 @@ from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from apps.core.api.filtersets import AuditLogFilterset
-from apps.core.api.permissions import IsClinicManager
-from apps.core.api.serializers import AuditLogDetailSerializer, AuditLogReadSerializer
-from apps.core.api.viewsets.scoped import ClinicScopedReadOnlyViewSet
+from apps.core.api.filtersets import AuditLogFilterset, MyAccessLogFilterset
+from apps.core.api.permissions import IsClinicManager, IsClinicMember
+from apps.core.api.serializers import (
+    AuditLogDetailSerializer,
+    AuditLogReadSerializer,
+    MyAccessLogSerializer,
+)
+from apps.core.api.viewsets.scoped import (
+    ClinicScopedListViewSet,
+    ClinicScopedReadOnlyViewSet,
+)
 from apps.core.audit import log_action
 from apps.core.models import AuditLog
 from apps.core.models.audit_log import AuditAction
@@ -19,35 +26,16 @@ from apps.core.models.audit_log import AuditAction
 EXPORT_LIMIT = 20_000
 
 
-class AuditLogViewSet(ClinicScopedReadOnlyViewSet):
+class AuditLabelsMixin:
     """
-    Somente leitura - logs são imutáveis por design.
+    Rótulos da linha resolvidos EM LOTE - duas queries por página, não N+1:
+    nome do paciente quando o alvo é um, e papel de quem agiu.
 
-    Plano clínica: o gestor consulta a auditoria da PRÓPRIA clínica
-    (o escopo vem do contexto ativo; logs globais, com clinic nula,
-    não aparecem aqui - pertencem ao plano plataforma, F5).
-
-    Consultar a auditoria também deixa rastro: quem abre esta tela enxerga os
-    acessos de todo mundo, e sem registrar isso o gestor seria o único ponto
-    cego do sistema.
+    `audit_prefetch_roles = False` desliga a busca de papéis para tela cujo
+    serializer não mostra quem agiu (Meus acessos: é sempre o requisitante).
     """
 
-    model = AuditLog
-    filterset_class = AuditLogFilterset
-    serializer_class = AuditLogReadSerializer
-    permission_classes = [IsClinicManager]
-    ordering_fields = ["timestamp", "action", "resource"]
-    search_fields = ["user__email", "user__first_name", "user__last_name"]
-
-    action_serializer_classes = {
-        "list": AuditLogReadSerializer,
-        "retrieve": AuditLogDetailSerializer,
-    }
-
-    def get_queryset(self):
-        return super().get_queryset().select_related("user").order_by("-timestamp")
-
-    # ---------------- rótulos resolvidos em lote (sem N+1) ---------------- #
+    audit_prefetch_roles = True
 
     def get_serializer(self, *args, **kwargs):
         if kwargs.get("many") and args:
@@ -83,7 +71,11 @@ class AuditLogViewSet(ClinicScopedReadOnlyViewSet):
             else {}
         )
 
-        user_ids = {log.user_id for log in logs if log.user_id}
+        user_ids = (
+            {log.user_id for log in logs if log.user_id}
+            if self.audit_prefetch_roles
+            else set()
+        )
         self._user_roles = (
             dict(
                 Membership.objects.filter(
@@ -93,6 +85,35 @@ class AuditLogViewSet(ClinicScopedReadOnlyViewSet):
             if user_ids
             else {}
         )
+
+
+class AuditLogViewSet(AuditLabelsMixin, ClinicScopedReadOnlyViewSet):
+    """
+    Somente leitura - logs são imutáveis por design.
+
+    Plano clínica: o gestor consulta a auditoria da PRÓPRIA clínica
+    (o escopo vem do contexto ativo; logs globais, com clinic nula,
+    não aparecem aqui - pertencem ao plano plataforma, F5).
+
+    Consultar a auditoria também deixa rastro: quem abre esta tela enxerga os
+    acessos de todo mundo, e sem registrar isso o gestor seria o único ponto
+    cego do sistema.
+    """
+
+    model = AuditLog
+    filterset_class = AuditLogFilterset
+    serializer_class = AuditLogReadSerializer
+    permission_classes = [IsClinicManager]
+    ordering_fields = ["timestamp", "action", "resource"]
+    search_fields = ["user__email", "user__first_name", "user__last_name"]
+
+    action_serializer_classes = {
+        "list": AuditLogReadSerializer,
+        "retrieve": AuditLogDetailSerializer,
+    }
+
+    def get_queryset(self):
+        return super().get_queryset().select_related("user").order_by("-timestamp")
 
     # ----------------------------- consultas ----------------------------- #
 
@@ -190,4 +211,48 @@ class AuditLogViewSet(ClinicScopedReadOnlyViewSet):
             payload=payload,
             request=self.request,
             clinic=self.clinic,
+        )
+
+
+class MyAccessLogViewSet(AuditLabelsMixin, ClinicScopedListViewSet):
+    """
+    "Meus acessos" (§15.2): cada usuário vê o histórico do que ELE mesmo fez.
+
+    É o outro lado do gate de CPF - quem é auditado enxerga o próprio rastro e
+    percebe uso indevido da conta (um login de outro IP salta aos olhos).
+
+    Três garantias, todas por construção e não por configuração:
+      1. O recorte por usuário é IMPOSTO aqui (`user=request.user`); não existe
+         parâmetro de cliente capaz de ampliá-lo.
+      2. O serializer não TEM o campo `user` - não há como devolver terceiro.
+      3. Consultar o próprio log NÃO deixa rastro (nenhum `_log_consulta`
+         aqui): seria ruído auto-referente e encheria a tela do gestor de
+         eventos sobre gente lendo a própria lista. O rastro continua valendo
+         para a auditoria do gestor, que é quem enxerga acesso alheio.
+    """
+
+    model = AuditLog
+    filterset_class = MyAccessLogFilterset
+    serializer_class = MyAccessLogSerializer
+    # Qualquer papel: detectar uso indevido da própria conta interessa aos três.
+    permission_classes = [IsClinicMember]
+    ordering_fields = ["timestamp"]
+    # O serializer não mostra quem agiu - não há papel a resolver.
+    audit_prefetch_roles = False
+
+    def get_queryset(self):
+        return super().get_queryset().filter(user=self.request.user).order_by("-timestamp")
+
+    @action(detail=False, methods=["get"], url_path="summary")
+    def summary(self, request):
+        """
+        A linha única acima da lista. Não é o resumo do gestor: aqui só cabe
+        o que é do próprio usuário, e nada que descreva a clínica.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        return Response(
+            {
+                "total": queryset.count(),
+                "documents_seen": queryset.filter(action=AuditAction.READ_CPF).count(),
+            }
         )

@@ -1,4 +1,4 @@
-from apps.core.api.viewsets.audit_log import AuditLogViewSet
+from apps.core.api.viewsets.audit_log import AuditLogViewSet, MyAccessLogViewSet
 from apps.core.api.viewsets.base import (
     BaseCreateDestroyViewSet,
     BaseGenericViewSet,
@@ -28,4 +28,5 @@ __all__ = [
     "ClinicScopedModelViewSet",
     "ClinicScopedReadOnlyViewSet",
     "ListModelViewSet",
+    "MyAccessLogViewSet",
 ]

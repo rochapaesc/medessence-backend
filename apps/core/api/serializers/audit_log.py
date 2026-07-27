@@ -73,3 +73,20 @@ class AuditLogDetailSerializer(AuditLogReadSerializer):
         payload = obj.payload or {}
         changed = payload.get("changed_fields")
         return list(changed) if isinstance(changed, list) else []
+
+
+class MyAccessLogSerializer(AuditLogDetailSerializer):
+    """
+    Linha de "Meus acessos" (§15.2).
+
+    Sem o campo `user`: nesta tela quem agiu é sempre o requisitante. Um
+    serializer que não TEM o campo não tem como devolver terceiro - a garantia
+    fica na estrutura, não numa checagem que alguém pode remover depois.
+
+    (`user = None` é o modo do DRF de retirar um campo herdado.)
+    """
+
+    user = None
+
+    class Meta(AuditLogDetailSerializer.Meta):
+        fields = [f for f in AuditLogDetailSerializer.Meta.fields if f != "user"]
