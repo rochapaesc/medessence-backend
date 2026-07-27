@@ -1,3 +1,11 @@
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from django.conf import settings
+from django.db.models import Count
+from django.db.models.functions import TruncDate
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
 from apps.core.api.viewsets import ClinicScopedModelViewSet
 from apps.core.choices import SyncStatus
 from apps.core.mixins import AuditMixin
@@ -42,6 +50,50 @@ class AppointmentViewSet(AuditMixin, ClinicScopedModelViewSet):
 
     def get_queryset(self):
         return super().get_queryset().order_by("starts_at")
+
+    @action(detail=False, methods=["get"], url_path="summary")
+    def summary(self, request):
+        """
+        Contagem agregada da agenda (RF-AGE-1): total, por dia e por status,
+        com os MESMOS filtros da listagem (janela, profissional, unidade...).
+
+        Existe para o calendário e os KPIs não precisarem baixar o mês inteiro:
+        um mês cheio passava de 400 consultas e o front paginava de 100 em 100
+        só para contar quantas caem em cada dia.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # O dia é o do FUSO DA CLÍNICA: em UTC, uma consulta das 21h em
+        # Fortaleza cairia no dia seguinte e o calendário divergiria da lista.
+        try:
+            tz = ZoneInfo(self.clinic.timezone or settings.TIME_ZONE)
+        except (ZoneInfoNotFoundError, ValueError):
+            tz = ZoneInfo(settings.TIME_ZONE)
+
+        # `order_by()` limpa a ordenação padrão: sem isso o `starts_at` entra
+        # no GROUP BY e a contagem sai fragmentada (uma linha por consulta).
+        by_day = {
+            row["day"].isoformat(): row["total"]
+            for row in queryset.order_by()
+            .annotate(day=TruncDate("starts_at", tzinfo=tz))
+            .values("day")
+            .annotate(total=Count("id"))
+            .order_by("day")
+        }
+        by_status = {
+            row["status"]: row["total"]
+            for row in queryset.order_by()
+            .values("status")
+            .annotate(total=Count("id"))
+        }
+
+        return Response(
+            {
+                "total": sum(by_day.values()),
+                "by_day": by_day,
+                "by_status": by_status,
+            }
+        )
 
     # ----------------- write-through p/ o EHR (§10.2) ----------------- #
 
