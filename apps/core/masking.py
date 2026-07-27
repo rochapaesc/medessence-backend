@@ -22,3 +22,15 @@ def mask_cpf(value: str | None) -> str:
     return "".join(
         "*" if index in hidden else char for index, char in enumerate(value)
     )
+
+
+def is_masked(value: str | None) -> bool:
+    """
+    O valor recebido é uma máscara devolvida pelo cliente?
+
+    Uma tela que exibe `123.***.***-00` e reenvia isso no salvar apagaria o
+    documento real - foi o que aconteceu em 21/07/2026: o CPF `12345678909`
+    virou `12309` (só os dígitos visíveis) e seguiu para o EHR. Quem escreve
+    trata isto como "não mudou".
+    """
+    return "*" in (value or "")

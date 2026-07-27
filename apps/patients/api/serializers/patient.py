@@ -2,10 +2,11 @@ from rest_framework.serializers import (
     ModelSerializer,
     PrimaryKeyRelatedField,
     SerializerMethodField,
+    ValidationError,
 )
 
-from apps.core.api.serializers import ClinicalContentGateMixin
-from apps.core.masking import mask_cpf
+from apps.core.api.serializers import ClinicalContentGateMixin, viewer_is_attendant
+from apps.core.masking import is_masked, mask_cpf
 from apps.patients.api.serializers.tag import TagSummarySerializer
 from apps.patients.choices import TagOrigin
 from apps.patients.models import Patient, PatientTag, Tag
@@ -16,13 +17,16 @@ class PatientReadSerializer(ModelSerializer):
 
     status = SerializerMethodField()
     tags = SerializerMethodField()
-    # O CPF sai mascarado de toda leitura - vale para todos os papéis. O valor
-    # cheio nunca chega ao cliente, então não aparece nem no devtools; quem
-    # precisa dele inteiro (push ao EHR, busca) roda no servidor.
+    # CPF por papel (§15, decidido em 21/07/2026): médico e gestor precisam do
+    # documento para atender e faturar; o atendente vê mascarado, mesma régua
+    # do conteúdo clínico (P10). A decisão é do servidor - o valor cheio não
+    # chega ao cliente de quem não pode ver, então não aparece nem no devtools.
     cpf = SerializerMethodField()
 
     def get_cpf(self, obj):
-        return mask_cpf(obj.cpf)
+        if viewer_is_attendant(self.context):
+            return mask_cpf(obj.cpf)
+        return obj.cpf
 
     class Meta:
         model = Patient
@@ -83,15 +87,21 @@ class PatientDetailSerializer(ClinicalContentGateMixin, PatientReadSerializer):
         ]
 
 
-class PatientWriteSerializer(ModelSerializer):
+class PatientWriteSerializer(ClinicalContentGateMixin, ModelSerializer):
     """
     Criação/edição local (RF-PAC-3/4). `clinic` é injetado do contexto ativo
-    pelo viewset escopado; o write-through para o EHR entra na fase do
-    adapter (a mutação passará a enfileirar SyncOperation).
+    pelo viewset escopado; a mutação enfileira `SyncOperation` quando a clínica
+    tem EHR com escrita ligada (§10.2).
 
     `tag_ids` substitui o conjunto de tags LOCAIS do paciente - atribuições
     espelhadas do EHR (origin=EHR) não são tocadas por aqui.
+
+    O atendente CADASTRA e EDITA, mas não lê de volta o que não pode ver: o
+    gate de conteúdo clínico vale também para a resposta da escrita (antes,
+    salvar qualquer campo devolvia `comments_html` inteiro).
     """
+
+    clinical_content_fields = ("comments_html",)
 
     tag_ids = PrimaryKeyRelatedField(
         many=True,
@@ -100,12 +110,25 @@ class PatientWriteSerializer(ModelSerializer):
         queryset=Tag.objects.all(),
     )
 
+    def validate_cpf(self, value):
+        """
+        Recusa a MÁSCARA como valor: a tela mostra `123.***.***-00` para quem
+        não pode ver o documento, e reenviar isso no salvar apagaria o CPF real
+        (e o empurraria truncado ao EHR). Mascarado = "não mudou".
+        """
+        if is_masked(value):
+            if self.instance is None:
+                raise ValidationError(
+                    "CPF inválido: o valor recebido está mascarado."
+                )
+            return self.instance.cpf
+        return value
+
     def to_representation(self, instance):
-        # `cpf` continua gravável, mas a resposta do create/update sai
-        # mascarada como qualquer leitura: o front insere este objeto direto na
-        # lista, e o CPF cheio apareceria na tela e no payload.
+        # A resposta do create/update segue a mesma régua da leitura: quem não
+        # pode ver o documento recebe mascarado.
         data = super().to_representation(instance)
-        if "cpf" in data:
+        if "cpf" in data and viewer_is_attendant(self.context):
             data["cpf"] = mask_cpf(data["cpf"])
         return data
 
