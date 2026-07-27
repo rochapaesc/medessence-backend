@@ -146,6 +146,80 @@ def test_status_atualiza_mensagem(clinic_a, inbox_a):
     assert message.status == MessageStatus.READ
 
 
+def test_status_atrasado_nao_regride(clinic_a, inbox_a):
+    """A Meta entrega fora de ordem: um delivered DEPOIS do read não regride.
+
+    Achado na leitura das referências (Whatomate statusPriority) — antes desta
+    guarda, o último webhook a chegar mandava, qualquer que fosse."""
+    from apps.inbox.tests.conftest import make_message
+
+    message = make_message(inbox_a["conversation"], sender_kind=SenderKind.AGENT, mid="wamid.ooo")
+    channel = inbox_a["channel"]
+
+    ingest_events(channel, parse_meta_webhook(_status_payload("wamid.ooo", "read")))
+    ingest_events(channel, parse_meta_webhook(_status_payload("wamid.ooo", "delivered")))
+
+    message.refresh_from_db()
+    assert message.status == MessageStatus.READ, "delivered atrasado não desfaz o read"
+
+
+def test_status_failed_guarda_o_motivo(clinic_a, inbox_a):
+    """errors[] do FAILED vira texto legível em status_error — "Falhou" sem
+    motivo não ajuda ninguém a agir."""
+    from apps.inbox.tests.conftest import make_message
+
+    message = make_message(inbox_a["conversation"], sender_kind=SenderKind.AGENT, mid="wamid.f1")
+    payload = _status_payload("wamid.f1", "failed")
+    payload["entry"][0]["changes"][0]["value"]["statuses"][0]["errors"] = [
+        {
+            "code": 131047,
+            "title": "Re-engagement message",
+            "error_data": {"details": "Mais de 24h desde a última resposta do cliente."},
+        }
+    ]
+
+    ingest_events(inbox_a["channel"], parse_meta_webhook(payload))
+
+    message.refresh_from_db()
+    assert message.status == MessageStatus.FAILED
+    assert "131047" in message.status_error
+    assert "24h" in message.status_error
+
+
+def test_status_failed_nao_desfaz_entrega_confirmada(clinic_a, inbox_a):
+    """FAILED fora de ordem depois de delivered/read é ruído — não aplica."""
+    from apps.inbox.tests.conftest import make_message
+
+    message = make_message(inbox_a["conversation"], sender_kind=SenderKind.AGENT, mid="wamid.f2")
+    channel = inbox_a["channel"]
+
+    ingest_events(channel, parse_meta_webhook(_status_payload("wamid.f2", "delivered")))
+    ingest_events(channel, parse_meta_webhook(_status_payload("wamid.f2", "failed")))
+
+    message.refresh_from_db()
+    assert message.status == MessageStatus.DELIVERED
+
+
+def test_delivered_supera_failed_e_limpa_o_motivo(clinic_a, inbox_a):
+    """Se entregou, entregou: delivered posterior supera o FAILED e o motivo
+    antigo não fica assombrando a thread."""
+    from apps.inbox.tests.conftest import make_message
+
+    message = make_message(inbox_a["conversation"], sender_kind=SenderKind.AGENT, mid="wamid.f3")
+    channel = inbox_a["channel"]
+
+    payload = _status_payload("wamid.f3", "failed")
+    payload["entry"][0]["changes"][0]["value"]["statuses"][0]["errors"] = [
+        {"code": 1, "title": "Erro transitório"}
+    ]
+    ingest_events(channel, parse_meta_webhook(payload))
+    ingest_events(channel, parse_meta_webhook(_status_payload("wamid.f3", "delivered")))
+
+    message.refresh_from_db()
+    assert message.status == MessageStatus.DELIVERED
+    assert message.status_error == ""
+
+
 def test_midia_cria_asset(clinic_a, inbox_a):
     channel = inbox_a["channel"]
     ingest_events(channel, parse_meta_webhook(_media_payload("5585900000777", "media-xyz")))

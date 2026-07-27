@@ -116,8 +116,28 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
                         provider_message_id=status.get("id", ""),
                         wa_id=status.get("recipient_id", ""),
                         status=STATUS_MAP.get(status.get("status", ""), ""),
+                        status_error=_status_error(status),
                         wa_timestamp=_ts(status.get("timestamp")),
                         raw=status,
                     )
                 )
     return events
+
+
+def _status_error(status: dict) -> str:
+    """
+    `errors[]` do status FAILED em uma linha legível. O código importa (é o
+    que se busca na documentação da Meta) e `error_data.details` costuma ser
+    a única parte que explica de verdade.
+    """
+    parts = []
+    for error in status.get("errors", []) or []:
+        code = error.get("code", "")
+        title = error.get("title", "")
+        details = (error.get("error_data") or {}).get("details", "")
+        text = " ".join(str(p) for p in (code, title) if p)
+        if details and details != title:
+            text = f"{text}: {details}" if text else details
+        if text:
+            parts.append(text)
+    return "; ".join(parts)

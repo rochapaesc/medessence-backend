@@ -35,6 +35,7 @@ class WhatsAppEvent:
     mime_type: str = ""
     reply_to_provider_id: str = ""
     status: str = ""  # para kind=STATUS: sent/delivered/read/failed
+    status_error: str = ""  # para status=failed: motivo legível (errors[] da Meta)
     wa_timestamp: datetime | None = None  # aware
     contact_name: str = ""
     raw: dict = field(default_factory=dict)

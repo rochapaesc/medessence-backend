@@ -69,6 +69,12 @@ class Message(TenantScopedModel):
         choices=MessageStatus.choices,
         blank=True,
     )
+    status_error = TextField(
+        verbose_name="Motivo da falha",
+        blank=True,
+        help_text="Preenchido quando FAILED: errors[] do webhook ou erro de envio. "
+        '"Falhou" sem motivo não ajuda ninguém a agir.',
+    )
     sender_kind = CharField(
         verbose_name="Autor",
         max_length=8,

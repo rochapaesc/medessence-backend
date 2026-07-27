@@ -154,15 +154,44 @@ def _ingest_message(channel, event, sender_kind) -> bool:
     return message is not None
 
 
+# Escala de progresso do status (guarda de ordem): a Meta entrega webhooks
+# fora de ordem e duplicados - sem isto, um `delivered` atrasado REGRIDE um
+# `read` na tela. FAILED fica entre SENT e DELIVERED de propósito: sobrescreve
+# um envio (a entrega falhou), mas nunca uma entrega confirmada - e um
+# delivered posterior o supera (se entregou, entregou). Mesmo padrão
+# anti-regressão do in_progress no EHR (§10.2).
+_STATUS_RANK = {
+    "": 0,
+    MessageStatus.SENT: 1,
+    MessageStatus.FAILED: 2,
+    MessageStatus.DELIVERED: 3,
+    MessageStatus.READ: 4,
+}
+
+
 def _apply_status(channel, event) -> bool:
     """Atualiza o status de entrega de uma mensagem OUT (sent→delivered→read)."""
     from apps.inbox.models import Message
 
     if not event.provider_message_id or not event.status:
         return False
+
+    rank = _STATUS_RANK.get(event.status, 0)
+    # Só status ATRÁS na escala podem ser sobrescritos - filtro no UPDATE, e
+    # não em Python, para a corrida entre dois webhooks paralelos não anular
+    # a guarda.
+    can_overwrite = [s for s, r in _STATUS_RANK.items() if r < rank]
     updated = Message.objects.filter(
-        clinic=channel.clinic, provider_message_id=event.provider_message_id
-    ).update(status=event.status, updated_at=timezone.now())
+        clinic=channel.clinic,
+        provider_message_id=event.provider_message_id,
+        status__in=can_overwrite,
+    ).update(
+        status=event.status,
+        # FAILED chega com o motivo; um status de sucesso posterior limpa o
+        # motivo de um FAILED fora de ordem que ele acabou de superar.
+        status_error=event.status_error if event.status == MessageStatus.FAILED else "",
+        updated_at=timezone.now(),
+    )
     if updated:
         from apps.inbox.realtime import notify_message_status
 
@@ -178,16 +207,39 @@ def _apply_status(channel, event) -> bool:
 def send_message(message) -> None:
     """Envia uma mensagem OUT pendente pelo provider do canal e grava o wamid
     e o status. Chamado pela task `send_whatsapp_message`."""
+    from apps.integrations.whatsapp.exceptions import (
+        WhatsAppError,
+        WhatsAppRateLimitedError,
+        WhatsAppUnavailableError,
+    )
     from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
     conversation = message.conversation
     provider = get_whatsapp_provider(conversation.channel)
     to = conversation.contact.wa_id
 
-    if message.kind == MessageKind.TEMPLATE and message.template_name:
-        result = provider.send_template(to, message.template_name, "pt_BR")
-    else:
-        result = provider.send_text(to, message.body, message.reply_to_provider_id or None)
+    try:
+        if message.kind == MessageKind.TEMPLATE and message.template_name:
+            result = provider.send_template(to, message.template_name, "pt_BR")
+        else:
+            result = provider.send_text(
+                to, message.body, message.reply_to_provider_id or None
+            )
+    except (WhatsAppRateLimitedError, WhatsAppUnavailableError):
+        # Transitórios: sobem para o autoretry da task - a mensagem continua
+        # pendente e a fila tenta de novo.
+        raise
+    except WhatsAppError as exc:
+        # Erro de negócio (janela fechada, número inválido...): retry não
+        # resolve. A mensagem morre FAILED **com o motivo** - antes desta
+        # captura ela ficava pendente para sempre, sem explicação nenhuma.
+        message.status = MessageStatus.FAILED
+        message.status_error = str(exc)
+        message.save(update_fields=["status", "status_error", "updated_at"])
+        # Sem realtime aqui: o evento message:status é endereçado por wamid,
+        # que uma falha de envio não tem. A resposta REST do composer e o
+        # refetch da thread mostram o estado.
+        return
 
     message.provider_message_id = result.provider_message_id
     message.status = result.status or MessageStatus.SENT

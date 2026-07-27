@@ -55,6 +55,49 @@ def test_fetch_media_skip_sem_conteudo(clinic_a, inbox_a):
     assert fetch_media_asset(media.pk) == "skipped: sem conteúdo"
 
 
+def test_envio_com_erro_de_negocio_vira_failed_com_motivo(monkeypatch, inbox_a):
+    """Janela fechada, número inválido etc.: retry não resolve. Antes desta
+    captura a mensagem ficava pendente para sempre, sem explicação."""
+    from apps.inbox.choices import MessageStatus
+    from apps.inbox.services import send_message
+    from apps.integrations.whatsapp.exceptions import WhatsAppError
+    from apps.integrations.whatsapp.fake.adapter import FakeWhatsAppAdapter
+
+    def _janela_fechada(self, to, body, reply_to=None):
+        raise WhatsAppError("131047 Re-engagement message: janela de 24h fechada")
+
+    monkeypatch.setattr(FakeWhatsAppAdapter, "send_text", _janela_fechada)
+    message = make_message(inbox_a["conversation"], sender_kind=SenderKind.AGENT)
+
+    send_message(message)
+
+    message.refresh_from_db()
+    assert message.status == MessageStatus.FAILED
+    assert "131047" in message.status_error
+    assert message.provider_message_id == "", "não ganhou wamid — nunca saiu"
+
+
+def test_erro_transitorio_no_envio_sobe_para_o_retry(monkeypatch, inbox_a):
+    """Rate limit NÃO vira failed: propaga para o autoretry da task."""
+    import pytest as _pytest
+
+    from apps.inbox.services import send_message
+    from apps.integrations.whatsapp.exceptions import WhatsAppRateLimitedError
+    from apps.integrations.whatsapp.fake.adapter import FakeWhatsAppAdapter
+
+    def _rate_limited(self, to, body, reply_to=None):
+        raise WhatsAppRateLimitedError("429")
+
+    monkeypatch.setattr(FakeWhatsAppAdapter, "send_text", _rate_limited)
+    message = make_message(inbox_a["conversation"], sender_kind=SenderKind.AGENT)
+
+    with _pytest.raises(WhatsAppRateLimitedError):
+        send_message(message)
+
+    message.refresh_from_db()
+    assert message.status == "", "continua pendente — a fila tenta de novo"
+
+
 def test_adapter_meta_sem_credenciais(clinic_a):
     from apps.integrations.whatsapp.exceptions import WhatsAppNotConfiguredError
     from apps.integrations.whatsapp.registry import get_whatsapp_provider

@@ -28,6 +28,7 @@ class MessageSerializer(ModelSerializer):
             "media_url",
             "reply_to_provider_id",
             "status",
+            "status_error",
             "sender_kind",
             "sent_by",
             "template_name",
