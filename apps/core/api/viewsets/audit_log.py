@@ -105,7 +105,9 @@ class AuditLogViewSet(AuditLabelsMixin, ClinicScopedReadOnlyViewSet):
     serializer_class = AuditLogReadSerializer
     permission_classes = [IsClinicManager]
     ordering_fields = ["timestamp", "action", "resource"]
-    search_fields = ["user__email", "user__first_name", "user__last_name"]
+    # A busca ("quem fez") é do filterset, como no resto do projeto. Declarar
+    # `search_fields` aqui não faz nada: o `SearchFilter` do DRF não está em
+    # `filter_backends` - foi assim que a caixa de busca ficou inerte.
 
     action_serializer_classes = {
         "list": AuditLogReadSerializer,

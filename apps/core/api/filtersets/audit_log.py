@@ -1,3 +1,4 @@
+from django.db.models import Q
 from django_filters.rest_framework import (
     CharFilter,
     DateTimeFromToRangeFilter,
@@ -39,6 +40,11 @@ class MyAccessLogFilterset(ActionFilterMixin, FilterSet):
 
 
 class AuditLogFilterset(ActionFilterMixin, FilterSet):
+    # A busca é um filtro do django-filter, como em Pacientes e Inbox. O
+    # `SearchFilter` do DRF não está em `filter_backends` (nem existe no
+    # projeto), então `search_fields` no viewset seria lido por ninguém - era
+    # o caso desta tela até 27/07/2026, e a caixa de busca não filtrava nada.
+    search = CharFilter(method="filter_search")
     user = NumberFilter(field_name="user_id")
     user_email = CharFilter(field_name="user__email", lookup_expr="iexact")
     action = CharFilter(method="filter_action")
@@ -51,6 +57,7 @@ class AuditLogFilterset(ActionFilterMixin, FilterSet):
     class Meta:
         model = AuditLog
         fields = [
+            "search",
             "user",
             "user_email",
             "action",
@@ -59,3 +66,20 @@ class AuditLogFilterset(ActionFilterMixin, FilterSet):
             "ip_address",
             "timestamp",
         ]
+
+    def filter_search(self, queryset, name, value):
+        """
+        "Buscar por quem fez": nome ou e-mail de quem agiu.
+
+        Não busca pelo paciente: o nome dele não está no AuditLog (é resolvido
+        na hora de montar a linha), e filtrar por ele exigiria varrer a tabela
+        de pacientes a cada consulta.
+        """
+        value = value.strip()
+        if not value:
+            return queryset
+        return queryset.filter(
+            Q(user__first_name__icontains=value)
+            | Q(user__last_name__icontains=value)
+            | Q(user__email__icontains=value)
+        )

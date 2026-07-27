@@ -60,7 +60,13 @@ def eventos(db, clinic_a, doctor_a, paciente):
             action=AuditAction.UPDATE,
             resource="Patient",
             resource_id=str(paciente.pk),
-            payload={"changed_fields": ["phone", "city"], "before": {"phone": "111"}},
+            # Sentinela em vez de "111": um número curto bate por acaso dentro
+            # de um id quando as sequências do banco crescem, e o teste passa a
+            # falhar sozinho meses depois.
+            payload={
+                "changed_fields": ["phone", "city"],
+                "before": {"phone": "NAO-DEVE-VAZAR"},
+            },
         ),
         "create": AuditLog.objects.create(
             user=doctor_a,
@@ -132,7 +138,9 @@ def test_detalhe_mostra_campos_alterados_sem_valores(
     )
 
     assert response.data["changed_fields"] == ["phone", "city"]
-    assert "111" not in str(response.data), "o valor anterior não vai para a tela"
+    assert "NAO-DEVE-VAZAR" not in str(response.data), (
+        "o valor anterior não vai para a tela"
+    )
 
 
 # ─────────────────────────────── filtros ────────────────────────────────
@@ -166,10 +174,34 @@ def test_filtra_por_paciente(api_client, manager_single_clinic, eventos, pacient
     assert response.data["count"] >= 3
 
 
-def test_busca_por_usuario(api_client, manager_single_clinic, eventos):
-    response = _logado(api_client, manager_single_clinic).get(URL, {"search": "medica.audit"})
+def test_busca_por_quem_fez(api_client, manager_single_clinic, eventos, doctor_a):
+    """
+    A caixa "Buscar por quem fez".
 
-    assert response.data["count"] >= 3
+    A versão anterior deste teste pedia `count >= 3` — o que passa TAMBÉM
+    quando a busca não filtra nada, e foi exatamente assim que ela ficou
+    inerte sem ninguém perceber (o `search_fields` do viewset nunca era lido,
+    porque o `SearchFilter` do DRF não está em `filter_backends`). O que se
+    afirma agora é a EXCLUSÃO: quem não bate fica de fora.
+    """
+    client = _logado(api_client, manager_single_clinic)
+
+    # Consultar a auditoria grava evento do próprio gestor: é o contraste que
+    # torna a exclusão observável.
+    client.get(URL)
+
+    por_email = client.get(URL, {"search": "medica.audit"})
+    assert por_email.data["count"] > 0
+    assert {r["user"]["email"] for r in por_email.data["results"]} == {doctor_a.email}
+
+    por_nome = client.get(URL, {"search": "Emanuella"})
+    assert {r["user"]["email"] for r in por_nome.data["results"]} == {doctor_a.email}
+
+    por_sobrenome = client.get(URL, {"search": "cavalcante"})
+    assert por_sobrenome.data["count"] > 0, "a busca não diferencia maiúsculas"
+
+    ninguem = client.get(URL, {"search": "zzzznaoexistezzzz"})
+    assert ninguem.data["count"] == 0, "termo sem correspondência não devolve tudo"
 
 
 # ──────────────────────────────── resumo ────────────────────────────────
