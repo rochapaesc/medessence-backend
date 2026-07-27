@@ -29,3 +29,7 @@ CELERY_TASK_ALWAYS_EAGER = True
 
 # Channel layer em memória - realtime (§12) sem Redis nos testes.
 CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+
+# Webhook Meta (§7): valores conhecidos para assinar payloads nos testes.
+WHATSAPP_APP_SECRET = "app-secret-de-teste"
+WHATSAPP_VERIFY_TOKEN = "verify-token-de-teste"

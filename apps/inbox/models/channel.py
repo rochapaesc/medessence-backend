@@ -8,10 +8,9 @@ from apps.core.models import TenantScopedModel
 from apps.inbox.choices import WhatsAppProviderKind
 
 
-def default_webhook_secret() -> str:
-    """Segredo da URL de webhook por canal - legado do desenho Datafy
-    (URL-como-credencial). Com a Meta (§7) o webhook é um endpoint único
-    verificado por HMAC; a rota antiga morre junto com este campo."""
+def default_webhook_secret() -> str:  # pragma: no cover
+    """Viva SÓ porque a migration 0001 a referencia por caminho. O campo
+    morreu com o webhook por URL (§7, Meta usa HMAC) - nenhum código chama."""
     return secrets.token_urlsafe(32)
 
 
@@ -28,7 +27,7 @@ class Channel(TenantScopedModel):
         default=uuid.uuid4,
         editable=False,
         unique=True,
-        help_text="Identificador do canal na URL do webhook.",
+        help_text="Identificador público estável do canal.",
     )
     provider = CharField(
         verbose_name="Provedor",
@@ -40,11 +39,6 @@ class Channel(TenantScopedModel):
     waba_id = CharField(verbose_name="WABA ID", max_length=32, blank=True)
     display_number = CharField(verbose_name="Número exibido", max_length=20, blank=True)
     credentials = EncryptedJSONField(verbose_name="Credenciais", default=dict)
-    webhook_secret = CharField(
-        verbose_name="Segredo do webhook",
-        max_length=64,
-        default=default_webhook_secret,
-    )
 
     class Meta:
         verbose_name = "Canal"

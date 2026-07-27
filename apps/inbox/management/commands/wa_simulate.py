@@ -41,7 +41,7 @@ class Command(BaseCommand):
         # Mesmo caminho do webhook real: grava o log cru e roda a task
         # (síncrona aqui) - que faz parse + ingestão e marca `processed_at`.
         event = WebhookEvent.objects.create(
-            source=WebhookSource.DATAFY, clinic=clinic, payload=payload
+            source=WebhookSource.META, clinic=clinic, payload=payload
         )
         stats = process_whatsapp_webhook(event.pk, channel.pk)
         self.stdout.write(self.style.SUCCESS(f"Ingestão: {stats}"))

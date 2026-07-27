@@ -8,10 +8,10 @@ from apps.inbox.webhooks import whatsapp_webhook
 urlpatterns = [
     path("secure-admin/", admin.site.urls),
     path("api/v1/", include("apps.urls_v1")),
-    # Webhook do WhatsApp (§7) - público, autenticado por uuid+segredo na URL.
-    path(
-        "webhooks/whatsapp/<uuid:channel_uuid>/<str:secret>/", whatsapp_webhook, name="wa-webhook"
-    ),
+    # Webhook do WhatsApp (§7) - endpoint ÚNICO da plataforma: GET devolve o
+    # hub.challenge da Meta, POST exige X-Hub-Signature-256; o canal sai do
+    # phone_number_id DO PAYLOAD, não da URL.
+    path("webhooks/whatsapp/meta/", whatsapp_webhook, name="wa-webhook"),
 ]
 
 if settings.DEBUG:

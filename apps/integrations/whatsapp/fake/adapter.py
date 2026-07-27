@@ -21,35 +21,35 @@ def fake_wamid() -> str:
     return f"wamid.FAKE-{uuid.uuid4().hex[:20]}"
 
 
-def build_inbound_payload(*, wa_id: str, body: str, name: str = "Contato Fake") -> dict:
+def build_inbound_payload(
+    *, wa_id: str, body: str, name: str = "Contato Fake", phone_number_id: str = ""
+) -> dict:
     """Monta um payload Meta de mensagem recebida - usado pelo `wa_simulate`.
 
     Timestamp = agora, para o inbound abrir a janela de 24h (dev pode responder
-    com texto livre)."""
+    com texto livre). `phone_number_id` preenche o metadata - é por ele que o
+    webhook único roteia o canal (§7); quem injeta direto na ingestão não
+    precisa dele."""
     now_ts = str(int(timezone.now().timestamp()))
-    return {
-        "entry": [
+    value = {
+        "messaging_product": "whatsapp",
+        "contacts": [{"wa_id": wa_id, "profile": {"name": name}}],
+        "messages": [
             {
-                "changes": [
-                    {
-                        "value": {
-                            "messaging_product": "whatsapp",
-                            "contacts": [{"wa_id": wa_id, "profile": {"name": name}}],
-                            "messages": [
-                                {
-                                    "from": wa_id,
-                                    "id": fake_wamid(),
-                                    "timestamp": now_ts,
-                                    "type": "text",
-                                    "text": {"body": body},
-                                }
-                            ],
-                        }
-                    }
-                ]
+                "from": wa_id,
+                "id": fake_wamid(),
+                "timestamp": now_ts,
+                "type": "text",
+                "text": {"body": body},
             }
-        ]
+        ],
     }
+    if phone_number_id:
+        value["metadata"] = {
+            "phone_number_id": phone_number_id,
+            "display_phone_number": phone_number_id,
+        }
+    return {"entry": [{"changes": [{"value": value}]}]}
 
 
 class FakeWhatsAppAdapter:

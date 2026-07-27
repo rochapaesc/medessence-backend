@@ -416,6 +416,8 @@ ASAAS_API_URL = config("ASAAS_API_URL", default="https://api-sandbox.asaas.com")
 # Clinic.ehr_credentials["base_url"] (instalações self-hosted).
 VSAUDE_API_URL = config("VSAUDE_API_URL", default="")
 
-# Base URL padrão da Datafy - sobrescrita por canal em
-# Channel.credentials["base_url"]. A calibrar com número/WABA real.
-DATAFY_API_URL = config("DATAFY_API_URL", default="")
+# WhatsApp Meta Cloud API (§7) - credenciais DO APP da plataforma. As do
+# canal (access_token/phone_number_id/waba_id) ficam cifradas no Channel.
+# Vazios = webhook fecha tudo (fail closed) - preencher na calibração.
+WHATSAPP_APP_SECRET = config("WHATSAPP_APP_SECRET", default="")
+WHATSAPP_VERIFY_TOKEN = config("WHATSAPP_VERIFY_TOKEN", default="")
