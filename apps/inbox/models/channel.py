@@ -9,16 +9,18 @@ from apps.inbox.choices import WhatsAppProviderKind
 
 
 def default_webhook_secret() -> str:
-    """Segredo da URL de webhook por canal (§7) - sem verify token da Meta,
-    a URL é a credencial: `/webhooks/whatsapp/{uuid}/{secret}/`."""
+    """Segredo da URL de webhook por canal - legado do desenho Datafy
+    (URL-como-credencial). Com a Meta (§7) o webhook é um endpoint único
+    verificado por HMAC; a rota antiga morre junto com este campo."""
     return secrets.token_urlsafe(32)
 
 
 class Channel(TenantScopedModel):
     """
-    Número WhatsApp de UMA clínica (§9.5). As credenciais do provedor ficam
-    cifradas (`EncryptedJSONField`); `uuid` + `webhook_secret` compõem a URL
-    não-adivinhável do webhook, já que a Datafy não usa verify token.
+    Número WhatsApp de UMA clínica (§9.5). Credenciais DO CANAL cifradas em
+    `credentials` (`access_token`; `phone_number_id`/`waba_id` têm coluna
+    própria); as do APP da plataforma (`app_secret`, `verify_token`) moram
+    nos settings — dois níveis, §7.
     """
 
     uuid = UUIDField(
@@ -32,7 +34,7 @@ class Channel(TenantScopedModel):
         verbose_name="Provedor",
         max_length=20,
         choices=WhatsAppProviderKind.choices,
-        default=WhatsAppProviderKind.DATAFY,
+        default=WhatsAppProviderKind.META,
     )
     phone_number_id = CharField(verbose_name="Phone Number ID", max_length=32, blank=True)
     waba_id = CharField(verbose_name="WABA ID", max_length=32, blank=True)

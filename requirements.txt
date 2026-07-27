@@ -54,6 +54,9 @@ python-crontab==3.3.0
 python-dateutil==2.9.0.post0
 python-decouple==3.8
 python-stdnum==2.2
+# WhatsApp Cloud API - SDK de transporte (§7). Extra `server` NUNCA entra:
+# o webhook é view DRF nossa, e o client é instanciado por canal.
+pywa==4.3.1
 PyYAML==6.0.3
 redis==7.4.0
 referencing==0.37.0

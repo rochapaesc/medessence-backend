@@ -1,6 +1,7 @@
 """
-Port WhatsApp (§5) - a fronteira entre o MedEssence e qualquer provedor de
-mensageria (Datafy é proxy da Meta Cloud API).
+Port WhatsApp (§5) - a fronteira entre o MedEssence e o transporte de
+mensageria. É o "gateway" do §7: campanha, segmentação e follow-up ficam no
+domínio e só falam com o WhatsApp por esta interface.
 
 Adapters normalizam o formato de terceiro na ENTRADA (`parse_webhook` →
 `WhatsAppEvent`) e recebem valores já limpos na SAÍDA. O inbox NUNCA vê o
@@ -47,10 +48,17 @@ class SendResult:
 
 
 @dataclass(frozen=True)
-class MediaURL:
-    url: str
+class DownloadedMedia:
+    """Bytes do ativo, já baixados pelo adapter.
+
+    O port entrega CONTEÚDO, não URL: na Cloud API a URL de mídia expira em
+    ~5 minutos e o download exige o token — devolver a URL crua convidaria o
+    caller a baixar sem auth (e foi assim com o Datafy, que dava 30 dias
+    públicos). Content vazio = provedor sem bytes (FAKE) → caller pula.
+    """
+
+    content: bytes = b""
     mime_type: str = ""
-    size_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -84,8 +92,8 @@ class WhatsAppProvider(Protocol):
         """`messages/read` no provedor (RF-INB-4)."""
         ...
 
-    def resolve_media(self, media_id: str) -> MediaURL:
-        """URL temporária (~30 dias) do ativo - para re-hospedar (RF-INB-6)."""
+    def download_media(self, media_id: str) -> DownloadedMedia:
+        """Baixa o ativo no provedor (autenticado) - para re-hospedar (RF-INB-6)."""
         ...
 
     def list_templates(self) -> list[Template]:

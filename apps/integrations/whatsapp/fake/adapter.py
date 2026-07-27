@@ -1,14 +1,19 @@
 """
-Provider FAKE do WhatsApp - dev sem número/Datafy real (mesmo papel do
-FakeAdapter do EHR). Envios devolvem um wamid sintético; `parse_webhook` usa o
-mesmo parser Meta, então payloads simulados exercitam o pipeline completo.
+Provider FAKE do WhatsApp - dev sem número real (mesmo papel do FakeAdapter
+do EHR). Envios devolvem um wamid sintético; `parse_webhook` usa o mesmo
+parser Meta, então payloads simulados exercitam o pipeline completo.
 """
 
 import uuid
 
 from django.utils import timezone
 
-from apps.integrations.whatsapp.base import MediaURL, SendResult, Template, WhatsAppEvent
+from apps.integrations.whatsapp.base import (
+    DownloadedMedia,
+    SendResult,
+    Template,
+    WhatsAppEvent,
+)
 from apps.integrations.whatsapp.events import parse_meta_webhook
 
 
@@ -67,9 +72,9 @@ class FakeWhatsAppAdapter:
     def mark_read(self, provider_message_id: str) -> None:
         return None
 
-    def resolve_media(self, media_id: str) -> MediaURL:
-        # FAKE não tem bytes reais para baixar - sem URL, o fetch é ignorado.
-        return MediaURL(url="", mime_type="image/jpeg")
+    def download_media(self, media_id: str) -> DownloadedMedia:
+        # FAKE não tem bytes reais - content vazio faz o fetch pular.
+        return DownloadedMedia(content=b"", mime_type="image/jpeg")
 
     def list_templates(self) -> list[Template]:
         return [

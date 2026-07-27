@@ -13,7 +13,6 @@ import logging
 import mimetypes
 from contextlib import suppress
 
-import requests
 from celery import shared_task
 from django.core.files.base import ContentFile
 from django.utils import timezone
@@ -51,7 +50,12 @@ def process_whatsapp_webhook(webhook_event_id: int, channel_id: int):
 
 @shared_task(queue="media")
 def fetch_media_asset(media_asset_id: int):
-    """Resolve a URL temporária do provedor, baixa e re-hospeda (RF-INB-6)."""
+    """Baixa o ativo pelo provedor e re-hospeda (RF-INB-6).
+
+    O download é do ADAPTER, não desta task: na Cloud API a URL de mídia
+    expira em ~5 min e exige o token do canal - baixar "por fora" com uma
+    URL solta era coisa do Datafy (30 dias públicos) e morreu com ele.
+    """
     from apps.inbox.models import Channel, MediaAsset
     from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
@@ -64,15 +68,12 @@ def fetch_media_asset(media_asset_id: int):
         return "skipped: clínica sem canal"
 
     provider = get_whatsapp_provider(channel)
-    resolved = provider.resolve_media(media.provider_media_id)
-    if not resolved.url:
-        return "skipped: sem URL"
+    downloaded = provider.download_media(media.provider_media_id)
+    if not downloaded.content:
+        return "skipped: sem conteúdo"
 
-    response = requests.get(resolved.url, timeout=60)
-    response.raise_for_status()
-    content = response.content
-
-    mime = resolved.mime_type or media.mime_type or ""
+    content = downloaded.content
+    mime = downloaded.mime_type or media.mime_type or ""
     extension = mimetypes.guess_extension(mime.split(";")[0]) or ""
     media.mime_type = mime or media.mime_type
     media.size_bytes = len(content)
