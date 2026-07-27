@@ -55,15 +55,24 @@ def doctor_a(db, clinic_a):
 # ───────────────────────────── leitura ──────────────────────────────────
 
 
-def test_gestor_ve_o_cpf_inteiro(api_client, manager_single_clinic, paciente):
+def test_gestor_ve_o_cpf_inteiro_na_ficha(api_client, manager_single_clinic, paciente):
+    api_client.force_authenticate(manager_single_clinic)
+
+    ficha = api_client.get(f"{URL}{paciente.pk}/")
+
+    assert ficha.data["cpf"] == CPF_REAL
+
+
+def test_listagem_mascara_para_todos(api_client, manager_single_clinic, paciente):
+    """A lista não mostra documento na tela — devolvê-lo seria expor em massa
+    (e o acesso um a um é o que a auditoria consegue registrar de forma útil)."""
     api_client.force_authenticate(manager_single_clinic)
 
     listagem = api_client.get(URL)
-    (row,) = [p for p in listagem.data["results"] if p["id"] == paciente.pk]
-    assert row["cpf"] == CPF_REAL
 
-    ficha = api_client.get(f"{URL}{paciente.pk}/")
-    assert ficha.data["cpf"] == CPF_REAL
+    (row,) = [p for p in listagem.data["results"] if p["id"] == paciente.pk]
+    assert row["cpf"] == CPF_MASCARADO
+    assert CPF_REAL not in str(listagem.data)
 
 
 def test_medico_ve_o_cpf_inteiro(api_client, doctor_a, paciente):

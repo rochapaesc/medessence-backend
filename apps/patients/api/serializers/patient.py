@@ -17,16 +17,14 @@ class PatientReadSerializer(ModelSerializer):
 
     status = SerializerMethodField()
     tags = SerializerMethodField()
-    # CPF por papel (§15, decidido em 21/07/2026): médico e gestor precisam do
-    # documento para atender e faturar; o atendente vê mascarado, mesma régua
-    # do conteúdo clínico (P10). A decisão é do servidor - o valor cheio não
-    # chega ao cliente de quem não pode ver, então não aparece nem no devtools.
+    # Na LISTAGEM o CPF sai mascarado para todo mundo: a tela não mostra o
+    # documento, e devolver 20 CPFs por página seria expor em massa o que só se
+    # justifica um a um. O valor completo é da ficha (§15) - ver
+    # `PatientDetailSerializer`, onde o acesso ainda é auditado.
     cpf = SerializerMethodField()
 
     def get_cpf(self, obj):
-        if viewer_is_attendant(self.context):
-            return mask_cpf(obj.cpf)
-        return obj.cpf
+        return mask_cpf(obj.cpf)
 
     class Meta:
         model = Patient
@@ -62,8 +60,17 @@ class PatientDetailSerializer(ClinicalContentGateMixin, PatientReadSerializer):
 
     # P10: `comments_html` é texto livre de quem atende - conteúdo clínico
     # fora da linha do tempo. O atendente segue podendo ESCREVER (o write
-    # serializer não é gateado), mas não lê de volta.
+    # serializer aplica o mesmo gate na resposta), mas não lê de volta.
     clinical_content_fields = ("comments_html",)
+
+    def get_cpf(self, obj):
+        """
+        Aqui, sim, o documento inteiro - para médico e gestor (§15). É o único
+        lugar que o revela, e o viewset audita cada acesso (`READ_CPF`).
+        """
+        if viewer_is_attendant(self.context):
+            return mask_cpf(obj.cpf)
+        return obj.cpf
 
     class Meta(PatientReadSerializer.Meta):
         fields = [

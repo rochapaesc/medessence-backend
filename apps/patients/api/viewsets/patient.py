@@ -4,7 +4,10 @@ from rest_framework.response import Response
 
 from apps.core.api.permissions import IsClinicManager
 from apps.core.api.viewsets import ClinicScopedModelViewSet
+from apps.core.audit import log_action
+from apps.core.masking import is_masked
 from apps.core.mixins import AuditMixin, SoftDeleteMixin
+from apps.core.models.audit_log import AuditAction
 from apps.patients.api.filtersets import PatientFilterset
 from apps.patients.api.serializers import (
     PatientDetailSerializer,
@@ -50,6 +53,34 @@ class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
             )
             .order_by("name")
         )
+
+    def retrieve(self, request, *args, **kwargs):
+        """
+        A ficha é o único lugar que revela o documento (§15) - cada acesso
+        vira um `READ_CPF` no log, para responder "quem viu o CPF de quem".
+
+        O gatilho é o que SAIU na resposta, não o papel de quem pediu: se um
+        dia a regra mudar, a auditoria continua contando a verdade. O valor do
+        documento não entra no payload do log.
+        """
+        response = super().retrieve(request, *args, **kwargs)
+
+        cpf = (response.data or {}).get("cpf") or ""
+        if cpf and not is_masked(cpf):
+            membership = getattr(request, "active_membership", None)
+            log_action(
+                user=request.user,
+                action=AuditAction.READ_CPF,
+                resource=self.get_audit_resource(),
+                resource_id=response.data.get("id", ""),
+                payload={
+                    "field": "cpf",
+                    "role": getattr(membership, "role", "") or "",
+                },
+                request=request,
+                clinic=self.get_audit_clinic(),
+            )
+        return response
 
     # ----------------- write-through p/ o EHR (§10.2) ----------------- #
     # Padrão único: salva local primeiro; com EHR configurado, enfileira

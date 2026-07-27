@@ -18,6 +18,10 @@ class AuditAction(TextChoices):
     RESTORE = "RESTORE", "Restauração"
     # Leitura de conteúdo clínico (LGPD §15) - usada a partir da F4
     READ = "READ", "Leitura"
+    # Documento pessoal revelado na tela (§15): registro dedicado para
+    # responder "quem viu o CPF de quem, e quando" sem garimpar no meio dos
+    # acessos comuns à ficha. O valor do documento NUNCA entra no payload.
+    READ_CPF = "READ_CPF", "Leitura de CPF"
     LOGIN = "LOGIN", "Login"
     LOGIN_FAILED = "LOGIN_FAILED", "Login falhou"
     LOGOUT = "LOGOUT", "Logout"
