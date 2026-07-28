@@ -209,6 +209,53 @@ def reopen(conversation, *, user=None, by_contact: bool = False):
     return conversation
 
 
+def wake_snoozed(conversation) -> bool:
+    """
+    Cumpre a promessa do adiamento (RF-ATD-1.2): "volta sozinha para
+    Aguardando na hora marcada". Chamada pela varredura por minuto
+    (`wake_snoozed_conversations`).
+
+    Acorda para AGUARDANDO **sem responsável** — o invariante do status. A
+    alternativa (voltar Aberta para quem adiou) esconderia o lembrete no meio
+    das abertas da pessoa: o valor do adiamento é ser VISTO quando vence.
+
+    O UPDATE é condicionado ao status: se o paciente reabriu antes da hora
+    (RF-ATD-2) ou duas varreduras se sobrepõem, só uma transição acontece -
+    acordar duas vezes duplicaria o evento na thread.
+    """
+    from apps.inbox.models import Conversation
+    from apps.inbox.realtime import notify_conversation_updated
+
+    agora = timezone.now()
+    dono_anterior = _nome(conversation.assigned_to)
+    trocou = Conversation.objects.filter(
+        pk=conversation.pk, status=ConversationStatus.SNOOZED
+    ).update(
+        status=ConversationStatus.WAITING,
+        attended_by=AttendedBy.NONE,
+        assigned_to=None,
+        attended_since=None,
+        snoozed_until=None,
+        waiting_since=agora,
+        updated_at=agora,
+    )
+    if not trocou:
+        return False
+
+    conversation.refresh_from_db()
+    log_activity(
+        conversation,
+        ActivityType.REOPENED,
+        # `was_with` preserva na thread de quem a conversa era antes de voltar
+        # para a fila - o dono saiu do registro vivo, não da história.
+        data={"by": "snooze", "was_with": dono_anterior},
+    )
+    # A fila muda para todo mundo: sem isto, a conversa "volta" só para quem
+    # apertar F5.
+    notify_conversation_updated(conversation)
+    return True
+
+
 # --------------------------------------------------------------------- #
 # Classificação e passagem adiante (Bloco B1, RF-ATD-6/8/9)
 # --------------------------------------------------------------------- #

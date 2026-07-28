@@ -384,6 +384,10 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=3, minute=0),
     },
     # Cache de templates aprovados do WhatsApp (§13) - a cada 6h.
+    "wake-snoozed-conversations": {
+        "task": "apps.inbox.tasks.wake_snoozed_conversations",
+        "schedule": crontab(minute="*"),  # "volta às 9h" tem precisão de minuto
+    },
     "refresh-wa-templates": {
         "task": "apps.inbox.tasks.refresh_wa_templates",
         "schedule": crontab(minute=0, hour="*/6"),

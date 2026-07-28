@@ -11,7 +11,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
-from apps.inbox.attendance import ConversationBusy, resolve, snooze, take_over
+from apps.inbox.attendance import ConversationBusy, resolve, snooze, take_over, wake_snoozed
 from apps.inbox.choices import (
     ActivityType,
     AttendedBy,
@@ -364,3 +364,108 @@ def test_evento_nao_vira_previa_da_lista(conversation, manager_single_clinic):
     conversation.refresh_from_db()
     assert conversation.last_message_preview == "Quero remarcar quinta"
     assert (conversation.last_message_preview, conversation.last_message_at) == antes
+
+
+# ──────────────────── adiamento que VOLTA (RF-ATD-1.2) ────────────────────
+#
+# `snoozed_until` ficou uma sessão inteira sendo gravado sem ninguém ler — a
+# tela prometia "volta sozinha" e nada voltava. Estes testes amarram a
+# promessa ao código.
+
+
+def _adiada_vencida(conversation, user):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    snooze(conversation, user, until=timezone.now() + timedelta(minutes=5))
+    # Vence o prazo por baixo, como o tempo faria.
+    Conversation.objects.filter(pk=conversation.pk).update(
+        snoozed_until=timezone.now() - timedelta(minutes=1)
+    )
+    conversation.refresh_from_db()
+    return conversation
+
+
+def test_adiada_vencida_volta_para_a_fila_SEM_dono(conversation, manager_single_clinic):
+    take_over(conversation, manager_single_clinic)
+    _adiada_vencida(conversation, manager_single_clinic)
+
+    assert wake_snoozed(conversation) is True
+
+    conversation.refresh_from_db()
+    assert conversation.status == ConversationStatus.WAITING
+    assert conversation.attended_by == AttendedBy.NONE
+    assert conversation.assigned_to_id is None
+    assert conversation.snoozed_until is None
+    assert conversation.waiting_since is not None
+
+    evento = Message.objects.filter(
+        conversation=conversation,
+        kind=MessageKind.ACTIVITY,
+        activity_type=ActivityType.REOPENED,
+    ).latest("id")
+    assert evento.activity_data["by"] == "snooze"
+    # O dono anterior fica na história, não no registro vivo.
+    assert evento.activity_data["was_with"]
+
+
+def test_acordar_duas_vezes_gera_UM_evento(conversation, manager_single_clinic):
+    _adiada_vencida(conversation, manager_single_clinic)
+
+    assert wake_snoozed(conversation) is True
+    assert wake_snoozed(conversation) is False
+
+    eventos = Message.objects.filter(
+        conversation=conversation,
+        kind=MessageKind.ACTIVITY,
+        activity_type=ActivityType.REOPENED,
+    )
+    assert eventos.count() == 1
+
+
+def test_paciente_reabriu_antes_da_hora_e_a_varredura_nao_atropela(
+    conversation, manager_single_clinic
+):
+    """A corrida real: inbound reabre às 8h59, a varredura roda às 9h00."""
+    take_over(conversation, manager_single_clinic)  # adiada COM dono
+    _adiada_vencida(conversation, manager_single_clinic)
+    make_message(conversation, sender_kind=SenderKind.CONTACT, body="cheguei antes")
+    conversation.refresh_from_db()
+    assert conversation.status == ConversationStatus.OPEN  # reabriu com dono
+
+    # A varredura pega um retrato velho (ainda SNOOZED na memória dela).
+    retrato_velho = Conversation.objects.get(pk=conversation.pk)
+    retrato_velho.status = ConversationStatus.SNOOZED
+
+    assert wake_snoozed(retrato_velho) is False
+
+    conversation.refresh_from_db()
+    assert conversation.status == ConversationStatus.OPEN
+    assert conversation.assigned_to_id == manager_single_clinic.pk
+
+
+def test_varredura_acorda_so_as_vencidas(conversation, inbox_a, manager_single_clinic):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.inbox.tasks import wake_snoozed_conversations
+    from apps.patients.models import Contact
+
+    _adiada_vencida(conversation, manager_single_clinic)
+    futura = Conversation.objects.create(
+        clinic=conversation.clinic,
+        channel=inbox_a["channel"],
+        contact=Contact.objects.create(clinic=conversation.clinic, wa_id="5511988887777"),
+        status=ConversationStatus.SNOOZED,
+        snoozed_until=timezone.now() + timedelta(hours=2),
+    )
+
+    resultado = wake_snoozed_conversations()
+
+    assert resultado == {"woken": 1}
+    conversation.refresh_from_db()
+    futura.refresh_from_db()
+    assert conversation.status == ConversationStatus.WAITING
+    assert futura.status == ConversationStatus.SNOOZED, "a que não venceu não acorda"

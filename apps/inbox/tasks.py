@@ -5,6 +5,7 @@ Jobs Celery do inbox (§13).
   fetch_media_asset         (media)    - resolve URL temporária, baixa, re-hospeda
   send_whatsapp_message     (outbound) - envio com retry/backoff em 429
   refresh_wa_templates      (sync, beat 6h) - cache de templates aprovados
+  wake_snoozed_conversations (sync, beat 1min) - adiada vence -> volta p/ fila
 
 O provedor entra sempre pelo registry - as tasks não conhecem Datafy.
 """
@@ -168,3 +169,28 @@ def refresh_channel_templates(channel_id: int):
             )
             count += 1
     return {"channel_id": channel_id, "templates": count}
+
+
+@shared_task(queue="sync")
+def wake_snoozed_conversations():
+    """
+    Varredura por minuto (beat): adiamento vencido volta para a fila
+    (RF-ATD-1.2). Varredura, e não ETA por conversa no broker: "às 9h" tem
+    precisão de minuto, e agendamento por mensagem se perde em restart de fila.
+
+    Idempotente por construção - o `wake_snoozed` só transiciona quem AINDA
+    está adiada, então varredura dupla e reabertura do paciente não duplicam
+    nada.
+    """
+    from apps.inbox.attendance import wake_snoozed
+    from apps.inbox.choices import ConversationStatus
+    from apps.inbox.models import Conversation
+
+    vencidas = Conversation.objects.filter(
+        deleted_at__isnull=True,
+        status=ConversationStatus.SNOOZED,
+        snoozed_until__lte=timezone.now(),
+    ).select_related("clinic", "assigned_to")
+
+    acordadas = sum(1 for conversation in vencidas if wake_snoozed(conversation))
+    return {"woken": acordadas}
