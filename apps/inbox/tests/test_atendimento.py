@@ -469,3 +469,25 @@ def test_varredura_acorda_so_as_vencidas(conversation, inbox_a, manager_single_c
     futura.refresh_from_db()
     assert conversation.status == ConversationStatus.WAITING
     assert futura.status == ConversationStatus.SNOOZED, "a que não venceu não acorda"
+
+
+def test_conversa_nova_da_ingestao_nasce_com_o_relogio_da_fila(inbox_a):
+    """RF-ATD-11: sem `waiting_since` na criação, o "aguardando há X" da
+    situação mais comum - conversa nova - ficaria em branco."""
+    from apps.inbox.services import _get_or_create_conversation
+
+    class _Evento:
+        wa_id = "5511977776666"
+        contact_name = "Paciente Novo"
+
+    conversation = _get_or_create_conversation(inbox_a["channel"], _Evento())
+
+    assert conversation.status == ConversationStatus.WAITING
+    assert conversation.waiting_since is not None
+
+
+def test_listagem_expoe_waiting_since(logado, conversation):
+    resposta = logado.get("/api/v1/conversations/")
+
+    linha = next(c for c in resposta.data["results"] if c["id"] == conversation.pk)
+    assert "waiting_since" in linha

@@ -100,6 +100,12 @@ def notify_conversation_updated(conversation) -> None:
             "status": conversation.status,
             "attended_by": conversation.attended_by,
             "priority": conversation.priority,
+            # Junto com o status: quando a conversa VOLTA para a fila (devolvida,
+            # acordada do adiamento), o "aguardando há X" da tela de todo mundo
+            # precisa do relógio novo - sem ele, mostraria o da fila anterior.
+            "waiting_since": (
+                conversation.waiting_since.isoformat() if conversation.waiting_since else None
+            ),
             "assigned_to_name": (
                 conversation.assigned_to.get_full_name() if conversation.assigned_to_id else ""
             ),

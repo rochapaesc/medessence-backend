@@ -112,6 +112,10 @@ def _get_or_create_conversation(channel, event):
         clinic=channel.clinic,
         channel=channel,
         contact=contact,
+        # A conversa nasce AGUARDANDO, então nasce com o relógio da fila
+        # correndo (RF-ATD-11): sem isto, o "aguardando há X" da situação mais
+        # comum - conversa nova - ficaria em branco.
+        defaults={"waiting_since": timezone.now()},
     )
     if created:
         # Vínculo automático quando o número já tem paciente principal (RF-INB-7);

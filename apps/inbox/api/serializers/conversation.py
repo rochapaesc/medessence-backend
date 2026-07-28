@@ -37,6 +37,7 @@ class ConversationSerializer(ModelSerializer):
             "attended_by",
             "attended_since",
             "snoozed_until",
+            "waiting_since",
             "resolved_at",
             "assigned_to",
             "assigned_to_name",
