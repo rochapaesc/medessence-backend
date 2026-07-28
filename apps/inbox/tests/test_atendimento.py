@@ -491,3 +491,28 @@ def test_listagem_expoe_waiting_since(logado, conversation):
 
     linha = next(c for c in resposta.data["results"] if c["id"] == conversation.pk)
     assert "waiting_since" in linha
+
+
+def test_idioma_do_template_vem_do_sincronizado_nao_de_constante(conversation):
+    """Achado ao vivo: hello_world só existe em en_US e o envio cravado em
+    pt_BR morria com 132001 — um erro que nem menciona idioma."""
+    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.services import _template_language
+
+    class _Msg:
+        clinic_id = conversation.clinic_id
+        template_name = "hello_world"
+
+    WhatsAppTemplate.objects.create(
+        clinic=conversation.clinic, name="hello_world", language="en_US", status="APPROVED"
+    )
+    assert _template_language(_Msg()) == "en_US"
+
+    # Existindo nos dois idiomas, o da clínica ganha.
+    WhatsAppTemplate.objects.create(
+        clinic=conversation.clinic, name="hello_world", language="pt_BR", status="APPROVED"
+    )
+    assert _template_language(_Msg()) == "pt_BR"
+
+    _Msg.template_name = "inexistente"
+    assert _template_language(_Msg()) == "pt_BR"

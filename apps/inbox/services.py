@@ -272,6 +272,27 @@ def create_internal_note(conversation, user, body: str):
     return note
 
 
+def _template_language(message) -> str:
+    """
+    O idioma vem do template SINCRONIZADO, não de constante. Achado ao vivo no
+    fechamento (28/07): o `hello_world` só existe em `en_US`, e o envio cravado
+    em `pt_BR` morria com 132001 "template não existe" - o código do erro nem
+    menciona idioma, o que faria alguém procurar o nome por horas.
+
+    Com o mesmo nome em vários idiomas, `pt_BR` ganha: é o idioma da clínica.
+    """
+    from apps.inbox.models import WhatsAppTemplate
+
+    idiomas = list(
+        WhatsAppTemplate.objects.filter(
+            clinic_id=message.clinic_id, name=message.template_name
+        ).values_list("language", flat=True)
+    )
+    if "pt_BR" in idiomas:
+        return "pt_BR"
+    return idiomas[0] if idiomas else "pt_BR"
+
+
 def send_message(message) -> None:
     """Envia uma mensagem OUT pendente pelo provider do canal e grava o wamid
     e o status. Chamado pela task `send_whatsapp_message`."""
@@ -293,7 +314,9 @@ def send_message(message) -> None:
 
     try:
         if message.kind == MessageKind.TEMPLATE and message.template_name:
-            result = provider.send_template(to, message.template_name, "pt_BR")
+            result = provider.send_template(
+                to, message.template_name, _template_language(message)
+            )
         else:
             result = provider.send_text(
                 to, message.body, message.reply_to_provider_id or None

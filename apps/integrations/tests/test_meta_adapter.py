@@ -228,3 +228,24 @@ def test_erros_do_pywa_viram_os_nossos(adapter):
         adapter._wa.raises = pywa_class(raw={}, code=0, message="erro de teste")
         with pytest.raises(our_class):
             adapter.send_text("5585912345678", "x")
+
+
+def test_timeout_de_rede_vira_transitorio_e_nao_vaza_cru(adapter):
+    """
+    Achado ao vivo (28/07): httpx.ConnectTimeout vazou pelo adapter, o
+    autoretry (que só conhece as NOSSAS exceções) não disparou e a mensagem
+    ficou pendente para sempre. Transporte quebrado é transitório: re-tenta.
+    """
+    import httpx
+    import pytest
+
+    from apps.integrations.whatsapp.exceptions import WhatsAppUnavailableError
+
+    class _ClienteCaindo:
+        def send_message(self, **kwargs):
+            raise httpx.ConnectTimeout("handshake timed out")
+
+    adapter._wa = _ClienteCaindo()
+
+    with pytest.raises(WhatsAppUnavailableError):
+        adapter.send_text("5511999998888", "oi")

@@ -8,6 +8,7 @@ view DRF nossa, e o parse continua no parser Meta próprio (`events.py`), que
 já falava este formato quando o transporte era o proxy.
 """
 
+import httpx
 from pywa import WhatsApp
 from pywa import errors as pywa_errors
 from pywa.types.templates import TemplateLanguage
@@ -29,6 +30,18 @@ from apps.integrations.whatsapp.exceptions import (
 
 # Página do GET /{waba_id}/message_templates - teto da Meta é 100.
 TEMPLATES_PAGE_SIZE = 100
+
+
+def _rede(exc: Exception) -> WhatsAppUnavailableError:
+    """
+    Timeout/queda de conexão com a Meta -> transitório (a task re-tenta).
+
+    Achado ao vivo no fechamento (28/07): um `httpx.ConnectTimeout` vazou CRU
+    pelo adapter - o autoretry só conhece as NOSSAS exceções, então não
+    disparou e a mensagem ficou pendente para sempre, sem erro na tela. A
+    mesma classe de defeito que já tinha sido morta para erros de negócio.
+    """
+    return WhatsAppUnavailableError(f"Falha de rede com a Meta: {exc}")
 
 
 def _translate(exc: pywa_errors.WhatsAppError) -> WhatsAppError:
@@ -77,6 +90,8 @@ class MetaAdapter:
             )
         except pywa_errors.WhatsAppError as exc:
             raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
         return SendResult(provider_message_id=sent.id, raw={"id": sent.id})
 
     def send_template(
@@ -107,6 +122,8 @@ class MetaAdapter:
             )
         except pywa_errors.WhatsAppError as exc:
             raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
         return SendResult(provider_message_id=sent.id, raw={"id": sent.id})
 
     def send_media(
@@ -125,6 +142,8 @@ class MetaAdapter:
             sent = sender()
         except pywa_errors.WhatsAppError as exc:
             raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
         return SendResult(provider_message_id=sent.id, raw={"id": sent.id})
 
     # ----------------------------- leitura ------------------------------- #
@@ -134,6 +153,8 @@ class MetaAdapter:
             self._wa.mark_message_as_read(message_id=provider_message_id)
         except pywa_errors.WhatsAppError as exc:
             raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
 
     def download_media(self, media_id: str) -> DownloadedMedia:
         """URL efêmera (~5 min) + download autenticado, numa tacada só."""
@@ -142,6 +163,8 @@ class MetaAdapter:
             content = self._wa.get_media_bytes(url=url_info.url)
         except pywa_errors.WhatsAppError as exc:
             raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
         return DownloadedMedia(content=content, mime_type=url_info.mime_type or "")
 
     def list_templates(self) -> list[Template]:
@@ -163,6 +186,8 @@ class MetaAdapter:
                 )
             except pywa_errors.WhatsAppError as exc:
                 raise _translate(exc) from exc
+            except httpx.TransportError as exc:
+                raise _rede(exc) from exc
             for item in page.get("data", []):
                 templates.append(
                     Template(
