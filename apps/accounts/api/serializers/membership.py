@@ -1,4 +1,4 @@
-from rest_framework.serializers import CharField, ModelSerializer
+from rest_framework.serializers import CharField, ModelSerializer, SerializerMethodField
 
 from apps.accounts.models import Membership
 from apps.scheduling.models import Practitioner
@@ -6,9 +6,18 @@ from apps.tenants.models import Clinic
 
 
 class ClinicSummarySerializer(ModelSerializer):
+    # Trava temporária de dado de produção: o front esconde o que exclui
+    # quando ela está ligada, para o botão não prometer o que a API recusa.
+    data_guard = SerializerMethodField()
+
     class Meta:
         model = Clinic
-        fields = ["id", "name", "slug", "timezone"]
+        fields = ["id", "name", "slug", "timezone", "data_guard"]
+
+    def get_data_guard(self, obj) -> bool:
+        from apps.core.api.guards import guard_is_on
+
+        return guard_is_on(obj)
 
 
 class PractitionerSummarySerializer(ModelSerializer):

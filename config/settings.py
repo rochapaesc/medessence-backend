@@ -416,6 +416,11 @@ ASAAS_API_URL = config("ASAAS_API_URL", default="https://api-sandbox.asaas.com")
 # Clinic.ehr_credentials["base_url"] (instalações self-hosted).
 VSAUDE_API_URL = config("VSAUDE_API_URL", default="")
 
+# Trava TEMPORÁRIA de dado de produção (apps/core/api/guards.py): recusa
+# excluir registro espelhado do EHR enquanto o dev roda sobre a clínica real.
+# Desligar quando o ambiente deixar de apontar para dados de verdade.
+EHR_DATA_GUARD = config("EHR_DATA_GUARD", default=True, cast=bool)
+
 # WhatsApp Meta Cloud API (§7) - credenciais DO APP da plataforma. As do
 # canal (access_token/phone_number_id/waba_id) ficam cifradas no Channel.
 # Vazios = webhook fecha tudo (fail closed) - preencher na calibração.

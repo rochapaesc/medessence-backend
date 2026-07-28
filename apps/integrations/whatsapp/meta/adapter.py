@@ -10,6 +10,7 @@ já falava este formato quando o transporte era o proxy.
 
 from pywa import WhatsApp
 from pywa import errors as pywa_errors
+from pywa.types.templates import TemplateLanguage
 
 from apps.integrations.whatsapp.base import (
     DownloadedMedia,
@@ -81,11 +82,25 @@ class MetaAdapter:
     def send_template(
         self, to: str, name: str, language: str, components: list | None = None
     ) -> SendResult:
+        # PyWa exige o enum (faz `language.value` internamente) - passar a
+        # string crua estoura com AttributeError na hora do envio real.
+        # Descoberto na calibração de 28/07/2026: o dublê dos testes aceitava
+        # qualquer coisa, então só apareceu contra a Meta de verdade.
+        # Idioma que o PyWa não conhece NÃO levanta: vira `UNKNOWN` com um
+        # warning, e o envio falharia lá na frente com erro genérico da Meta.
+        # Melhor barrar aqui, com o nome do idioma na mensagem.
+        idioma = TemplateLanguage(language)
+        if idioma == TemplateLanguage.UNKNOWN:
+            raise WhatsAppError(
+                f"Idioma de template desconhecido: {language!r}. "
+                "Use o código que a Meta devolve no template (ex.: pt_BR, en_US)."
+            )
+
         try:
             sent = self._wa.send_template(
                 to=to,
                 name=name,
-                language=language,
+                language=idioma,
                 # PyWa aceita dicts crus na lista - os params ficam no formato
                 # Meta que o nosso cache de templates já guarda.
                 params=components or None,

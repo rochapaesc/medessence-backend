@@ -37,6 +37,17 @@ APPOINTMENTS_URL = "/api/v1/appointments/"
 
 
 @pytest.fixture(autouse=True)
+def _sem_trava_de_producao(settings):
+    """
+    Estes testes existem para provar que o DELETE propaga para o EHR — que é
+    exatamente o que a trava `EHR_DATA_GUARD` bloqueia (apps/core/api/guards.py,
+    28/07/2026). Aqui ela sai do caminho de propósito; a trava tem suíte
+    própria em `apps/core/tests/test_ehr_data_guard.py`.
+    """
+    settings.EHR_DATA_GUARD = False
+
+
+@pytest.fixture(autouse=True)
 def _reset_fake_registries():
     """Os registros de escrita do fake são de CLASSE - zera entre testes."""
     for attr in (

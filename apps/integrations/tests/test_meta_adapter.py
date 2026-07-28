@@ -128,8 +128,27 @@ def test_send_template_passa_components_crus(adapter):
     name, kwargs = adapter._wa.calls[0]
     assert name == "send_template"
     assert kwargs["name"] == "confirmacao"
-    assert kwargs["language"] == "pt_BR"
     assert kwargs["params"] == components
+
+
+def test_send_template_converte_o_idioma_para_o_enum(adapter):
+    """
+    O PyWa faz `language.value` internamente: string crua estoura com
+    AttributeError NO ENVIO REAL. O dublê aceita qualquer coisa, então em
+    28/07/2026 isso só apareceu contra a Meta — este teste fecha a brecha.
+    """
+    from pywa.types.templates import TemplateLanguage
+
+    adapter.send_template("5585912345678", "hello_world", "en_US")
+
+    _, kwargs = adapter._wa.calls[0]
+    assert isinstance(kwargs["language"], TemplateLanguage)
+    assert kwargs["language"].value == "en_US"
+
+
+def test_idioma_invalido_vira_erro_nosso_e_nao_ValueError(adapter):
+    with pytest.raises(WhatsAppError, match="Idioma de template desconhecido"):
+        adapter.send_template("5585912345678", "x", "klingon")
 
 
 def test_send_media_mapeia_kind(adapter):

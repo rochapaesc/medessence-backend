@@ -6,6 +6,7 @@ from django.db.models.functions import TruncDate
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.core.api.guards import EHRDataGuardMixin
 from apps.core.api.viewsets import ClinicScopedModelViewSet
 from apps.core.choices import SyncStatus
 from apps.core.mixins import AuditMixin
@@ -30,7 +31,7 @@ SCHEDULE_FIELDS = (
 )
 
 
-class AppointmentViewSet(AuditMixin, ClinicScopedModelViewSet):
+class AppointmentViewSet(EHRDataGuardMixin, AuditMixin, ClinicScopedModelViewSet):
     """Agenda escopada pela clínica ativa (RF-AGE-1/2) com write-through."""
 
     model = Appointment

@@ -2,6 +2,7 @@ from django.db.models import Count, Prefetch, Q
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.core.api.guards import EHRDataGuardMixin
 from apps.core.api.permissions import IsClinicManager
 from apps.core.api.viewsets import ClinicScopedModelViewSet
 from apps.core.audit import log_action
@@ -17,7 +18,9 @@ from apps.patients.api.serializers import (
 from apps.patients.models import Patient, PatientTag, Tag
 
 
-class PatientViewSet(AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet):
+class PatientViewSet(
+    EHRDataGuardMixin, AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet
+):
     """
     CRM de pacientes (RF-PAC-1..7), escopado pela clínica ativa.
     Busca server-side (?search=) e filtros por tag/cidade/status/profissional.
