@@ -14,6 +14,7 @@ from django.db.models import (
 from django.utils import timezone
 
 from apps.core.models import TenantScopedModel
+from apps.inbox.choices import AttendedBy, ConversationStatus
 
 # Janela de atendimento livre da Meta (§7): fora dela, só template aprovado.
 WINDOW_HOURS = 24
@@ -53,7 +54,37 @@ class Conversation(TenantScopedModel):
     last_message_at = DateTimeField(verbose_name="Última mensagem em", null=True, db_index=True)
     last_inbound_at = DateTimeField(verbose_name="Último inbound em", null=True)
     unread_count = PositiveIntegerField(verbose_name="Não lidas", default=0)
-    needs_agent = BooleanField(verbose_name="Aguardando atendente", default=False)
+    # ---------------- ciclo de vida do atendimento (F2.5, §4.3.1) ----------
+    status = CharField(
+        verbose_name="Status",
+        max_length=10,
+        choices=ConversationStatus.choices,
+        default=ConversationStatus.WAITING,
+        db_index=True,
+    )
+    snoozed_until = DateTimeField(
+        verbose_name="Adiada até",
+        null=True,
+        blank=True,
+        help_text="Volta sozinha para Aguardando nesta hora (RF-ATD-1.2).",
+    )
+    waiting_since = DateTimeField(verbose_name="Na fila desde", null=True, blank=True)
+    first_response_at = DateTimeField(
+        verbose_name="Primeira resposta em",
+        null=True,
+        blank=True,
+        help_text="Primeira resposta HUMANA depois de um inbound (RF-ATD-11).",
+    )
+    resolved_at = DateTimeField(verbose_name="Resolvida em", null=True, blank=True)
+
+    # ---------------- posse: quem tem a caneta (RF-ATD-12) -----------------
+    attended_by = CharField(
+        verbose_name="Atendida por",
+        max_length=6,
+        choices=AttendedBy.choices,
+        default=AttendedBy.NONE,
+    )
+    attended_since = DateTimeField(verbose_name="Posse desde", null=True, blank=True)
     assigned_to = ForeignKey(
         "accounts.User",
         verbose_name="Atribuída a",

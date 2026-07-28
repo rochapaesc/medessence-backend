@@ -10,15 +10,27 @@ from apps.inbox.models import Conversation, Message
 
 
 class ConversationFilterset(FilterSet):
-    """Filtros do inbox (RF-INB-1): aba 'aguardando', não lidas, atribuição, busca."""
+    """
+    Filtros do inbox (RF-INB-1 + RF-ATD-1): fila por status, não lidas,
+    atribuição, busca.
+
+    `status` aceita lista: `?status=waiting,open` — a fila padrão do front é
+    "o que está vivo", e Resolvidas entram por FILTRO explícito (RF-ATD-1.1),
+    não por aba.
+    """
 
     search = CharFilter(method="filter_search")
     unread = BooleanFilter(method="filter_unread")
     assigned_to = NumberFilter(field_name="assigned_to_id")
+    status = CharFilter(method="filter_status")
 
     class Meta:
         model = Conversation
-        fields = ["search", "unread", "needs_agent", "assigned_to", "channel", "patient"]
+        fields = ["search", "unread", "status", "attended_by", "assigned_to", "channel", "patient"]
+
+    def filter_status(self, queryset, name, value):
+        valores = [v.strip() for v in value.split(",") if v.strip()]
+        return queryset.filter(status__in=valores) if valores else queryset
 
     def filter_search(self, queryset, name, value):
         return queryset.filter(

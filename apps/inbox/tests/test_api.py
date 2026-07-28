@@ -38,15 +38,21 @@ def test_read_zera_nao_lidas(api_client, manager_single_clinic, inbox_a):
 
 
 def test_assign_assume_atendimento(api_client, manager_single_clinic, inbox_a):
+    """Assumir tira da fila e carimba a posse (F2.5: `needs_agent` virou
+    `status` + `attended_by`)."""
+    from apps.inbox.choices import AttendedBy, ConversationStatus
+
     conversation = inbox_a["conversation"]
-    conversation.needs_agent = True
-    conversation.save(update_fields=["needs_agent"])
+    assert conversation.status == ConversationStatus.WAITING
+
     api_client.force_authenticate(manager_single_clinic)
     response = api_client.post(f"{CONVERSATIONS}{conversation.id}/assign/")
+
     assert response.status_code == 200
     conversation.refresh_from_db()
     assert conversation.assigned_to_id == manager_single_clinic.id
-    assert conversation.needs_agent is False
+    assert conversation.status == ConversationStatus.OPEN
+    assert conversation.attended_by == AttendedBy.AGENT
 
 
 def test_link_patient(api_client, manager_single_clinic, inbox_a, clinic_a):

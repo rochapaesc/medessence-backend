@@ -1,11 +1,13 @@
+from django.utils import timezone
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.core.api.viewsets import ClinicScopedReadOnlyViewSet
 from apps.core.mixins import AuditMixin
 from apps.inbox.api.filtersets import ConversationFilterset
 from apps.inbox.api.serializers import ConversationSerializer
+from apps.inbox.choices import ConversationStatus
 from apps.inbox.models import Conversation
 
 
@@ -48,30 +50,104 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
     @action(detail=True, methods=["post"], url_path="assign")
     def assign(self, request, pk=None):
-        """Assume o atendimento (RF-INB-5). Sem corpo → assume para si; gestor
-        pode passar `assigned_to` para atribuir a outro atendente (RF-INB-8)."""
+        """
+        Assume o atendimento (RF-INB-5/8, RF-ATD-15). Sem corpo → para si;
+        gestor pode passar `assigned_to` para atribuir a outro.
+
+        `expected_attended_by` (opcional) é o que o cliente VIU na tela: a
+        troca fica condicionada a ele, então dois atendentes clicando juntos
+        não viram dois donos — o segundo recebe aviso.
+        """
+        from apps.inbox.attendance import take_over
+
         conversation = self.get_object()
         assignee = request.user
         assigned_to_id = request.data.get("assigned_to")
         if assigned_to_id:
             assignee = self._resolve_clinic_user(assigned_to_id)
-        conversation.assigned_to = assignee
-        conversation.needs_agent = False
-        conversation.save(update_fields=["assigned_to", "needs_agent", "updated_at"])
+
+        conversation = self._busy_guard(
+            lambda: take_over(
+                conversation, assignee, expected=request.data.get("expected_attended_by")
+            )
+        )
+        self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["post"], url_path="mark-waiting")
     def mark_waiting(self, request, pk=None):
-        """Sinaliza que a conversa aguarda um atendente (aba 'aguardando').
-        Na F2 é manual; a marcação automática por inbound+jornada entra na F3."""
-        conversation = self.get_object()
-        conversation.needs_agent = True
-        conversation.save(update_fields=["needs_agent", "updated_at"])
-        # Realtime (§12): aba "aguardando" acende em todas as telas da clínica.
-        from apps.inbox.realtime import notify_handoff
+        """Devolve para a fila: perde o responsável e volta para Aguardando."""
+        from apps.inbox.attendance import mark_waiting
 
-        notify_handoff(conversation)
+        conversation = mark_waiting(self.get_object(), request.user)
+        self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["post"], url_path="resolve")
+    def resolve(self, request, pk=None):
+        """Encerra (RF-ATD-1.3). `note` opcional vira nota interna."""
+        from apps.inbox.attendance import resolve
+
+        conversation = resolve(
+            self.get_object(), request.user, note=request.data.get("note", "")
+        )
+        self._notify(conversation)
+        return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["post"], url_path="reopen")
+    def reopen(self, request, pk=None):
+        """Reabre à mão (RF-ATD-2) — o inbound já reabre sozinho na ingestão."""
+        from apps.inbox.attendance import reopen
+
+        conversation = reopen(self.get_object(), user=request.user)
+        self._notify(conversation)
+        return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["post"], url_path="snooze")
+    def snooze(self, request, pk=None):
+        """Adia até data e hora escolhidas (RF-ATD-1.2)."""
+        from django.utils.dateparse import parse_datetime
+
+        from apps.inbox.attendance import snooze
+
+        bruto = request.data.get("until")
+        until = parse_datetime(bruto) if bruto else None
+        if until is None:
+            raise ValidationError({"until": "Informe data e hora (ISO 8601)."})
+        if timezone.is_naive(until):
+            until = timezone.make_aware(until)
+        if until <= timezone.now():
+            raise ValidationError({"until": "Escolha um momento no futuro."})
+
+        conversation = snooze(
+            self.get_object(), request.user, until=until, note=request.data.get("note", "")
+        )
+        self._notify(conversation)
+        return Response(self.get_serializer(conversation).data)
+
+    # ------------------------------------------------------------------ #
+
+    def _busy_guard(self, fn):
+        """Traduz a disputa de posse em erro que a tela sabe explicar."""
+        from apps.inbox.attendance import ConversationBusy
+
+        try:
+            return fn()
+        except ConversationBusy as exc:
+            raise PermissionDenied(
+                {
+                    "detail": "Esta conversa está sendo atendida por outra pessoa.",
+                    "code": "conversation_busy",
+                    "attended_by": exc.attended_by,
+                    "holder": exc.holder,
+                }
+            ) from exc
+
+    def _notify(self, conversation):
+        """Realtime (§12): a fila muda para todo mundo, não só para quem agiu."""
+        from apps.inbox.realtime import notify_conversation_updated
+
+        notify_conversation_updated(conversation)
 
     @action(detail=True, methods=["post"], url_path="link-patient")
     def link_patient(self, request, pk=None):
@@ -100,7 +176,11 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
             {
                 "total": queryset.count(),
                 "unread": queryset.filter(unread_count__gt=0).count(),
-                "needs_agent": queryset.filter(needs_agent=True).count(),
+                # A fila agora é por STATUS (RF-ATD-1): é isso que vira aba.
+                "waiting": queryset.filter(status=ConversationStatus.WAITING).count(),
+                "open": queryset.filter(status=ConversationStatus.OPEN).count(),
+                "snoozed": queryset.filter(status=ConversationStatus.SNOOZED).count(),
+                "resolved": queryset.filter(status=ConversationStatus.RESOLVED).count(),
                 "unassigned": queryset.filter(assigned_to__isnull=True).count(),
             }
         )

@@ -29,6 +29,9 @@ class MessageSerializer(ModelSerializer):
             "reply_to_provider_id",
             "status",
             "status_error",
+            "is_internal",
+            "activity_type",
+            "activity_data",
             "sender_kind",
             "sent_by",
             "template_name",
@@ -63,12 +66,22 @@ class MessageCreateSerializer(ModelSerializer):
             "caption",
             "template_name",
             "reply_to_provider_id",
+            "is_internal",
         ]
 
     def validate(self, attrs):
         conversation = attrs["conversation"]
         kind = attrs.get("kind", MessageKind.TEXT)
         template_name = attrs.get("template_name", "")
+
+        # Nota interna (RF-ATD-3) não passa pela regra da janela: ela não vai
+        # para o WhatsApp. Barrá-la impediria a equipe de registrar contexto
+        # justamente na conversa parada há dias — quando mais se precisa dele.
+        if attrs.get("is_internal"):
+            if not (attrs.get("body") or "").strip():
+                raise ValidationError("A nota interna precisa de texto.")
+            attrs["template_name"] = ""
+            return attrs
 
         is_template = kind == MessageKind.TEXT and template_name
         if kind == MessageKind.TEXT and not template_name:

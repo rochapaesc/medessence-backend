@@ -1,6 +1,7 @@
 from django.db.models import (
     CASCADE,
     SET_NULL,
+    BooleanField,
     CharField,
     DateTimeField,
     ForeignKey,
@@ -13,6 +14,7 @@ from django.db.models import (
 from apps.core.models import TenantScopedModel
 from apps.inbox.choices import (
     SENDER_TO_DIRECTION,
+    ActivityType,
     MessageDirection,
     MessageKind,
     MessageStatus,
@@ -74,6 +76,27 @@ class Message(TenantScopedModel):
         blank=True,
         help_text="Preenchido quando FAILED: errors[] do webhook ou erro de envio. "
         '"Falhou" sem motivo não ajuda ninguém a agir.',
+    )
+
+    # ---------------- nota interna e atividade (F2.5, §4.3.1) --------------
+    is_internal = BooleanField(
+        verbose_name="Nota interna",
+        default=False,
+        help_text="Anotação da equipe: NUNCA é enviada ao paciente (RF-ATD-3).",
+    )
+    activity_type = CharField(
+        verbose_name="Tipo de evento",
+        max_length=16,
+        choices=ActivityType.choices,
+        blank=True,
+        help_text="Preenchido só em evento de atividade (RF-ATD-4).",
+    )
+    activity_data = JSONField(
+        verbose_name="Dados do evento",
+        default=dict,
+        blank=True,
+        help_text="Quem/para quem/resumo. O front monta a frase - backend que "
+        "concatena texto engessa tradução e formatação.",
     )
     sender_kind = CharField(
         verbose_name="Autor",

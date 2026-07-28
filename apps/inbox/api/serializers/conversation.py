@@ -31,7 +31,11 @@ class ConversationSerializer(ModelSerializer):
             "last_inbound_at",
             "window_open",
             "unread_count",
-            "needs_agent",
+            "status",
+            "attended_by",
+            "attended_since",
+            "snoozed_until",
+            "resolved_at",
             "assigned_to",
             "assigned_to_name",
         ]

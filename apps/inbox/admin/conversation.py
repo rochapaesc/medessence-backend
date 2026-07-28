@@ -20,11 +20,12 @@ class ConversationAdmin(ModelAdmin):
         "channel",
         "last_message_at",
         "unread_count",
-        "needs_agent",
+        "status",
+        "attended_by",
         "assigned_to",
         "clinic",
     )
-    list_filter = ("clinic", "needs_agent", "channel")
+    list_filter = ("clinic", "status", "attended_by", "channel")
     search_fields = ("contact__wa_id", "contact__display_name", "patient__name")
     autocomplete_fields = ("clinic", "channel", "contact", "patient", "assigned_to")
     readonly_fields = (

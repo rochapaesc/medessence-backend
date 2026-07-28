@@ -1,4 +1,5 @@
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.mixins import CreateModelMixin, ListModelMixin, RetrieveModelMixin
 from rest_framework.response import Response
 from rest_framework.status import HTTP_201_CREATED
@@ -54,6 +55,12 @@ class MessageViewSet(
         """
         write = self.get_serializer(data=request.data)
         write.is_valid(raise_exception=True)
+
+        # Trava de posse (RF-ATD-14/15): a barreira vive no SERVIDOR. Front
+        # desabilitando o campo protege do descuido; não protege de duas abas,
+        # de um F5 no meio, nem da IA — que não passa pela tela.
+        self._assert_can_write(write.validated_data["conversation"])
+
         self.perform_create(write)
 
         message = write.instance
@@ -67,12 +74,49 @@ class MessageViewSet(
             headers=self.get_success_headers(read.data),
         )
 
+    def _assert_can_write(self, conversation):
+        """
+        Recusa quem não tem a caneta, com erro que a tela sabe traduzir em
+        "Ana assumiu esta conversa" — nunca um vermelho genérico (RF-ATD-15.3).
+        """
+        from apps.inbox.attendance import ConversationBusy, assert_can_write
+
+        try:
+            assert_can_write(conversation, self.request.user)
+        except ConversationBusy as exc:
+            raise PermissionDenied(
+                {
+                    "detail": "Esta conversa está sendo atendida por outra pessoa.",
+                    "code": "conversation_busy",
+                    "attended_by": exc.attended_by,
+                    "holder": exc.holder,
+                }
+            ) from exc
+
     def perform_create(self, serializer):
         super().perform_create(serializer)  # AuditMixin → ClinicScoped → save
-        # Fatia B: persistir e ENVIAR (provider real; FAKE devolve wamid sintético).
+        message = serializer.instance
+
+        # Escrever em conversa livre é o ato que a assume (RF-ATD-14) — senão
+        # a recepção daria dois cliques para responder a primeira do dia.
+        # Nota interna NÃO assume: anotar não é atender.
+        if not message.is_internal:
+            self._claim_if_free(message.conversation)
+
+        # Nota interna nunca vai para o provedor (RF-ATD-3).
+        if message.is_internal:
+            return
+
         from apps.inbox.tasks import send_whatsapp_message
 
-        send_whatsapp_message.delay(serializer.instance.pk)
+        send_whatsapp_message.delay(message.pk)
+
+    def _claim_if_free(self, conversation):
+        from apps.inbox.attendance import take_over
+        from apps.inbox.choices import AttendedBy
+
+        if conversation.attended_by == AttendedBy.NONE:
+            take_over(conversation, self.request.user, expected=AttendedBy.NONE)
 
     def clinic_save_kwargs(self) -> dict:
         # A mensagem do composer nasce OUT/AGENT, autoria do usuário logado e

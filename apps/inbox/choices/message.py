@@ -15,6 +15,8 @@ class SenderKind(TextChoices):
     CONTACT = "contact", "Contato"
     AGENT = "agent", "Atendente"
     BOT = "bot", "Automação"
+    # Evento de atividade (RF-ATD-4): não tem autor humano nem sai do sistema.
+    SYSTEM = "system", "Sistema"
 
 
 class MessageKind(TextChoices):
@@ -31,6 +33,8 @@ class MessageKind(TextChoices):
     INTERACTIVE = "interactive", "Interativa"
     TEMPLATE = "template", "Template"
     UNSUPPORTED = "unsupported", "Não suportado"
+    # Evento na linha do tempo (RF-ATD-4): nem mensagem, nem nota.
+    ACTIVITY = "activity", "Evento"
 
 
 class MessageStatus(TextChoices):
@@ -48,4 +52,7 @@ SENDER_TO_DIRECTION = {
     SenderKind.CONTACT: MessageDirection.IN,
     SenderKind.AGENT: MessageDirection.OUT,
     SenderKind.BOT: MessageDirection.OUT,
+    # Evento de atividade não tem direção: não entrou nem saiu do WhatsApp.
+    # Fica OUT porque o campo não aceita vazio, e a tela filtra por `kind`.
+    SenderKind.SYSTEM: MessageDirection.OUT,
 }

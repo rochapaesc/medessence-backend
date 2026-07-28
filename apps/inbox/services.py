@@ -50,8 +50,26 @@ def apply_message_to_conversation(message, *, created: bool) -> None:
         conversation.unread_count = F("unread_count") + 1
         fields += ["last_inbound_at", "unread_count"]
 
+    # Primeira resposta HUMANA depois de um inbound (RF-ATD-11). Nota interna
+    # não conta: o paciente não a recebeu.
+    elif (
+        conversation.first_response_at is None
+        and message.sender_kind == SenderKind.AGENT
+        and not message.is_internal
+        and conversation.last_inbound_at is not None
+    ):
+        conversation.first_response_at = message.wa_timestamp
+        fields.append("first_response_at")
+
     if fields:
         conversation.save(update_fields=[*fields, "updated_at"])
+
+    # Reabertura (RF-ATD-2): mensagem do paciente ressuscita conversa dormente.
+    # Depois do save para não brigar pelos mesmos campos.
+    if message.direction == MessageDirection.IN:
+        from apps.inbox.attendance import reopen
+
+        reopen(conversation, by_contact=True)
 
 
 # --------------------------------------------------------------------- #
@@ -214,9 +232,35 @@ def _apply_status(channel, event) -> bool:
 # --------------------------------------------------------------------- #
 
 
+def create_internal_note(conversation, user, body: str):
+    """
+    Nota da equipe (RF-ATD-3): existe na thread e NUNCA sai para o paciente.
+
+    Nasce sem `provider_message_id` e com `is_internal=True`; quem impede o
+    envio é a guarda em `send_message` — aqui só se cria o registro.
+    """
+    from apps.inbox.models import Message
+
+    return Message.objects.create(
+        clinic=conversation.clinic,
+        conversation=conversation,
+        kind=MessageKind.TEXT,
+        sender_kind=SenderKind.AGENT,
+        sent_by=user,
+        body=body,
+        is_internal=True,
+        wa_timestamp=timezone.now(),
+    )
+
+
 def send_message(message) -> None:
     """Envia uma mensagem OUT pendente pelo provider do canal e grava o wamid
     e o status. Chamado pela task `send_whatsapp_message`."""
+    # Última barreira da nota interna (RF-ATD-3). A task não deveria ser
+    # enfileirada para ela, mas o custo do erro é o paciente ler comentário da
+    # equipe — a guarda fica também aqui, no ponto onde a mensagem SAI.
+    if message.is_internal:
+        return
     from apps.integrations.whatsapp.exceptions import (
         WhatsAppError,
         WhatsAppRateLimitedError,
