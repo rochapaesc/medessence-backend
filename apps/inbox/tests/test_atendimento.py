@@ -347,3 +347,20 @@ def test_evento_de_atividade_nao_polui_a_thread_como_mensagem(conversation, mana
     assert evento.sender_kind == SenderKind.SYSTEM
     assert evento.body == ""
     assert evento.activity_data == {"from": AttendedBy.NONE}
+
+
+def test_evento_nao_vira_previa_da_lista(conversation, manager_single_clinic):
+    """
+    Achado na calibração de 28/07: resolver trocava a última fala do paciente
+    por "Evento" na listagem - apagando a informação que diz onde a conversa
+    parou. Evento é METADADO da conversa, não conteúdo dela.
+    """
+    make_message(conversation, sender_kind=SenderKind.CONTACT, body="Quero remarcar quinta")
+    conversation.refresh_from_db()
+    antes = (conversation.last_message_preview, conversation.last_message_at)
+
+    resolve(conversation, manager_single_clinic)
+
+    conversation.refresh_from_db()
+    assert conversation.last_message_preview == "Quero remarcar quinta"
+    assert (conversation.last_message_preview, conversation.last_message_at) == antes

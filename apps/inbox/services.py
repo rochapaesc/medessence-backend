@@ -35,6 +35,13 @@ def apply_message_to_conversation(message, *, created: bool) -> None:
     if not created:
         return
 
+    # Evento de atividade (RF-ATD-4) é METADADO da conversa, não conteúdo dela:
+    # não vira prévia nem move a conversa na lista. Sem esta guarda, resolver um
+    # atendimento trocava a última fala do paciente por "Evento" na listagem -
+    # apagando justamente a informação que diz onde a conversa parou.
+    if message.kind == MessageKind.ACTIVITY:
+        return
+
     conversation = message.conversation
     fields = []
 
@@ -241,7 +248,7 @@ def create_internal_note(conversation, user, body: str):
     """
     from apps.inbox.models import Message
 
-    return Message.objects.create(
+    note = Message.objects.create(
         clinic=conversation.clinic,
         conversation=conversation,
         kind=MessageKind.TEXT,
@@ -251,6 +258,14 @@ def create_internal_note(conversation, user, body: str):
         is_internal=True,
         wa_timestamp=timezone.now(),
     )
+    # A nota existe PARA a equipe: se ela só aparecesse para quem escreveu, a
+    # colega com a mesma conversa aberta continuaria sem o aviso - que é o
+    # motivo de a nota existir. Nenhuma task é enfileirada (ela não sai), então
+    # o aviso ao vivo tem de partir daqui.
+    from apps.inbox.realtime import notify_message_new_on_commit
+
+    notify_message_new_on_commit(note)
+    return note
 
 
 def send_message(message) -> None:

@@ -13,6 +13,10 @@ class MessageSerializer(ModelSerializer):
     """Balão da thread (RF-INB-2) - leitura."""
 
     media_url = SerializerMethodField()
+    # Quem agiu, por extenso: a frase do evento ("Ana assumiu o atendimento")
+    # e a assinatura da nota interna são montadas no front, e um id de usuário
+    # obrigaria a tela a buscar o nome mensagem a mensagem.
+    sent_by_name = SerializerMethodField()
 
     class Meta:
         model = Message
@@ -34,6 +38,7 @@ class MessageSerializer(ModelSerializer):
             "activity_data",
             "sender_kind",
             "sent_by",
+            "sent_by_name",
             "template_name",
             "wa_timestamp",
         ]
@@ -42,6 +47,11 @@ class MessageSerializer(ModelSerializer):
         if obj.media_id and obj.media.stored_file:
             return obj.media.stored_file.url
         return ""
+
+    def get_sent_by_name(self, obj):
+        if not obj.sent_by_id:
+            return ""
+        return obj.sent_by.get_full_name() or obj.sent_by.email
 
 
 class MessageCreateSerializer(ModelSerializer):

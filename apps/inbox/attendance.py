@@ -50,8 +50,9 @@ def log_activity(conversation, activity_type: str, *, user=None, data: dict | No
     os dados vão estruturados e o front monta a frase.
     """
     from apps.inbox.models import Message
+    from apps.inbox.realtime import notify_message_new_on_commit
 
-    return Message.objects.create(
+    evento = Message.objects.create(
         clinic=conversation.clinic,
         conversation=conversation,
         kind=MessageKind.ACTIVITY,
@@ -61,6 +62,8 @@ def log_activity(conversation, activity_type: str, *, user=None, data: dict | No
         activity_data=data or {},
         wa_timestamp=timezone.now(),
     )
+    notify_message_new_on_commit(evento)
+    return evento
 
 
 # --------------------------------------------------------------------- #

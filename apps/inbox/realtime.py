@@ -5,8 +5,8 @@ para o grupo da clínica. A fonte da verdade continua a API REST.
 Contrato de eventos (servidor → cliente):
     message:new          · conversation_id, message{mínimo}
     message:status       · provider_message_id, status
-    conversation:updated · conversation_id, unread_count, preview
-    handoff:new          · conversation_id, patient_name
+    conversation:updated · conversation_id, unread_count, preview, status,
+                           attended_by, assigned_to_name
 """
 
 import logging
@@ -43,6 +43,18 @@ def _message_min(message) -> dict:
         "sender_kind": message.sender_kind,
         "status": message.status,
         "status_error": message.status_error,
+        # Nota interna e evento de atividade viajam MARCADOS: sem estes três
+        # campos a tela de quem não agiu desenharia a nota como balão comum -
+        # ou seja, uma anotação da equipe com cara de mensagem enviada - e o
+        # evento como balão vazio.
+        "is_internal": message.is_internal,
+        "activity_type": message.activity_type,
+        "activity_data": message.activity_data,
+        "sent_by_name": (
+            (message.sent_by.get_full_name() or message.sent_by.email)
+            if message.sent_by_id
+            else ""
+        ),
         "wa_timestamp": message.wa_timestamp.isoformat() if message.wa_timestamp else None,
     }
 
@@ -58,7 +70,26 @@ def notify_message_new(message) -> None:
     )
 
 
+def notify_message_new_on_commit(message) -> None:
+    """
+    Mesma emissão, adiada até o commit. Para quem cria a mensagem DENTRO de uma
+    transação (nota interna, evento de atividade): quem recebe o evento consulta
+    a API em seguida, e emitir antes do commit faria o cliente ler o estado
+    anterior - ou, num rollback, reagir a algo que nunca existiu.
+    """
+    from django.db import transaction
+
+    transaction.on_commit(lambda: notify_message_new(message))
+
+
 def notify_conversation_updated(conversation) -> None:
+    """
+    A fila muda para todo mundo, não só para quem agiu: status e posse vão no
+    evento porque é por eles que a conversa SAI da lista de quem está olhando
+    (resolvida, adiada) e é por eles que o composer trava (RF-ATD-14). Sem
+    isso, quem não agiu continuaria escrevendo numa conversa que já é de
+    outra pessoa até apertar F5.
+    """
     _broadcast(
         conversation.clinic_id,
         {
@@ -66,6 +97,11 @@ def notify_conversation_updated(conversation) -> None:
             "conversation_id": conversation.pk,
             "unread_count": conversation.unread_count,
             "preview": conversation.last_message_preview,
+            "status": conversation.status,
+            "attended_by": conversation.attended_by,
+            "assigned_to_name": (
+                conversation.assigned_to.get_full_name() if conversation.assigned_to_id else ""
+            ),
         },
     )
 
@@ -85,16 +121,5 @@ def notify_message_status(
             "conversation_id": conversation_id,
             "provider_message_id": provider_message_id,
             "status": status,
-        },
-    )
-
-
-def notify_handoff(conversation) -> None:
-    _broadcast(
-        conversation.clinic_id,
-        {
-            "event": "handoff:new",
-            "conversation_id": conversation.pk,
-            "patient_name": conversation.patient.name if conversation.patient_id else "",
         },
     )
