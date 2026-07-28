@@ -253,6 +253,28 @@ def test_transferir_para_fora_da_clinica_e_recusado(logado, conversation, clinic
     assert resposta.status_code == 400
 
 
+def test_agents_BUSCA_no_servidor_e_exclui_quem_nao_casa(logado, colega, manager_single_clinic):
+    """
+    Buscar é trabalho de servidor. Filtrar lista já baixada só funciona
+    enquanto ela cabe inteira na resposta — e no dia em que não couber, a busca
+    passa a mentir, achando só dentro do pedaço que veio.
+
+    A asserção afirma a EXCLUSÃO: `>= 1` passaria também com o filtro inerte,
+    que foi exatamente como a busca da auditoria ficou morta por uma sessão.
+    """
+    achou = logado.get("/api/v1/conversations/agents/", {"search": "colega"})
+    nao_achou = logado.get("/api/v1/conversations/agents/", {"search": "zzz-ninguem"})
+
+    assert [p["id"] for p in achou.data] == [colega.pk]
+    assert nao_achou.data == []
+
+
+def test_agents_sem_busca_traz_todo_mundo(logado, colega, manager_single_clinic):
+    ids = {p["id"] for p in logado.get("/api/v1/conversations/agents/").data}
+
+    assert {colega.pk, manager_single_clinic.pk} <= ids
+
+
 def test_agents_traz_a_carga_de_cada_um(logado, conversation, manager_single_clinic, colega):
     from apps.inbox.attendance import take_over
 

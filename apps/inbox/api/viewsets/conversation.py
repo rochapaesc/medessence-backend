@@ -1,4 +1,4 @@
-from django.db.models import Case, Count, IntegerField, Value, When
+from django.db.models import Case, Count, IntegerField, Q, Value, When
 from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -10,6 +10,11 @@ from apps.inbox.api.filtersets import ConversationFilterset
 from apps.inbox.api.serializers import ConversationSerializer
 from apps.inbox.choices import PRIORITY_RANK, ConversationPriority, ConversationStatus
 from apps.inbox.models import Conversation
+
+# Teto do seletor de pessoas. Não é paginação: quem procura alguém fora do
+# teto usa a busca, que é o caminho desenhado para isso. Devolver a clínica
+# inteira faria uma tela de escolha carregar uma lista que ninguém lê.
+AGENTS_LIMIT = 30
 
 
 class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
@@ -27,7 +32,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         POST /{id}/add-label/     marca assunto (RF-ATD-9)
         POST /{id}/remove-label/  desmarca assunto
         GET  /counters/           contadores do inbox (RNF-5)
-        GET  /agents/             para quem transferir, com a carga de cada um
+        GET  /agents/?search=     para quem transferir, com a carga de cada um
     """
 
     model = Conversation
@@ -217,6 +222,12 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         de um chute - sem ela, todo mundo empurra para a mesma pessoa. É também
         o embrião honesto da distribuição do B2: mostra a fila sem prometer
         automatizar nada.
+
+        `?search=` filtra AQUI, não no cliente: buscar é trabalho de servidor.
+        Filtrar uma lista já baixada só funciona enquanto ela cabe inteira numa
+        resposta - e o dia em que não couber, a busca passa a mentir, achando
+        só dentro do pedaço que veio. `LIMITE` é o teto do que se devolve; a
+        busca é o caminho para o que ficou de fora.
         """
         from apps.accounts.models import Membership
 
@@ -236,6 +247,15 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
             .select_related("user")
             .order_by("user__first_name", "user__email")
         )
+        termo = request.query_params.get("search", "").strip()
+        if termo:
+            pessoas = pessoas.filter(
+                Q(user__first_name__icontains=termo)
+                | Q(user__last_name__icontains=termo)
+                | Q(user__email__icontains=termo)
+            )
+        pessoas = pessoas[:AGENTS_LIMIT]
+
         return Response(
             [
                 {
