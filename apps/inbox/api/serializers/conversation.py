@@ -1,5 +1,6 @@
 from rest_framework.serializers import ModelSerializer, SerializerMethodField
 
+from apps.inbox.api.serializers.label import ConversationLabelSummarySerializer
 from apps.inbox.models import Conversation
 from apps.patients.models import Contact
 
@@ -17,6 +18,7 @@ class ConversationSerializer(ModelSerializer):
     patient_name = SerializerMethodField()
     window_open = SerializerMethodField()
     assigned_to_name = SerializerMethodField()
+    labels = ConversationLabelSummarySerializer(many=True, read_only=True)
 
     class Meta:
         model = Conversation
@@ -38,6 +40,9 @@ class ConversationSerializer(ModelSerializer):
             "resolved_at",
             "assigned_to",
             "assigned_to_name",
+            "priority",
+            "labels",
+            "team",
         ]
 
     def get_patient_name(self, obj):

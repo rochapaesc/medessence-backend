@@ -99,9 +99,15 @@ def notify_conversation_updated(conversation) -> None:
             "preview": conversation.last_message_preview,
             "status": conversation.status,
             "attended_by": conversation.attended_by,
+            "priority": conversation.priority,
             "assigned_to_name": (
                 conversation.assigned_to.get_full_name() if conversation.assigned_to_id else ""
             ),
+            # Etiquetas NÃO vão aqui de propósito: este evento dispara a cada
+            # mensagem, e uma lista de objetos por mensagem inflaria o canal
+            # inteiro para refletir algo que muda uma ou duas vezes por
+            # conversa. Elas chegam pelo REST na próxima carga - o socket
+            # avisa, o REST confirma.
         },
     )
 

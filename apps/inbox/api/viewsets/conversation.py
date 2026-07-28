@@ -1,3 +1,4 @@
+from django.db.models import Case, Count, IntegerField, Value, When
 from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -7,7 +8,7 @@ from apps.core.api.viewsets import ClinicScopedReadOnlyViewSet
 from apps.core.mixins import AuditMixin
 from apps.inbox.api.filtersets import ConversationFilterset
 from apps.inbox.api.serializers import ConversationSerializer
-from apps.inbox.choices import ConversationStatus
+from apps.inbox.choices import PRIORITY_RANK, ConversationPriority, ConversationStatus
 from apps.inbox.models import Conversation
 
 
@@ -21,7 +22,12 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         POST /{id}/assign/        assume o atendimento (RF-INB-5/8)
         POST /{id}/mark-waiting/  marca como aguardando atendente (manual - F2)
         POST /{id}/link-patient/  desambigua o vínculo contato↔paciente (RF-INB-7)
+        POST /{id}/transfer/      passa para outra pessoa (RF-ATD-6)
+        POST /{id}/priority/      urgência da fila (RF-ATD-8)
+        POST /{id}/add-label/     marca assunto (RF-ATD-9)
+        POST /{id}/remove-label/  desmarca assunto
         GET  /counters/           contadores do inbox (RNF-5)
+        GET  /agents/             para quem transferir, com a carga de cada um
     """
 
     model = Conversation
@@ -32,7 +38,27 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
     select_related = ["contact", "patient", "channel", "assigned_to"]
 
     def get_queryset(self):
-        return super().get_queryset().order_by("-last_message_at")
+        """
+        Urgência primeiro, recência depois (RF-ATD-8). A ordenação é do
+        SERVIDOR porque a fila é paginada: ordenar no cliente colocaria a
+        urgente no topo *da página*, e a que importa pode estar na terceira.
+
+        O peso vem de PRIORITY_RANK e não de um `order_by("priority")`: os
+        valores são texto ("urgent" < "" alfabeticamente), então ordenar pelo
+        campo puro poria normal na frente de urgente.
+        """
+        ranking = Case(
+            *[When(priority=valor, then=Value(peso)) for valor, peso in PRIORITY_RANK.items()],
+            default=Value(max(PRIORITY_RANK.values()) + 1),
+            output_field=IntegerField(),
+        )
+        return (
+            super()
+            .get_queryset()
+            .prefetch_related("labels")
+            .annotate(priority_rank=ranking)
+            .order_by("priority_rank", "-last_message_at")
+        )
 
     @action(detail=True, methods=["post"], url_path="read")
     def read(self, request, pk=None):
@@ -124,6 +150,114 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         )
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
+
+    # ------------- classificação e passagem adiante (Bloco B1) ---------- #
+
+    @action(detail=True, methods=["post"], url_path="transfer")
+    def transfer(self, request, pk=None):
+        """Passa o atendimento para outra pessoa (RF-ATD-6). `note` vira nota
+        interna e viaja junto no evento."""
+        from apps.inbox.attendance import transfer
+
+        destino_id = request.data.get("to")
+        if not destino_id:
+            raise ValidationError({"to": "Informe para quem transferir."})
+        destino = self._resolve_clinic_user(destino_id)
+
+        conversation = self._busy_guard(
+            lambda: transfer(
+                self.get_object(),
+                request.user,
+                to_user=destino,
+                note=request.data.get("note", ""),
+            )
+        )
+        self._notify(conversation)
+        return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["post"], url_path="priority")
+    def priority(self, request, pk=None):
+        """Urgência da fila (RF-ATD-8)."""
+        from apps.inbox.attendance import set_priority
+
+        valor = request.data.get("priority", ConversationPriority.NORMAL)
+        if valor not in ConversationPriority.values:
+            raise ValidationError({"priority": "Prioridade desconhecida."})
+
+        conversation = set_priority(self.get_object(), request.user, priority=valor)
+        self._notify(conversation)
+        return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["post"], url_path="add-label")
+    def add_label(self, request, pk=None):
+        from apps.inbox.attendance import add_label
+
+        conversation = add_label(
+            self.get_object(), request.user, label=self._resolve_label(request)
+        )
+        self._notify(conversation)
+        return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["post"], url_path="remove-label")
+    def remove_label(self, request, pk=None):
+        from apps.inbox.attendance import remove_label
+
+        conversation = remove_label(
+            self.get_object(), request.user, label=self._resolve_label(request)
+        )
+        self._notify(conversation)
+        return Response(self.get_serializer(conversation).data)
+
+    @action(detail=False, methods=["get"], url_path="agents")
+    def agents(self, request):
+        """
+        Para quem dá para transferir, com a CARGA de cada um (RF-ATD-6).
+
+        A carga é a única informação que faz a escolha ser uma decisão em vez
+        de um chute - sem ela, todo mundo empurra para a mesma pessoa. É também
+        o embrião honesto da distribuição do B2: mostra a fila sem prometer
+        automatizar nada.
+        """
+        from apps.accounts.models import Membership
+
+        abertas = (
+            self.model.objects.filter(
+                clinic=self.clinic,
+                deleted_at__isnull=True,
+                status=ConversationStatus.OPEN,
+            )
+            .values("assigned_to_id")
+            .annotate(total=Count("id"))
+        )
+        carga = {linha["assigned_to_id"]: linha["total"] for linha in abertas}
+
+        pessoas = (
+            Membership.objects.filter(clinic=self.clinic, is_active=True)
+            .select_related("user")
+            .order_by("user__first_name", "user__email")
+        )
+        return Response(
+            [
+                {
+                    "id": m.user_id,
+                    "name": m.user.get_full_name() or m.user.email,
+                    "role": m.role,
+                    "open_conversations": carga.get(m.user_id, 0),
+                }
+                for m in pessoas
+            ]
+        )
+
+    def _resolve_label(self, request):
+        from apps.inbox.models import ConversationLabel
+
+        label_id = request.data.get("label")
+        if not label_id:
+            raise ValidationError({"label": "Informe a etiqueta."})
+        label = ConversationLabel.objects.filter(clinic=self.clinic, pk=label_id).first()
+        if label is None:
+            raise ValidationError({"label": "Etiqueta não encontrada nesta clínica."})
+        return label
 
     # ------------------------------------------------------------------ #
 

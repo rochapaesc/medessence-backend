@@ -23,14 +23,35 @@ class ConversationFilterset(FilterSet):
     unread = BooleanFilter(method="filter_unread")
     assigned_to = NumberFilter(field_name="assigned_to_id")
     status = CharFilter(method="filter_status")
+    label = CharFilter(method="filter_label")
 
     class Meta:
         model = Conversation
-        fields = ["search", "unread", "status", "attended_by", "assigned_to", "channel", "patient"]
+        fields = [
+            "search",
+            "unread",
+            "status",
+            "label",
+            "priority",
+            "attended_by",
+            "assigned_to",
+            "channel",
+            "patient",
+        ]
 
     def filter_status(self, queryset, name, value):
         valores = [v.strip() for v in value.split(",") if v.strip()]
         return queryset.filter(status__in=valores) if valores else queryset
+
+    def filter_label(self, queryset, name, value):
+        """
+        Filtra por etiqueta (RF-ATD-9.3) - sem isto, classificar não serviria
+        para nada. Aceita lista: `?label=3,7` traz quem tem QUALQUER uma das
+        duas (é assim que se procura "reclamação ou orçamento"); exigir as duas
+        juntas devolveria quase sempre vazio.
+        """
+        ids = [v.strip() for v in value.split(",") if v.strip().isdigit()]
+        return queryset.filter(labels__id__in=ids).distinct() if ids else queryset
 
     def filter_search(self, queryset, name, value):
         return queryset.filter(

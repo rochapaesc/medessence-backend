@@ -37,6 +37,30 @@ class AttendedBy(TextChoices):
     AGENT = "agent", "Atendente"
 
 
+class ConversationPriority(TextChoices):
+    """
+    Urgência da conversa (RF-ATD-8). ORDENA a fila, não a filtra: um chip a
+    mais numa barra que já tem cinco cobraria um clique para ver o que já
+    deveria estar na frente - e esconderia o resto da fila enquanto ligado.
+
+    NORMAL é "" para o campo nascer vazio sem backfill: a conversa que ninguém
+    priorizou não é uma decisão, é a ausência dela.
+    """
+
+    NORMAL = "", "Normal"
+    HIGH = "high", "Alta"
+    URGENT = "urgent", "Urgente"
+
+
+# Peso para ordenar a fila. Vive aqui, e não numa string no queryset, porque
+# quem acrescentar um nível novo precisa tropeçar nisto.
+PRIORITY_RANK = {
+    ConversationPriority.URGENT: 0,
+    ConversationPriority.HIGH: 1,
+    ConversationPriority.NORMAL: 2,
+}
+
+
 class ActivityType(TextChoices):
     """
     Evento na linha do tempo (RF-ATD-4). Fica na MESMA tabela de mensagens
@@ -52,6 +76,9 @@ class ActivityType(TextChoices):
     RESOLVED = "resolved", "Resolveu"
     REOPENED = "reopened", "Reaberta"
     SNOOZED = "snoozed", "Adiou"
+    LABEL_ADDED = "label_added", "Marcou etiqueta"
+    LABEL_REMOVED = "label_removed", "Removeu etiqueta"
+    PRIORITY_CHANGED = "priority_changed", "Mudou a prioridade"
     BOT_STARTED = "bot_started", "IA assumiu"
     BOT_HANDOFF = "bot_handoff", "IA entregou para humano"
     TAKEN_OVER = "taken_over", "Tomou o atendimento"

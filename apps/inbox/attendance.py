@@ -209,6 +209,115 @@ def reopen(conversation, *, user=None, by_contact: bool = False):
     return conversation
 
 
+# --------------------------------------------------------------------- #
+# Classificação e passagem adiante (Bloco B1, RF-ATD-6/8/9)
+# --------------------------------------------------------------------- #
+
+
+@transaction.atomic
+def transfer(conversation, user, *, to_user, note: str = ""):
+    """
+    Passa o atendimento para outra pessoa (RF-ATD-6).
+
+    Quem transfere precisa TER a posse: passar adiante conversa que não é sua é
+    a disputa do RF-ATD-15 por outro caminho. Quem recebe vira responsável na
+    hora - sem devolução por timeout (B2), transferir É atribuir, e deixar a
+    conversa "oferecida" e sem dono seria inventar um estado que ninguém
+    resolve.
+    """
+    from apps.inbox.services import create_internal_note
+
+    assert_can_write(conversation, user)
+    if to_user.pk == conversation.assigned_to_id:
+        return conversation
+
+    de = conversation.assigned_to
+    conversation.assigned_to = to_user
+    conversation.attended_by = AttendedBy.AGENT
+    conversation.attended_since = timezone.now()
+    conversation.status = ConversationStatus.OPEN
+    conversation.waiting_since = None
+    conversation.save(
+        update_fields=[
+            "assigned_to",
+            "attended_by",
+            "attended_since",
+            "status",
+            "waiting_since",
+            "updated_at",
+        ]
+    )
+    # A nota de passagem entra ANTES do evento para a thread ler na ordem em
+    # que a coisa aconteceu: o porquê, e então o registro de quem passou.
+    if note.strip():
+        create_internal_note(conversation, user, note.strip())
+    log_activity(
+        conversation,
+        ActivityType.TRANSFERRED,
+        user=user,
+        data={
+            "from": _nome(de),
+            "to": _nome(to_user),
+            # O texto vai junto porque quem recebe abre a conversa pelo evento,
+            # e ter de procurar a nota logo acima é atrito no pior momento.
+            "note": note.strip(),
+        },
+    )
+    return conversation
+
+
+def set_priority(conversation, user, *, priority: str):
+    """Urgência da fila (RF-ATD-8). Sem evento quando nada mudou - repetir a
+    mesma prioridade não é um fato da conversa."""
+    if conversation.priority == priority:
+        return conversation
+
+    anterior = conversation.priority
+    conversation.priority = priority
+    conversation.save(update_fields=["priority", "updated_at"])
+    log_activity(
+        conversation,
+        ActivityType.PRIORITY_CHANGED,
+        user=user,
+        data={"from": anterior, "to": priority},
+    )
+    return conversation
+
+
+def add_label(conversation, user, *, label):
+    """Marca assunto (RF-ATD-9). Idempotente: marcar duas vezes não gera dois
+    eventos."""
+    if conversation.labels.filter(pk=label.pk).exists():
+        return conversation
+    conversation.labels.add(label)
+    log_activity(
+        conversation,
+        ActivityType.LABEL_ADDED,
+        user=user,
+        data={"label": label.name, "label_id": label.pk},
+    )
+    return conversation
+
+
+def remove_label(conversation, user, *, label):
+    if not conversation.labels.filter(pk=label.pk).exists():
+        return conversation
+    conversation.labels.remove(label)
+    log_activity(
+        conversation,
+        ActivityType.LABEL_REMOVED,
+        user=user,
+        data={"label": label.name, "label_id": label.pk},
+    )
+    return conversation
+
+
+def _nome(user) -> str:
+    if user is None:
+        return ""
+    return user.get_full_name() or user.email
+
+
 def mark_waiting(conversation, user=None):
     """Devolve para a fila: perde o responsável (RF-ATD-1)."""
     conversation.status = ConversationStatus.WAITING

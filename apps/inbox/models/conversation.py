@@ -7,6 +7,7 @@ from django.db.models import (
     CharField,
     DateTimeField,
     ForeignKey,
+    ManyToManyField,
     PositiveIntegerField,
     Q,
     UniqueConstraint,
@@ -14,7 +15,7 @@ from django.db.models import (
 from django.utils import timezone
 
 from apps.core.models import TenantScopedModel
-from apps.inbox.choices import AttendedBy, ConversationStatus
+from apps.inbox.choices import AttendedBy, ConversationPriority, ConversationStatus
 
 # Janela de atendimento livre da Meta (§7): fora dela, só template aprovado.
 WINDOW_HOURS = 24
@@ -76,6 +77,36 @@ class Conversation(TenantScopedModel):
         help_text="Primeira resposta HUMANA depois de um inbound (RF-ATD-11).",
     )
     resolved_at = DateTimeField(verbose_name="Resolvida em", null=True, blank=True)
+
+    # ------------- classificação e equipe (F2.5, Bloco B1) -----------------
+    priority = CharField(
+        verbose_name="Prioridade",
+        max_length=6,
+        choices=ConversationPriority.choices,
+        default=ConversationPriority.NORMAL,
+        blank=True,
+        db_index=True,
+        help_text="Ordena a fila por urgência, não só por recência (RF-ATD-8).",
+    )
+    labels = ManyToManyField(
+        "inbox.ConversationLabel",
+        verbose_name="Etiquetas",
+        blank=True,
+        related_name="conversations",
+        help_text="Assunto (RF-ATD-9). LOCAL - nunca vai para o prontuário.",
+    )
+    team = ForeignKey(
+        "inbox.Team",
+        verbose_name="Setor",
+        null=True,
+        blank=True,
+        on_delete=SET_NULL,
+        related_name="conversations",
+        help_text=(
+            "Nasce no B1 sem tela: acrescentar FK a tabela que já cresceu custa "
+            "migração e backfill. Transferência entre setores é o B2."
+        ),
+    )
 
     # ---------------- posse: quem tem a caneta (RF-ATD-12) -----------------
     attended_by = CharField(
