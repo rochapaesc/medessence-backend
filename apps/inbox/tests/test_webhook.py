@@ -184,3 +184,41 @@ def test_criar_mensagem_envia_via_provider_fake(api_client, manager_single_clini
     message = Message.objects.get(pk=response.data["id"])
     assert message.provider_message_id.startswith("wamid.FAKE-")
     assert message.status == "sent"
+
+
+def test_resposta_do_create_traz_o_recurso_inteiro(
+    api_client, manager_single_clinic, inbox_a
+):
+    """
+    O composer troca o balão "enviando..." pelo definitivo usando ESTA
+    resposta. Quando ela vinha com o serializer de ESCRITA (sem wa_timestamp,
+    direction, status), o front estourava ao ler a resposta, o balão otimista
+    ficava preso e a mensagem aparecia DUAS vezes — a real chegava pelo
+    WebSocket (defeito de 28/07/2026).
+    """
+    from apps.inbox.choices import SenderKind
+    from apps.inbox.tests.conftest import make_message
+
+    conversation = inbox_a["conversation"]
+    make_message(conversation, sender_kind=SenderKind.CONTACT)  # abre a janela
+    api_client.force_authenticate(manager_single_clinic)
+
+    response = api_client.post(
+        "/api/v1/messages/",
+        {"conversation": conversation.id, "body": "resposta"},
+        format="json",
+    )
+
+    assert response.status_code == 201
+    for campo in (
+        "wa_timestamp",
+        "direction",
+        "status",
+        "sender_kind",
+        "provider_message_id",
+        "status_error",
+    ):
+        assert campo in response.data, f"o front precisa de `{campo}` para fechar o envio"
+    assert response.data["direction"] == "out"
+    assert response.data["sender_kind"] == SenderKind.AGENT
+    assert response.data["wa_timestamp"], "sem isto o balão não tem hora"

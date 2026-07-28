@@ -32,11 +32,17 @@ def _broadcast(clinic_id: int, data: dict) -> None:
 def _message_min(message) -> dict:
     return {
         "id": message.pk,
+        # O wamid vai junto porque é a CHAVE dos eventos de status seguintes
+        # (sent→delivered→read): sem ele o cliente recebe o tique e não sabe
+        # em qual balão aplicá-lo. A resposta do POST nasce com ele vazio -
+        # o envio é assíncrono e só termina depois.
+        "provider_message_id": message.provider_message_id,
         "direction": message.direction,
         "kind": message.kind,
         "body": (message.body or message.caption)[:200],
         "sender_kind": message.sender_kind,
         "status": message.status,
+        "status_error": message.status_error,
         "wa_timestamp": message.wa_timestamp.isoformat() if message.wa_timestamp else None,
     }
 

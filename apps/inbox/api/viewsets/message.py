@@ -1,5 +1,7 @@
 from django.utils import timezone
 from rest_framework.mixins import CreateModelMixin, ListModelMixin, RetrieveModelMixin
+from rest_framework.response import Response
+from rest_framework.status import HTTP_201_CREATED
 
 from apps.core.api.viewsets import ClinicScopedMixin
 from apps.core.api.viewsets.base import BaseGenericViewSet
@@ -39,6 +41,31 @@ class MessageViewSet(
 
     def get_queryset(self):
         return super().get_queryset().order_by("wa_timestamp")
+
+    def create(self, request, *args, **kwargs):
+        """
+        Responde com o serializer de LEITURA, não o de escrita.
+
+        O composer precisa do recurso INTEIRO para trocar o balão otimista
+        pelo definitivo: `wa_timestamp`, `direction`, `status` e
+        `provider_message_id` não existem no serializer de entrada, e devolver
+        só o que foi enviado deixava a tela sem como fechar o ciclo (a
+        mensagem duplicava - o balão "enviando..." nunca era substituído).
+        """
+        write = self.get_serializer(data=request.data)
+        write.is_valid(raise_exception=True)
+        self.perform_create(write)
+
+        message = write.instance
+        # O envio roda em task: eager nos testes já gravou wamid/status, e em
+        # produção o refresh custa uma query e evita devolver dado velho.
+        message.refresh_from_db()
+        read = MessageSerializer(message, context=self.get_serializer_context())
+        return Response(
+            read.data,
+            status=HTTP_201_CREATED,
+            headers=self.get_success_headers(read.data),
+        )
 
     def perform_create(self, serializer):
         super().perform_create(serializer)  # AuditMixin → ClinicScoped → save
