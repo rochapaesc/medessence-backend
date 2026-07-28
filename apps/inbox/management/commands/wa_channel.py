@@ -145,12 +145,23 @@ class Command(BaseCommand):
         if channel is None:
             raise CommandError(f"{clinic.name} não tem canal. Rode o comando sem --verify antes.")
 
+        # Com LOG_LEVEL=DEBUG o httpx despeja cabeçalhos e corpo da chamada, e
+        # o resultado - que é o ponto do comando - se perde no meio. Pior:
+        # imprime o Authorization. Silencia só aqui, sem mexer no logging global.
+        import logging
+
+        for nome in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection", "pywa"):
+            logging.getLogger(nome).setLevel(logging.WARNING)
+
         from apps.integrations.whatsapp.exceptions import WhatsAppError
         from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
         provider = get_whatsapp_provider(channel)
         try:
-            numero = provider._wa.get_business_phone_number(channel.phone_number_id)
+            # `phone_id` é keyword-only no PyWa (assinatura com `*`).
+            numero = provider._wa.get_business_phone_number(
+                phone_id=channel.phone_number_id
+            )
         except WhatsAppError as exc:
             raise CommandError(f"A Meta recusou as credenciais: {exc}") from exc
         except Exception as exc:  # rede, id inexistente, resposta inesperada

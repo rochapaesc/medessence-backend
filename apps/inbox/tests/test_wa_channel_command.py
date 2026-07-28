@@ -100,3 +100,24 @@ def test_show_em_clinica_sem_canal_avisa(db, clinic_a):
 def test_verify_sem_canal_recusa(db, clinic_a):
     with pytest.raises(CommandError, match="não tem canal"):
         _run(clinic_a.slug, "--verify")
+
+
+def test_chamada_ao_pywa_bate_com_a_assinatura_real():
+    """
+    Contrato com a biblioteca: `phone_id` é KEYWORD-ONLY no PyWa (assinatura
+    com `*`). Chamar posicionalmente estourava só na hora do --verify, contra
+    a Meta de verdade — o teste anterior parava no caso "sem canal" e nunca
+    chegava na chamada (28/07/2026).
+
+    Amarrado à assinatura REAL: se um upgrade do PyWa mudar isso, quebra aqui
+    e não na calibração.
+    """
+    import inspect
+
+    from pywa import WhatsApp
+
+    sig = inspect.signature(WhatsApp.get_business_phone_number)
+    sig.bind(None, phone_id="123456")  # como o comando chama — não pode levantar
+
+    with pytest.raises(TypeError):
+        sig.bind(None, "123456")  # posicional: é exatamente o que quebrou
