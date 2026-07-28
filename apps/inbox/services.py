@@ -181,11 +181,16 @@ def _apply_status(channel, event) -> bool:
     # não em Python, para a corrida entre dois webhooks paralelos não anular
     # a guarda.
     can_overwrite = [s for s, r in _STATUS_RANK.items() if r < rank]
-    updated = Message.objects.filter(
+    alvo = Message.objects.filter(
         clinic=channel.clinic,
         provider_message_id=event.provider_message_id,
         status__in=can_overwrite,
-    ).update(
+    )
+    # A conversa é lida ANTES do update: o evento de realtime precisa dela
+    # para o cliente saber que thread atualizar, e depois do UPDATE o
+    # queryset não casa mais (o status já mudou).
+    conversation_id = alvo.values_list("conversation_id", flat=True).first()
+    updated = alvo.update(
         status=event.status,
         # FAILED chega com o motivo; um status de sucesso posterior limpa o
         # motivo de um FAILED fora de ordem que ele acabou de superar.
@@ -195,7 +200,12 @@ def _apply_status(channel, event) -> bool:
     if updated:
         from apps.inbox.realtime import notify_message_status
 
-        notify_message_status(channel.clinic_id, event.provider_message_id, event.status)
+        notify_message_status(
+            channel.clinic_id,
+            event.provider_message_id,
+            event.status,
+            conversation_id=conversation_id,
+        )
     return bool(updated)
 
 

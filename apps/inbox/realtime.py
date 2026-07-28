@@ -64,11 +64,19 @@ def notify_conversation_updated(conversation) -> None:
     )
 
 
-def notify_message_status(clinic_id: int, provider_message_id: str, status: str) -> None:
+def notify_message_status(
+    clinic_id: int, provider_message_id: str, status: str, conversation_id: int | None = None
+) -> None:
+    """
+    Tique de entrega. `conversation_id` vai junto porque o cliente precisa
+    saber QUAL thread atualizar - sem ele, a tela teria de procurar o wamid
+    em todas as conversas abertas (ou recarregar por um tique).
+    """
     _broadcast(
         clinic_id,
         {
             "event": "message:status",
+            "conversation_id": conversation_id,
             "provider_message_id": provider_message_id,
             "status": status,
         },

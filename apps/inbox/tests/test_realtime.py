@@ -62,6 +62,8 @@ def test_status_emite_message_status(clinic_a, inbox_a):
     assert data["event"] == "message:status"
     assert data["provider_message_id"] == "wamid.s1"
     assert data["status"] == "read"
+    # O cliente precisa saber QUAL thread atualizar.
+    assert data["conversation_id"] == inbox_a["conversation"].pk
 
 
 def test_evento_nao_vaza_entre_clinicas(clinic_a, clinic_b, inbox_a, inbox_b):
