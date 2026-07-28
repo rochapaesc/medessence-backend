@@ -17,15 +17,15 @@ from apps.tenants.models import Clinic
 
 @pytest.fixture
 def fake_clinic(db):
-    for source, status in [
-        ("10", AppointmentStatus.SCHEDULED),
-        ("81", AppointmentStatus.CONFIRMED),
-        ("90", AppointmentStatus.COMPLETED),
-        ("100", AppointmentStatus.CANCELED),
-    ]:
-        EHRStatusMap.objects.create(
-            provider=EHRProviderKind.FAKE, source_status=source, status=status
-        )
+    """
+    Sem montar mapa de status à mão: o do provider FAKE vem da migration
+    0009, igual à produção.
+
+    A versão anterior criava o próprio mapa com a semântica ERRADA
+    (100→cancelada, 90→completed) e por isso o teste passava enquanto todo
+    pull real terminava com `unmapped_statuses` (28/07/2026). Dublê que
+    inventa o contrato esconde exatamente o defeito que deveria pegar.
+    """
     return Clinic.objects.create(
         name="Clínica Fake", slug="clinica-fake", ehr_provider=EHRProviderKind.FAKE
     )
@@ -102,11 +102,16 @@ def test_pull_appointments_mapeia_status_e_recalcula_paciente(fake_clinic):
 
     assert run.stats["fetched"] > 0
     assert run.stats["created"] == run.stats["fetched"]
-    assert run.stats["unmapped_statuses"] == []  # EHRStatusMap cobre 10/81/90/100
+    assert run.stats["unmapped_statuses"] == []
 
-    # Status crus traduzidos pelo mapa
+    # Status crus traduzidos com a semântica OFICIAL da vSaúde (P4): 100 é
+    # "passou do horário", que o usuário decidiu NÃO contar como
+    # comparecimento — não é cancelamento.
     assert Appointment.objects.filter(
-        clinic=fake_clinic, source_status="100", status=AppointmentStatus.CANCELED
+        clinic=fake_clinic, source_status="100", status=AppointmentStatus.NO_SHOW
+    ).exists()
+    assert Appointment.objects.filter(
+        clinic=fake_clinic, source_status="51", status=AppointmentStatus.CANCELED
     ).exists()
 
     # Profissionais upsertados a partir da agenda (sem endpoint próprio)
@@ -168,3 +173,44 @@ def test_sync_runs_registrados_com_stats(fake_clinic):
     for run in runs:
         assert run.started_at and run.finished_at
         assert run.stats and not run.error
+
+
+def test_fake_so_emite_codigo_que_a_vsaude_produz(db):
+    """
+    Invariante que faltava: TODO código do ciclo do fake precisa existir no
+    mapa do fake E no mapa oficial da vSaúde, com o MESMO significado.
+
+    O fake existe para exercitar em dev o caminho que produção percorre. Sem
+    esta amarra ele emitia "90" — código que não existe na vSaúde (retirado
+    do mapa pela 0008) — e o dev testava um estado impossível.
+    """
+    from apps.integrations.ehr.fake.adapter import STATUS_CYCLE, FakeAdapter
+
+    # Tudo que o fake pode gravar: o ciclo do pull E os códigos das
+    # transições — cobrir só o ciclo deixaria o buraco no caminho de escrita.
+    emitidos = [*STATUS_CYCLE, *FakeAdapter.TRANSITION_CODES.values()]
+
+    fake_map = dict(
+        EHRStatusMap.objects.filter(provider=EHRProviderKind.FAKE).values_list(
+            "source_status", "status"
+        )
+    )
+    vsaude_map = dict(
+        EHRStatusMap.objects.filter(provider=EHRProviderKind.VSAUDE).values_list(
+            "source_status", "status"
+        )
+    )
+
+    for code in emitidos:
+        assert code in fake_map, f"o fake emite {code} e o mapa dele não cobre"
+        assert code in vsaude_map, f"{code} não existe na vSaúde — o fake não deve emiti-lo"
+        assert fake_map[code] == vsaude_map[code], (
+            f"{code} significa {fake_map[code]} no fake e "
+            f"{vsaude_map[code]} na vSaúde — o fake deve espelhar o real"
+        )
+
+
+def test_mapa_do_fake_nao_conhece_o_codigo_90(db):
+    """90 ("Em andamento") não existe na vSaúde: nenhum código do EHR produz
+    in_progress, que é estado exclusivamente local (RF-AGE-5, D1)."""
+    assert not EHRStatusMap.objects.filter(source_status="90").exists()

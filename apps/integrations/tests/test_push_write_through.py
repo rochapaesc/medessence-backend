@@ -52,18 +52,12 @@ def _reset_fake_registries():
 
 @pytest.fixture
 def ehr_clinic(db):
-    """Clínica com EHR fake + mapa de status alinhado às transições."""
-    for source, status in [
-        ("10", AppointmentStatus.SCHEDULED),
-        ("30", AppointmentStatus.CONFIRMED),
-        ("9", AppointmentStatus.WAITING),  # paridade vSaúde: 9 = aguardando
-        ("81", AppointmentStatus.COMPLETED),
-        ("50", AppointmentStatus.CANCELED),
-        ("6", AppointmentStatus.NO_SHOW),
-    ]:
-        EHRStatusMap.objects.create(
-            provider=EHRProviderKind.FAKE, source_status=source, status=status
-        )
+    """
+    Clínica com EHR fake. O mapa de status vem da migration 0009 (ciclo do
+    pull + códigos das transições), não montado aqui: dublê que inventa o
+    contrato esconde defeito real — foi assim que o `unmapped_statuses`
+    sobreviveu à P4 (28/07/2026).
+    """
     return Clinic.objects.create(
         name="Clínica Integrada",
         slug="clinica-integrada",

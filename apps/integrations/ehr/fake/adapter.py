@@ -9,7 +9,8 @@ Determinístico por clínica (seed = pk): rodar duas vezes retorna os mesmos
 dados - o pull deve ser idempotente sobre eles. Casos cobertos de propósito:
     - tag no bit 2^62 (limite do bitmask, §10.3);
     - telefone compartilhado entre dois pacientes (RF-PAC-7);
-    - paciente sem telefone; consulta cancelada (status cru "100").
+    - paciente sem telefone; consulta que passou do horário (status cru
+      "100" → no_show) e consulta cancelada ("51").
 """
 
 import re
@@ -49,8 +50,18 @@ TAGS = [
 ]
 PROCEDURES = [("Consulta", 30), ("Retorno", 20), ("Avaliação", 40)]
 CARE_UNITS = ["Matriz", "Filial Sul"]
-# Códigos crus no formato observado da vSaúde (10=agendada, 90=realizada, 100=cancelada)
-STATUS_CYCLE = ["10", "81", "90", "100"]
+# Códigos crus com a semântica OFICIAL da vSaúde (P4, migration 0003):
+#   10 = agendada pelo profissional   30 = confirmada pelo profissional
+#   81 = finalizada                   100 = passou do horário (→ no_show)
+#   51 = cancelada por funcionário
+#
+# O ciclo antigo emitia "90" com o rótulo "realizada" - código que NÃO EXISTE
+# na vSaúde (erro do levantamento original, confirmado em 21/07/2026 e
+# retirado do mapa pela migration 0008) - e chamava 100 de "cancelada", que é
+# "passou do horário". Um fake que emite código inexistente faz o dev
+# exercitar um caminho impossível em produção, e enchia o pull de
+# `unmapped_statuses`.
+STATUS_CYCLE = ["10", "30", "81", "100", "51"]
 
 
 class FakeAdapter:
