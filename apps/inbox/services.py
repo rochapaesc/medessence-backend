@@ -54,9 +54,20 @@ def apply_message_to_conversation(message, *, created: bool) -> None:
         fields += ["last_message_at", "last_message_preview"]
 
     if message.direction == MessageDirection.IN:
-        conversation.last_inbound_at = message.wa_timestamp
+        # A MESMA guarda de retrocesso da prévia — e aqui ela é o relógio da
+        # janela de 24h. A Meta REENTREGA webhook que falhou, às vezes um dia
+        # depois (visto ao vivo em 29/07: a rajada pós-queda trouxe mensagem
+        # da véspera e rebobinou o relógio, "fechando" a janela de uma conversa
+        # que tinha acabado de receber mensagem). A mensagem velha entra na
+        # thread e conta como não lida; só o relógio não volta no tempo.
+        if (
+            conversation.last_inbound_at is None
+            or message.wa_timestamp >= conversation.last_inbound_at
+        ):
+            conversation.last_inbound_at = message.wa_timestamp
+            fields.append("last_inbound_at")
         conversation.unread_count = F("unread_count") + 1
-        fields += ["last_inbound_at", "unread_count"]
+        fields.append("unread_count")
 
     # Primeira resposta HUMANA depois de um inbound (RF-ATD-11). Nota interna
     # não conta: o paciente não a recebeu.

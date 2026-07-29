@@ -146,6 +146,31 @@ def test_status_atualiza_mensagem(clinic_a, inbox_a):
     assert message.status == MessageStatus.READ
 
 
+def test_inbound_reentregue_velho_nao_rebobina_a_janela(clinic_a, inbox_a):
+    """A Meta REENTREGA webhook que falhou — às vezes um dia depois.
+
+    Visto ao vivo em 29/07: a rajada de reentrega pós-queda trouxe mensagem da
+    VÉSPERA, o relógio da janela voltou para ontem e a janela "fechou" numa
+    conversa que tinha acabado de receber mensagem. O relógio só anda para
+    frente; a mensagem velha entra na thread e conta como não lida.
+    """
+    from apps.inbox.tests.conftest import make_message
+
+    conversation = inbox_a["conversation"]
+    make_message(conversation, mid="wamid.hoje")  # inbound de agora
+    conversation.refresh_from_db()
+    relogio = conversation.last_inbound_at
+    assert conversation.window_open is True
+
+    # A reentrega: mensagem de ONTEM (25h) processada só agora.
+    make_message(conversation, minutes_ago=25 * 60, mid="wamid.ontem")
+
+    conversation.refresh_from_db()
+    assert conversation.last_inbound_at == relogio, "o relógio não rebobina"
+    assert conversation.window_open is True
+    assert conversation.unread_count == 2, "a mensagem velha ainda é não lida"
+
+
 def test_status_atrasado_nao_regride(clinic_a, inbox_a):
     """A Meta entrega fora de ordem: um delivered DEPOIS do read não regride.
 
