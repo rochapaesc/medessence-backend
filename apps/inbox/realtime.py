@@ -6,7 +6,7 @@ Contrato de eventos (servidor → cliente):
     message:new          · conversation_id, message{mínimo, com media e caption}
     message:status       · provider_message_id, status
     media:updated        · conversation_id, message_id, media{estado novo}
-    message:reaction     · conversation_id, message_id, reaction (vazio = removida)
+    message:reaction     · conversation_id, message_id, reactions[] (com dono)
     conversation:updated · conversation_id, unread_count, preview, status,
                            attended_by, assigned_to, assigned_to_name
 """
@@ -48,6 +48,26 @@ def _media_min(message) -> dict | None:
     return media_payload(message.media)
 
 
+def _reactions_min(message) -> list[dict]:
+    """
+    Os selos da mensagem, com DONO. Uma linha por ator (tabela copiada do
+    wacrm): sem o ator, a tela mostrava um emoji sem dizer de quem era e a
+    clínica reagindo pelo celular apagava a reação do paciente.
+    """
+    return [
+        {
+            "emoji": reacao.emoji,
+            "actor_kind": reacao.actor_kind,
+            "actor_name": (
+                (reacao.actor_user.get_full_name() or reacao.actor_user.email)
+                if reacao.actor_user_id
+                else ""
+            ),
+        }
+        for reacao in message.reactions.all()
+    ]
+
+
 def _message_min(message) -> dict:
     return {
         "id": message.pk,
@@ -68,7 +88,8 @@ def _message_min(message) -> dict:
         # cliente quebrava ao receber um objeto onde esperava um número.
         "media": message.media_id,
         "media_asset": _media_min(message),
-        "reaction": message.reaction,
+        "reactions": _reactions_min(message),
+        "content_data": message.content_data,
         "sender_kind": message.sender_kind,
         "status": message.status,
         "status_error": message.status_error,
@@ -111,7 +132,7 @@ def notify_message_reaction(message) -> None:
             "event": "message:reaction",
             "conversation_id": message.conversation_id,
             "message_id": message.pk,
-            "reaction": message.reaction,
+            "reactions": _reactions_min(message),
         },
     )
 

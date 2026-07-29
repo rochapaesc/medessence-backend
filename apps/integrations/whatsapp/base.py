@@ -34,6 +34,9 @@ class WhatsAppEvent:
     media_id: str = ""
     mime_type: str = ""
     filename: str = ""  # só documento traz: é o nome que o paciente vê
+    # Conteúdo estruturado que não cabe em texto: cartão de contato,
+    # coordenadas da localização, id da resposta de botão.
+    content_data: dict = field(default_factory=dict)
     # Reação (👍 numa mensagem): NÃO é mensagem nova — é um selo colado numa
     # mensagem que já existe. `reaction_to` é o wamid do alvo; emoji vazio
     # significa que a pessoa REMOVEU a reação.

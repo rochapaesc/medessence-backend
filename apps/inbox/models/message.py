@@ -66,11 +66,16 @@ class Message(TenantScopedModel):
     )
     reply_to_provider_id = CharField(verbose_name="Responde a (wamid)", max_length=128, blank=True)
 
-    # Reação do contato A ESTA mensagem (👍, ❤️...). Fica na mensagem alvo e
-    # não vira balão: reação é um selo, não uma fala — e uma reação virando
-    # mensagem faria a conversa subir na fila e pedir resposta por um joinha.
-    # Vazio = sem reação (a pessoa pode REMOVER o que reagiu).
-    reaction = CharField(verbose_name="Reação", max_length=16, blank=True)
+    # Conteúdo ESTRUTURADO que não cabe em texto: cartão de contato
+    # (`contacts`), coordenadas da localização (`location`) e o id da resposta
+    # de botão (`interactive_id`, que o motor de jornadas da F3 usa para saber
+    # QUAL caminho o paciente escolheu — o texto do botão muda a cada
+    # template, o id não). Espelha o `content_attributes` do Chatwoot.
+    content_data = JSONField(verbose_name="Dados do conteúdo", default=dict, blank=True)
+
+    # Reação NÃO é campo daqui: virou tabela (`MessageReaction`), uma linha
+    # por ator. Como campo único, a clínica reagindo pelo celular apagava a
+    # reação do paciente e a tela não sabia de quem era o emoji.
     status = CharField(
         verbose_name="Status",
         max_length=10,

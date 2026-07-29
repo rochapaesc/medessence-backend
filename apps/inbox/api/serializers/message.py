@@ -43,6 +43,7 @@ class MessageSerializer(ModelSerializer):
 
     media_url = SerializerMethodField()
     media_asset = SerializerMethodField()
+    reactions = SerializerMethodField()
     # Quem agiu, por extenso: a frase do evento ("Ana assumiu o atendimento")
     # e a assinatura da nota interna são montadas no front, e um id de usuário
     # obrigaria a tela a buscar o nome mensagem a mensagem.
@@ -62,7 +63,8 @@ class MessageSerializer(ModelSerializer):
             "media_url",
             "media_asset",
             "reply_to_provider_id",
-            "reaction",
+            "reactions",
+            "content_data",
             "status",
             "status_error",
             "is_internal",
@@ -85,6 +87,11 @@ class MessageSerializer(ModelSerializer):
         if not obj.media_id:
             return None
         return media_payload(obj.media, self.context.get("request"))
+
+    def get_reactions(self, obj):
+        from apps.inbox.realtime import _reactions_min
+
+        return _reactions_min(obj)
 
     def get_sent_by_name(self, obj):
         if not obj.sent_by_id:

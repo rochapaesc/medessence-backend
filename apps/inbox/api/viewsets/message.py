@@ -57,7 +57,14 @@ class MessageViewSet(
         celular) sairiam em ordem instável entre uma página e outra, e a
         paginação repetiria ou pularia balões.
         """
-        return super().get_queryset().order_by("-wa_timestamp", "-id")
+        # Os selos vêm junto: sem o prefetch, uma thread de 30 balões faria
+        # 30 consultas só para desenhar as reações.
+        return (
+            super()
+            .get_queryset()
+            .prefetch_related("reactions__actor_user")
+            .order_by("-wa_timestamp", "-id")
+        )
 
     @action(detail=True, methods=["post"], url_path="retry-media")
     def retry_media(self, request, pk=None):

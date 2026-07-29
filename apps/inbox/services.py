@@ -132,7 +132,33 @@ def _get_or_create_conversation(channel, event):
     return conversation
 
 
-def _ingest_reaction(channel, event) -> bool:
+def _mensagem_por_wamid(clinic, wamid: str):
+    """
+    Acha a mensagem pelo wamid, com plano B por SUFIXO.
+
+    O plano B veio do whatomate: o WhatsApp codifica o telefone dentro do
+    prefixo do wamid, então o id que volta numa reação pode não bater
+    caractere a caractere com o que gravamos — acontece na coexistência, com
+    mensagem enviada pelo celular da clínica. O sufixo é a parte estável.
+    """
+    from apps.inbox.models import Message
+
+    if not wamid:
+        return None
+    exata = Message.objects.filter(clinic=clinic, provider_message_id=wamid).first()
+    if exata is not None:
+        return exata
+    sufixo = wamid.rsplit("=", 1)[-1][-24:]
+    if len(sufixo) < 12:
+        return None
+    return (
+        Message.objects.filter(clinic=clinic, provider_message_id__endswith=sufixo)
+        .order_by("-id")
+        .first()
+    )
+
+
+def _ingest_reaction(channel, event, sender_kind) -> bool:
     """
     Reação (👍 numa mensagem) COLA na mensagem alvo — não vira balão.
 
@@ -140,22 +166,50 @@ def _ingest_reaction(channel, event) -> bool:
     "Não suportado", subindo a conversa na fila e pedindo resposta por causa
     de um joinha. Reação é um selo, não uma fala.
 
-    Emoji vazio é a REMOÇÃO da reação — o WhatsApp manda o mesmo evento sem
-    emoji quando a pessoa desfaz.
+    Uma linha POR ATOR (desenho do wacrm): antes era um campo de texto na
+    mensagem, então a clínica reagindo pelo celular apagava a reação do
+    paciente. Emoji vazio APAGA a linha — é assim que a Meta manda o desfazer.
     """
-    from apps.inbox.models import Message
+    from apps.inbox.choices import ReactionActor, SenderKind
+    from apps.inbox.models import MessageReaction
 
-    alvo = Message.objects.filter(
-        clinic=channel.clinic, provider_message_id=event.reaction_to
-    ).first()
+    alvo = _mensagem_por_wamid(channel.clinic, event.reaction_to)
     if alvo is None:
         # Reação a uma mensagem que não temos (anterior à integração): não há
         # onde colar o selo, e inventar um balão seria pior.
         return False
-    if alvo.reaction == event.reaction_emoji:
-        return False
-    alvo.reaction = event.reaction_emoji
-    alvo.save(update_fields=["reaction", "updated_at"])
+
+    # Echo = a própria clínica reagiu pelo app do celular. Não há usuário do
+    # MedEssence por trás, mas o ator é a equipe, não o paciente.
+    ator = ReactionActor.CONTACT if sender_kind == SenderKind.CONTACT else ReactionActor.AGENT
+
+    if not event.reaction_emoji:
+        # Apagar de VERDADE, e não o soft delete do projeto: a linha marcada
+        # como deletada continuaria ocupando a chave única, e reagir de novo
+        # na mesma mensagem estouraria IntegrityError. Selo desfeito não tem
+        # valor de auditoria — o payload cru fica no WebhookEvent.
+        apagadas = 0
+        for reacao in MessageReaction.all_objects.filter(
+            message=alvo, actor_kind=ator, actor_user=None
+        ):
+            reacao.hard_delete()
+            apagadas += 1
+        if not apagadas:
+            return False
+    else:
+        # `all_objects` pelo mesmo motivo: se sobrou alguma linha soft-deletada
+        # de uma versão anterior, ela é REAPROVEITADA em vez de colidir.
+        MessageReaction.all_objects.update_or_create(
+            message=alvo,
+            actor_kind=ator,
+            actor_user=None,
+            defaults={
+                "clinic": alvo.clinic,
+                "conversation_id": alvo.conversation_id,
+                "emoji": event.reaction_emoji,
+                "deleted_at": None,
+            },
+        )
 
     from apps.inbox.realtime import notify_message_reaction
 
@@ -168,7 +222,7 @@ def _ingest_message(channel, event, sender_kind) -> bool:
     from apps.inbox.models import MediaAsset, Message
 
     if event.reaction_to:
-        return _ingest_reaction(channel, event)
+        return _ingest_reaction(channel, event, sender_kind)
 
     if not event.provider_message_id:
         return False
@@ -198,6 +252,7 @@ def _ingest_message(channel, event, sender_kind) -> bool:
         kind=event.message_kind or MessageKind.TEXT,
         body=event.body,
         caption=event.caption,
+        content_data=event.content_data,
         media=media,
         reply_to_provider_id=event.reply_to_provider_id,
         wa_timestamp=event.wa_timestamp or timezone.now(),

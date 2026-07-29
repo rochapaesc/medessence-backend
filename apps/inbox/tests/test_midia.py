@@ -16,8 +16,8 @@ import pytest
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.inbox.choices import MediaState, MessageKind, SenderKind
-from apps.inbox.models import MediaAsset, Message
+from apps.inbox.choices import MediaState, MessageKind, ReactionActor, SenderKind
+from apps.inbox.models import MediaAsset, Message, MessageReaction
 from apps.inbox.tasks import _nome_do_arquivo, fetch_media_asset
 from apps.integrations.whatsapp.base import DownloadedMedia
 from apps.integrations.whatsapp.events import parse_meta_webhook
@@ -489,8 +489,8 @@ def test_reacao_cola_na_mensagem_e_NAO_vira_balao(clinic_a, inbox_a):
         ),
     )
 
-    alvo.refresh_from_db()
-    assert alvo.reaction == "👍"
+    assert [r.emoji for r in alvo.reactions.all()] == ["👍"]
+    assert alvo.reactions.first().actor_kind == ReactionActor.CONTACT
     assert Message.objects.filter(conversation=conversation).count() == antes, (
         "a reação não pode criar balão"
     )
@@ -506,7 +506,13 @@ def test_remover_a_reacao_limpa_o_selo(clinic_a, inbox_a):
         kind=MessageKind.TEXT,
         body="oi",
         provider_message_id="wamid.ALVO",
-        reaction="❤️",
+    )
+    MessageReaction.objects.create(
+        clinic=clinic_a,
+        message=alvo,
+        conversation=inbox_a["conversation"],
+        actor_kind=ReactionActor.CONTACT,
+        emoji="❤️",
     )
 
     ingest_events(
@@ -518,8 +524,7 @@ def test_remover_a_reacao_limpa_o_selo(clinic_a, inbox_a):
         ),
     )
 
-    alvo.refresh_from_db()
-    assert alvo.reaction == ""
+    assert not alvo.reactions.exists()
 
 
 def test_reacao_a_mensagem_que_nao_temos_e_ignorada(clinic_a, inbox_a):
@@ -539,3 +544,265 @@ def test_reacao_a_mensagem_que_nao_temos_e_ignorada(clinic_a, inbox_a):
     )
 
     assert Message.objects.count() == antes
+
+
+# ────────────────── tipos que a Meta manda e nós lemos agora ──────────────────
+
+
+def _payload(mensagem: dict, wa_id="5589999228477"):
+    mensagem = {"from": wa_id, "id": "wamid.X1", "timestamp": "1785290675", **mensagem}
+    return {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "contacts": [{"wa_id": wa_id, "profile": {"name": "Gabriel"}}],
+                            "messages": [mensagem],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def test_cartao_de_contato_vira_nome_e_telefone_sem_repetir():
+    """O cartão REAL que chegou trazia o mesmo número duas vezes — etiquetado
+    'Antigo' e 'CELL'. Duas linhas iguais na tela pareceriam defeito nosso."""
+    evento = parse_meta_webhook(
+        _payload(
+            {
+                "type": "contacts",
+                "contacts": [
+                    {
+                        "name": {
+                            "first_name": "Willian",
+                            "last_name": "Negreiros",
+                            "formatted_name": "Willian Negreiros",
+                        },
+                        "phones": [
+                            {"type": "Antigo", "phone": "+55 89 98119-1501", "wa_id": "558981191501"},
+                            {"type": "CELL", "phone": "+55 89 98119-1501", "wa_id": "558981191501"},
+                        ],
+                    }
+                ],
+            }
+        )
+    )[0]
+
+    assert evento.message_kind == MessageKind.CONTACT
+    assert evento.body == "Willian Negreiros"
+    cartao = evento.content_data["contacts"][0]
+    assert cartao["name"] == "Willian Negreiros"
+    assert len(cartao["phones"]) == 1, "o mesmo número não pode aparecer duas vezes"
+    assert cartao["phones"][0]["wa_id"] == "558981191501"
+
+
+def test_localizacao_guarda_COORDENADAS_e_nao_so_texto():
+    """O wacrm vira tudo em texto 'nome - endereço - lat,long'; ficamos com o
+    desenho do Chatwoot, que preserva as coordenadas — texto não abre mapa."""
+    evento = parse_meta_webhook(
+        _payload(
+            {
+                "type": "location",
+                "location": {
+                    "latitude": -5.0892,
+                    "longitude": -42.8016,
+                    "name": "Clínica MedEssence",
+                    "address": "Av. Frei Serafim, 2352 — Centro, Teresina",
+                    "url": "https://maps.google.com/?q=-5.0892,-42.8016",
+                },
+            }
+        )
+    )[0]
+
+    local = evento.content_data["location"]
+    assert (local["latitude"], local["longitude"]) == (-5.0892, -42.8016)
+    assert local["title"] == "Clínica MedEssence, Av. Frei Serafim, 2352 — Centro, Teresina"
+    assert local["url"]
+    assert evento.body == local["title"], "a prévia da fila mostra o rótulo"
+
+
+def test_resposta_de_botao_guarda_titulo_E_id():
+    """Os dois repositórios usam o título como corpo; o wacrm guarda também o
+    id — é por ele que o motor de jornadas saberá o caminho escolhido, porque
+    o TEXTO do botão muda a cada template."""
+    evento = parse_meta_webhook(
+        _payload(
+            {
+                "type": "interactive",
+                "interactive": {
+                    "type": "button_reply",
+                    "button_reply": {"id": "confirmar_consulta", "title": "Confirmar"},
+                },
+            }
+        )
+    )[0]
+
+    assert evento.message_kind == MessageKind.INTERACTIVE
+    assert evento.body == "Confirmar"
+    assert evento.content_data["interactive_id"] == "confirmar_consulta"
+
+
+def test_botao_de_template_e_tratado_como_resposta_de_botao():
+    evento = parse_meta_webhook(
+        _payload(
+            {
+                "type": "button",
+                "button": {"text": "Quero remarcar", "payload": "remarcar"},
+            }
+        )
+    )[0]
+
+    assert evento.message_kind == MessageKind.INTERACTIVE
+    assert evento.body == "Quero remarcar"
+    assert evento.content_data["interactive_id"] == "remarcar"
+
+
+@pytest.mark.parametrize("tipo", ["ephemeral", "request_welcome"])
+def test_tipos_de_ruido_nao_viram_evento(tipo):
+    """Regra do Chatwoot: mensagem temporária e 'abriu a conversa sem escrever'
+    não têm conteúdo — balão vazio seria ruído na fila. O payload cru continua
+    no WebhookEvent, então nada se perde para investigação."""
+    assert parse_meta_webhook(_payload({"type": tipo})) == []
+
+
+def test_unsupported_da_meta_vira_balao_de_indisponivel(clinic_a, inbox_a):
+    """A Meta devolveu 131051 'Message type is currently not supported'. O
+    Chatwoot persiste um placeholder para a conversa não ficar com buraco
+    silencioso — e é o que fazemos."""
+    from apps.inbox.services import ingest_events
+
+    ingest_events(
+        inbox_a["channel"],
+        parse_meta_webhook(
+            _payload(
+                {
+                    "type": "unsupported",
+                    "errors": [
+                        {
+                            "code": 131051,
+                            "title": "Message type unknown",
+                            "error_data": {"details": "Message type is currently not supported."},
+                        }
+                    ],
+                },
+                wa_id=inbox_a["contact"].wa_id,
+            )
+        ),
+    )
+
+    mensagem = Message.objects.filter(conversation=inbox_a["conversation"]).latest("id")
+    assert mensagem.kind == MessageKind.UNSUPPORTED
+    assert mensagem.body == "", "o texto da tela é do FRONT; aqui fica o tipo"
+
+
+def test_reacao_de_CADA_ator_convive_na_mesma_mensagem(clinic_a, inbox_a):
+    """O defeito do campo único: a clínica reagindo pelo celular apagava a
+    reação do paciente. Uma linha por ator (desenho do wacrm) resolve."""
+    from apps.inbox.services import ingest_events
+
+    alvo = _mensagem(
+        clinic_a,
+        inbox_a["conversation"],
+        kind=MessageKind.TEXT,
+        body="Confirmado!",
+        provider_message_id="wamid.ALVO",
+    )
+    wa_id = inbox_a["contact"].wa_id
+
+    # O paciente reage...
+    ingest_events(
+        inbox_a["channel"],
+        parse_meta_webhook(_payload_de_reacao(wa_id=wa_id, alvo_wamid="wamid.ALVO", emoji="❤️")),
+    )
+    # ...e a clínica reage pelo celular (chega como ECHO).
+    eco = parse_meta_webhook(
+        _payload_de_reacao(
+            wa_id=wa_id, alvo_wamid="wamid.ALVO", emoji="👍", mid="wamid.REACT-ECO"
+        )
+    )[0]
+    from dataclasses import replace
+
+    from apps.integrations.whatsapp.base import WhatsAppEventKind
+
+    ingest_events(inbox_a["channel"], [replace(eco, kind=WhatsAppEventKind.ECHO)])
+
+    selos = {r.actor_kind: r.emoji for r in alvo.reactions.all()}
+    assert selos == {ReactionActor.CONTACT: "❤️", ReactionActor.AGENT: "👍"}
+
+
+def test_reagir_de_novo_TROCA_o_emoji_do_mesmo_ator(clinic_a, inbox_a):
+    from apps.inbox.services import ingest_events
+
+    alvo = _mensagem(
+        clinic_a,
+        inbox_a["conversation"],
+        kind=MessageKind.TEXT,
+        body="oi",
+        provider_message_id="wamid.ALVO",
+    )
+    wa_id = inbox_a["contact"].wa_id
+    for emoji in ("❤️", "😢"):
+        ingest_events(
+            inbox_a["channel"],
+            parse_meta_webhook(
+                _payload_de_reacao(wa_id=wa_id, alvo_wamid="wamid.ALVO", emoji=emoji)
+            ),
+        )
+
+    assert [r.emoji for r in alvo.reactions.all()] == ["😢"]
+
+
+def test_reacao_acha_a_mensagem_pelo_SUFIXO_do_wamid(clinic_a, inbox_a):
+    """Plano B copiado do whatomate: o WhatsApp codifica o telefone no prefixo
+    do wamid, então o id de volta pode não bater caractere a caractere —
+    acontece com mensagem enviada pelo celular da clínica."""
+    from apps.inbox.services import ingest_events
+
+    alvo = _mensagem(
+        clinic_a,
+        inbox_a["conversation"],
+        kind=MessageKind.TEXT,
+        body="enviada pelo celular",
+        provider_message_id="wamid.HBgMNTU4OTk5MjI4NDc3FQIAERgSMEEyOEI3RTk1RDcyRkE5RDZC",
+    )
+
+    ingest_events(
+        inbox_a["channel"],
+        parse_meta_webhook(
+            _payload_de_reacao(
+                wa_id=inbox_a["contact"].wa_id,
+                # Mesmo sufixo, prefixo diferente.
+                alvo_wamid="wamid.OUTROPREFIXO=MEEyOEI3RTk1RDcyRkE5RDZC",
+                emoji="👍",
+            )
+        ),
+    )
+
+    assert [r.emoji for r in alvo.reactions.all()] == ["👍"]
+
+
+def test_reagir_desfazer_e_reagir_DE_NOVO(clinic_a, inbox_a):
+    """A armadilha do soft delete do projeto: linha "apagada" continua ocupando
+    a chave única, e a segunda reação estouraria IntegrityError."""
+    from apps.inbox.services import ingest_events
+
+    alvo = _mensagem(
+        clinic_a,
+        inbox_a["conversation"],
+        kind=MessageKind.TEXT,
+        body="oi",
+        provider_message_id="wamid.ALVO",
+    )
+    wa_id = inbox_a["contact"].wa_id
+    for emoji in ("👍", "", "❤️"):
+        ingest_events(
+            inbox_a["channel"],
+            parse_meta_webhook(
+                _payload_de_reacao(wa_id=wa_id, alvo_wamid="wamid.ALVO", emoji=emoji)
+            ),
+        )
+
+    assert [r.emoji for r in alvo.reactions.all()] == ["❤️"]

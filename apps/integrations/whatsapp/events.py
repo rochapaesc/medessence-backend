@@ -20,10 +20,21 @@ KIND_MAP = {
     "document": MessageKind.DOCUMENT,
     "sticker": MessageKind.STICKER,
     "location": MessageKind.LOCATION,
+    "contacts": MessageKind.CONTACT,
     "interactive": MessageKind.INTERACTIVE,
+    # Botão de template (resposta rápida): é uma resposta de botão como a
+    # `interactive`, só que de um template — a tela trata igual.
+    "button": MessageKind.INTERACTIVE,
     "template": MessageKind.TEMPLATE,
 }
 MEDIA_KINDS = {"image", "audio", "video", "document", "sticker"}
+
+# Tipos que NÃO viram balão (regra do Chatwoot, `unprocessable_message_type?`).
+# `ephemeral` é mensagem temporária, sem conteúdo para mostrar;
+# `request_welcome` avisa que alguém ABRIU a conversa sem escrever nada —
+# balão vazio viraria ruído na fila de quem atende. O payload cru continua no
+# WebhookEvent, então nada se perde para investigação.
+IGNORED_KINDS = {"ephemeral", "request_welcome"}
 
 STATUS_MAP = {
     "sent": MessageStatus.SENT,
@@ -53,12 +64,66 @@ def _names_by_wa_id(value: dict) -> dict:
     return names
 
 
+def _contatos(cartoes: list) -> list[dict]:
+    """
+    Cartão de contato (vCard) em algo que a tela desenha.
+
+    O WhatsApp repete o MESMO número quando ele tem etiqueta no celular de
+    quem mandou (o cartão real que chegou aqui trazia "Antigo" e "CELL" com o
+    mesmo telefone). Duas linhas iguais na tela pareceriam defeito nosso, então
+    o número é deduplicado pelo `wa_id`.
+    """
+    resultado = []
+    for cartao in cartoes:
+        nome = (cartao.get("name") or {}).get("formatted_name", "")
+        telefones = []
+        vistos = set()
+        for telefone in cartao.get("phones") or []:
+            wa_id = telefone.get("wa_id") or telefone.get("phone", "")
+            if not wa_id or wa_id in vistos:
+                continue
+            vistos.add(wa_id)
+            telefones.append(
+                {"phone": telefone.get("phone", ""), "wa_id": telefone.get("wa_id", "")}
+            )
+        resultado.append({"name": nome, "phones": telefones})
+    return resultado
+
+
+def _localizacao(local: dict) -> dict:
+    """
+    Coordenadas E rótulo. O wacrm guarda só um texto "nome - endereço - lat,long";
+    ficamos com o desenho do Chatwoot, que preserva latitude e longitude —
+    texto não abre mapa nenhum.
+    """
+    nome = local.get("name", "")
+    endereco = local.get("address", "")
+    titulo = ", ".join(parte for parte in (nome, endereco) if parte)
+    return {
+        "latitude": local.get("latitude"),
+        "longitude": local.get("longitude"),
+        "name": nome,
+        "address": endereco,
+        "url": local.get("url", ""),
+        # Sem nome nem endereço (pino solto no mapa), as coordenadas são o
+        # único rótulo honesto.
+        "title": titulo or f"{local.get('latitude')}, {local.get('longitude')}",
+    }
+
+
+def _resposta_interativa(interativa: dict) -> tuple[str, str]:
+    """(título, id) do botão ou item de lista que a pessoa tocou."""
+    resposta = interativa.get("button_reply") or interativa.get("list_reply") or {}
+    return resposta.get("title", ""), resposta.get("id", "")
+
+
 def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> WhatsAppEvent:
     meta_type = message.get("type", "")
     message_kind = KIND_MAP.get(meta_type, MessageKind.UNSUPPORTED)
 
     body = caption = media_id = mime_type = filename = ""
     reaction_emoji = reaction_to = ""
+    content_data: dict = {}
     if meta_type == "reaction":
         reacao = message.get("reaction") or {}
         reaction_emoji = reacao.get("emoji", "")
@@ -74,6 +139,23 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
         # dele. Jogá-lo fora fazia o exame chegar na recepção como
         # "1037387288883307.pdf".
         filename = payload.get("filename", "")
+    elif meta_type == "contacts":
+        content_data = {"contacts": _contatos(message.get("contacts") or [])}
+        # O nome vira o texto da mensagem (regra do Chatwoot): é o que a
+        # prévia da fila mostra e o que se busca na conversa.
+        body = ", ".join(c["name"] for c in content_data["contacts"] if c["name"])
+    elif meta_type == "location":
+        content_data = {"location": _localizacao(message.get("location") or {})}
+        body = content_data["location"]["title"]
+    elif meta_type == "interactive":
+        body, resposta_id = _resposta_interativa(message.get("interactive") or {})
+        # O ID é o que o motor de jornadas da F3 usa para saber QUAL caminho o
+        # paciente escolheu (wacrm): o texto do botão muda a cada template.
+        content_data = {"interactive_id": resposta_id}
+    elif meta_type == "button":
+        botao = message.get("button") or {}
+        body = botao.get("text", "")
+        content_data = {"interactive_id": botao.get("payload", "")}
 
     return WhatsAppEvent(
         kind=kind,
@@ -85,6 +167,7 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
         media_id=media_id,
         mime_type=mime_type,
         filename=filename,
+        content_data=content_data,
         reaction_emoji=reaction_emoji,
         reaction_to=reaction_to,
         reply_to_provider_id=(message.get("context") or {}).get("id", ""),
@@ -102,6 +185,8 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
             names = _names_by_wa_id(value)
 
             for message in value.get("messages", []) or []:
+                if message.get("type") in IGNORED_KINDS:
+                    continue
                 events.append(
                     _parse_message(
                         message,
@@ -112,6 +197,8 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
                 )
 
             for echo in value.get("message_echoes", []) or []:
+                if echo.get("type") in IGNORED_KINDS:
+                    continue
                 events.append(
                     _parse_message(
                         echo,

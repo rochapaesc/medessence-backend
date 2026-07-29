@@ -30,8 +30,14 @@ class MessageKind(TextChoices):
     DOCUMENT = "document", "Documento"
     STICKER = "sticker", "Figurinha"
     LOCATION = "location", "Localização"
+    # Cartão de contato (vCard). O paciente encaminha o contato do
+    # acompanhante ou de outro paciente — rotina de recepção.
+    CONTACT = "contact", "Contato"
     INTERACTIVE = "interactive", "Interativa"
     TEMPLATE = "template", "Template"
+    # O WhatsApp entrega assim o que ele mesmo não sabe renderizar para
+    # sistemas externos. Vira um balão placeholder honesto, e não um sumiço:
+    # conversa com buraco silencioso é pior (regra do Chatwoot).
     UNSUPPORTED = "unsupported", "Não suportado"
     # Evento na linha do tempo (RF-ATD-4): nem mensagem, nem nota.
     ACTIVITY = "activity", "Evento"
@@ -45,6 +51,15 @@ class MessageStatus(TextChoices):
     DELIVERED = "delivered", "Entregue"
     READ = "read", "Lida"
     FAILED = "failed", "Falhou"
+
+
+class ReactionActor(TextChoices):
+    """Quem colou o selo na mensagem. O contato não tem usuário — ele é o
+    outro lado da conversa; o atendente é gente da equipe (e por isso a
+    reação dele guarda QUAL pessoa foi)."""
+
+    CONTACT = "contact", "Paciente"
+    AGENT = "agent", "Atendente"
 
 
 class MediaState(TextChoices):
