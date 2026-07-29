@@ -76,11 +76,16 @@ def fetch_media_asset(media_asset_id: int):
     if channel is None:
         return _media_falhou(media, "Clínica sem canal de WhatsApp configurado")
 
+    from apps.inbox.services import registrar_saude_do_canal
+
     try:
         downloaded = get_whatsapp_provider(channel).download_media(media.provider_media_id)
     except Exception as exc:  # captura larga de propósito: o motivo tem de chegar à tela
         logger.exception("Falha ao baixar mídia %s", media_asset_id)
+        registrar_saude_do_canal(channel, erro=exc)
         return _media_falhou(media, _motivo_humano(exc))
+
+    registrar_saude_do_canal(channel)
 
     if not downloaded.content:
         # A URL da Meta expira: mídia velha simplesmente não vem mais.

@@ -445,6 +445,9 @@ def test_counters_conta_por_bloco(api_client, manager_single_clinic, clinic_a, c
     assert response.data["unread"] == 1
     assert response.data["total"] == 1
     assert response.data["by_kind"] == {
+        # Canal do WhatsApp fora do ar entra no topo do feed (item 2 do
+        # fechamento do Inbox): sem canal configurado, zero.
+        NotificationKind.CHANNEL_DOWN: 0,
         NotificationKind.SYNC_FAILED: 0,
         NotificationKind.NO_SHOW: 1,
         NotificationKind.PENDING_OUTCOME: 0,

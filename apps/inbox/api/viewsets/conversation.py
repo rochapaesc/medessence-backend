@@ -336,8 +336,26 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
                 "snoozed": queryset.filter(status=ConversationStatus.SNOOZED).count(),
                 "resolved": queryset.filter(status=ConversationStatus.RESOLVED).count(),
                 "unassigned": queryset.filter(assigned_to__isnull=True).count(),
+                # Saúde do canal junto: a faixa precisa saber DISSO já na
+                # primeira carga da tela — o evento de tempo real só cobre a
+                # mudança, e quem abre o Inbox com o canal já morto ficaria
+                # sem aviso nenhum.
+                "channel": self._saude_do_canal(),
             }
         )
+
+    def _saude_do_canal(self) -> dict:
+        from apps.inbox.models import Channel
+
+        canal = Channel.objects.filter(clinic=self.clinic).first()
+        if canal is None:
+            return {"configured": False, "disconnected": False, "reason": "", "display_number": ""}
+        return {
+            "configured": True,
+            "disconnected": canal.disconnected,
+            "reason": canal.disconnect_reason,
+            "display_number": canal.display_number,
+        }
 
     def _resolve_clinic_user(self, user_id):
         from apps.accounts.models import Membership

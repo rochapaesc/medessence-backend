@@ -7,6 +7,9 @@ class NotificationKind(TextChoices):
     o feed sai ordenado por severidade, não por horário.
     """
 
+    # Primeiro da lista de propósito: com o canal fora, NADA entra nem sai —
+    # é mais grave que qualquer falha de sincronização.
+    CHANNEL_DOWN = "channel_down", "WhatsApp desconectado"
     SYNC_FAILED = "sync_failed", "Falha de sincronização"
     NO_SHOW = "no_show", "Falta para recuperar"
     PENDING_OUTCOME = "pending_outcome", "Consulta sem desfecho"

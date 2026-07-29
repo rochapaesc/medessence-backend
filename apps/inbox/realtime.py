@@ -6,6 +6,7 @@ Contrato de eventos (servidor → cliente):
     message:new          · conversation_id, message{mínimo, com media e caption}
     message:status       · provider_message_id, status
     media:updated        · conversation_id, message_id, media{estado novo}
+    channel:health       · disconnected, reason, display_number (clínica inteira)
     message:reaction     · conversation_id, message_id, reactions[] (com dono)
     conversation:updated · conversation_id, unread_count, preview, status,
                            attended_by, assigned_to, assigned_to_name
@@ -133,6 +134,23 @@ def notify_message_reaction(message) -> None:
             "conversation_id": message.conversation_id,
             "message_id": message.pk,
             "reactions": _reactions_min(message),
+        },
+    )
+
+
+def notify_channel_health(channel) -> None:
+    """
+    O canal caiu (ou voltou). Vai para a clínica inteira porque o problema é
+    da clínica inteira: sem isto, a faixa só apareceria no próximo F5 — e
+    quem está atendendo continuaria escrevendo mensagens que não saem.
+    """
+    _broadcast(
+        channel.clinic_id,
+        {
+            "event": "channel:health",
+            "disconnected": channel.disconnected,
+            "reason": channel.disconnect_reason,
+            "display_number": channel.display_number,
         },
     )
 

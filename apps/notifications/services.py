@@ -146,6 +146,34 @@ def _with(*parts: str) -> str:
     return " · ".join(part for part in parts if part)
 
 
+def _channel_down(clinic, now: datetime) -> list[NotificationItem]:
+    """
+    Canal de WhatsApp fora do ar (item 2 do fechamento do Inbox).
+
+    Derivado do próprio `Channel`, sem tabela de notificação: é o mesmo padrão
+    do bloco de sincronização, que lê o `SyncRun`. Enquanto o canal estiver
+    morto o aviso fica; quando a credencial voltar, ele some sozinho.
+    """
+    from apps.inbox.models import Channel
+
+    canal = Channel.objects.filter(clinic=clinic).exclude(disconnected_at=None).first()
+    if canal is None:
+        return []
+    return [
+        _item(
+            now=now,
+            occurred_at=canal.disconnected_at,
+            id=f"{NotificationKind.CHANNEL_DOWN}:{canal.pk}",
+            kind=NotificationKind.CHANNEL_DOWN,
+            severity=NotificationSeverity.DANGER,
+            title="WhatsApp desconectado",
+            subtitle=f"A clínica parou de responder {_when(canal.disconnected_at)}",
+            detail=canal.disconnect_reason,
+            target={"type": "channel", "id": canal.pk},
+        )
+    ]
+
+
 def _sync_failures(clinic, now: datetime) -> list[NotificationItem]:
     """Último run de cada tipo que terminou em erro.
 
@@ -360,8 +388,10 @@ def build_feed(clinic, now: datetime | None = None) -> Feed:
     """Monta o feed da clínica, já ordenado por severidade (não por horário)."""
     now = now or timezone.now()
 
+    canal = _channel_down(clinic, now)
     sync = _sync_failures(clinic, now)
     blocks = [
+        Block(items=canal, truncated=False, total=len(canal)),
         Block(items=sync, truncated=False, total=len(sync)),
         _no_shows(clinic, now),
         _pending_outcome(clinic, now),

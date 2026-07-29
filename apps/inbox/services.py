@@ -132,6 +132,42 @@ def _get_or_create_conversation(channel, event):
     return conversation
 
 
+MOTIVO_CREDENCIAL = "Canal do WhatsApp desconectado — avise o suporte para reconectar."
+
+
+def registrar_saude_do_canal(channel, *, erro=None) -> None:
+    """
+    Ponto ÚNICO que decide se o canal está vivo.
+
+    Chamado por todo caminho que fala com a Meta (envio e download). Erro de
+    credencial conta; qualquer sucesso cura. Está aqui, e não espalhado, porque
+    "o canal caiu" tem de significar a mesma coisa venha de onde vier — e
+    porque a faixa da tela e o aviso ao gestor saem daqui, uma vez só.
+    """
+    from apps.inbox.realtime import notify_channel_health
+    from apps.integrations.whatsapp.exceptions import WhatsAppAuthError
+
+    if erro is None:
+        if channel.reconectado():
+            notify_channel_health(channel)
+        return
+
+    if not isinstance(erro, WhatsAppAuthError):
+        # Rede caindo, 5xx, limite de taxa: nada disso é credencial morta.
+        # Contar essas falhas derrubaria o canal por causa de instabilidade.
+        return
+
+    if channel.registrar_falha_de_auth(MOTIVO_CREDENCIAL):
+        # Só na TRANSIÇÃO: sem isso, cada mensagem que tentasse sair depois
+        # emitiria o mesmo aviso de novo.
+        notify_channel_health(channel)
+        logger.error(
+            "Canal %s da clínica %s desconectado: credencial recusada pela Meta",
+            channel.pk,
+            channel.clinic_id,
+        )
+
+
 def _mensagem_por_wamid(clinic, wamid: str):
     """
     Acha a mensagem pelo wamid, com plano B por SUFIXO.
@@ -416,16 +452,26 @@ def send_message(message) -> None:
         # pendente e a fila tenta de novo.
         raise
     except WhatsAppError as exc:
+        registrar_saude_do_canal(conversation.channel, erro=exc)
         # Erro de negócio (janela fechada, número inválido...): retry não
         # resolve. A mensagem morre FAILED **com o motivo** - antes desta
         # captura ela ficava pendente para sempre, sem explicação nenhuma.
         message.status = MessageStatus.FAILED
-        message.status_error = str(exc)
+        # Credencial morta tem frase HUMANA; o resto mantém o motivo da Meta,
+        # que é o que diz se adianta tentar de novo.
+        from apps.integrations.whatsapp.exceptions import WhatsAppAuthError
+
+        message.status_error = (
+            MOTIVO_CREDENCIAL if isinstance(exc, WhatsAppAuthError) else str(exc)
+        )
         message.save(update_fields=["status", "status_error", "updated_at"])
         # Sem realtime aqui: o evento message:status é endereçado por wamid,
         # que uma falha de envio não tem. A resposta REST do composer e o
         # refetch da thread mostram o estado.
         return
+
+    # Deu certo: o canal está vivo (o `reauthorized!` do Chatwoot).
+    registrar_saude_do_canal(conversation.channel)
 
     message.provider_message_id = result.provider_message_id
     message.status = result.status or MessageStatus.SENT
