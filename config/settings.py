@@ -375,6 +375,13 @@ CELERY_TASK_QUEUES = CELERY_QUEUES
 # Beat (§13): agenda a cada 10 min; catálogos + pacientes na madrugada.
 # Fan-out por tenant acontece dentro das tasks schedule_* (lock por clínica).
 CELERY_BEAT_SCHEDULE = {
+    # Batimento do worker (apps/core/health.py). A cada minuto porque o que se
+    # quer detectar — processamento parado — vira mensagem que não sai para o
+    # paciente, e cinco minutos de silêncio já é reclamação na recepção.
+    "worker-heartbeat": {
+        "task": "apps.core.tasks.worker_heartbeat",
+        "schedule": crontab(minute="*"),
+    },
     "sync-appointments-fanout": {
         "task": "apps.integrations.tasks.schedule_appointment_syncs",
         "schedule": crontab(minute="*/5"),  # agenda muda rápido - 5 min

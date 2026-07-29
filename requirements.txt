@@ -79,3 +79,8 @@ pytest==8.4.2
 pytest-django==4.11.1
 nh3==0.2.18 
 whitenoise==6.12.0  # serve /static/ sob ASGI em produção (sem nginx)
+# watchdog: reinicia o worker do Celery quando um .py muda (watchmedo
+# auto-restart, ver CELERY_WORKER_COMMAND). O worker NÃO recarrega sozinho
+# como o runserver — e testar contra código de horas atrás já custou uma
+# rodada inteira de teste ao vivo (29/07/2026).
+watchdog==6.0.0
