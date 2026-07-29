@@ -52,13 +52,9 @@ class ConversationPriority(TextChoices):
     URGENT = "urgent", "Urgente"
 
 
-# Peso para ordenar a fila. Vive aqui, e não numa string no queryset, porque
-# quem acrescentar um nível novo precisa tropeçar nisto.
-PRIORITY_RANK = {
-    ConversationPriority.URGENT: 0,
-    ConversationPriority.HIGH: 1,
-    ConversationPriority.NORMAL: 2,
-}
+# Havia aqui um PRIORITY_RANK que ordenava a fila por urgência antes da
+# recência. Saiu em 28/07/2026: enterrava a mensagem recém-chegada embaixo de
+# uma urgente de ontem. Prioridade agora é tarja, selo e filtro — não ordem.
 
 
 class ActivityType(TextChoices):

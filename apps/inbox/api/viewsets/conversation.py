@@ -1,4 +1,4 @@
-from django.db.models import Case, Count, IntegerField, Q, Value, When
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -8,7 +8,7 @@ from apps.core.api.viewsets import ClinicScopedReadOnlyViewSet
 from apps.core.mixins import AuditMixin
 from apps.inbox.api.filtersets import ConversationFilterset
 from apps.inbox.api.serializers import ConversationSerializer
-from apps.inbox.choices import PRIORITY_RANK, ConversationPriority, ConversationStatus
+from apps.inbox.choices import ConversationPriority, ConversationStatus
 from apps.inbox.models import Conversation
 
 # Teto do seletor de pessoas. Não é paginação: quem procura alguém fora do
@@ -44,25 +44,25 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
     def get_queryset(self):
         """
-        Urgência primeiro, recência depois (RF-ATD-8). A ordenação é do
-        SERVIDOR porque a fila é paginada: ordenar no cliente colocaria a
-        urgente no topo *da página*, e a que importa pode estar na terceira.
+        RECÊNCIA, só recência (RF-ATD-8, revisto em 28/07/2026).
 
-        O peso vem de PRIORITY_RANK e não de um `order_by("priority")`: os
-        valores são texto ("urgent" < "" alfabeticamente), então ordenar pelo
-        campo puro poria normal na frente de urgente.
+        Ordenava por urgência e depois recência, e o usuário mostrou o preço
+        ao vivo: mensagem que acabou de chegar ficava em terceiro lugar,
+        embaixo de uma urgente de ONTEM e de uma alta da tarde. Fila de
+        atendimento é como toda caixa de entrada — quem falou por último
+        aparece primeiro, senão ninguém confia no topo da lista.
+
+        A prioridade não sumiu: ela é a tarja vermelha, o selo e o filtro.
+        Marcar não é enterrar o resto.
+
+        A ordenação continua do SERVIDOR porque a fila é paginada: ordenar no
+        cliente ordenaria só a página carregada.
         """
-        ranking = Case(
-            *[When(priority=valor, then=Value(peso)) for valor, peso in PRIORITY_RANK.items()],
-            default=Value(max(PRIORITY_RANK.values()) + 1),
-            output_field=IntegerField(),
-        )
         return (
             super()
             .get_queryset()
             .prefetch_related("labels")
-            .annotate(priority_rank=ranking)
-            .order_by("priority_rank", "-last_message_at")
+            .order_by("-last_message_at")
         )
 
     @action(detail=True, methods=["post"], url_path="read")

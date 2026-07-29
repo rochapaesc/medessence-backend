@@ -149,14 +149,19 @@ def test_filtro_por_etiqueta_EXCLUI_quem_nao_tem(logado, conversation, etiqueta,
 # ───────────────────────────── prioridade ─────────────────────────────
 
 
-def test_prioridade_ordena_a_fila_no_SERVIDOR(logado, conversation, inbox_a, clinic_a):
+def test_fila_ordena_por_RECENCIA_mesmo_havendo_urgente(logado, conversation, inbox_a, clinic_a):
     """
-    Ordenar no cliente colocaria a urgente no topo *da página* — e a que
-    importa pode estar na terceira.
+    Regra revista em 28/07/2026 depois do teste ao vivo: a mensagem que ACABOU
+    de chegar tem de estar no topo. Ordenar por urgência antes da recência
+    empurrava a conversa recém-chegada para o terceiro lugar, embaixo de uma
+    urgente de ontem — e o usuário deixou de confiar no topo da lista.
+
+    A prioridade continua existindo como tarja, selo e filtro. O que ela não
+    faz mais é enterrar quem falou agora.
     """
     from apps.patients.models import Contact
 
-    outra = Conversation.objects.create(
+    recente = Conversation.objects.create(
         clinic=clinic_a,
         channel=inbox_a["channel"],
         contact=Contact.objects.create(clinic=clinic_a, wa_id="5511999990000"),
@@ -166,9 +171,9 @@ def test_prioridade_ordena_a_fila_no_SERVIDOR(logado, conversation, inbox_a, cli
 
     ids = [c["id"] for c in logado.get("/api/v1/conversations/").data["results"]]
 
-    # A urgente vem primeiro mesmo tendo mensagem MAIS ANTIGA que a outra.
-    assert ids[0] == conversation.pk
-    assert outra.pk in ids
+    # Asserção que PODE falhar: com a ordenação antiga, ids[0] seria a urgente.
+    assert ids[0] == recente.pk
+    assert ids.index(conversation.pk) > ids.index(recente.pk)
 
 
 def test_prioridade_repetida_nao_vira_evento(conversation, manager_single_clinic):
