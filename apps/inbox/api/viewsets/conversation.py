@@ -9,7 +9,7 @@ from apps.core.health import saude_do_processamento
 from apps.core.mixins import AuditMixin
 from apps.inbox.api.filtersets import ConversationFilterset
 from apps.inbox.api.serializers import ConversationSerializer
-from apps.inbox.choices import ConversationPriority, ConversationStatus
+from apps.inbox.choices import AttendedBy, ConversationPriority, ConversationStatus
 from apps.inbox.models import Conversation, Message
 
 # Teto do seletor de pessoas. Não é paginação: quem procura alguém fora do
@@ -505,6 +505,15 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
                 # A fila agora é por STATUS (RF-ATD-1): é isso que vira aba.
                 "waiting": queryset.filter(status=ConversationStatus.WAITING).count(),
                 "open": queryset.filter(status=ConversationStatus.OPEN).count(),
+                # ABERTA dividida por QUEM está com ela: é o recorte que os
+                # três botões da fila usam, e "aberta" no total não serve —
+                # somaria o que a IA conduz com o que a equipe atende.
+                "attending": queryset.filter(
+                    status=ConversationStatus.OPEN, attended_by=AttendedBy.AGENT
+                ).count(),
+                "bot": queryset.filter(
+                    status=ConversationStatus.OPEN, attended_by=AttendedBy.BOT
+                ).count(),
                 "snoozed": queryset.filter(status=ConversationStatus.SNOOZED).count(),
                 "resolved": queryset.filter(status=ConversationStatus.RESOLVED).count(),
                 "unassigned": queryset.filter(assigned_to__isnull=True).count(),

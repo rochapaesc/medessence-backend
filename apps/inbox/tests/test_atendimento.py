@@ -137,6 +137,43 @@ def test_contadores_sao_por_status(logado, conversation, inbox_a):
     assert set(response.data) >= {"waiting", "open", "snoozed", "resolved"}
 
 
+def test_contadores_separam_quem_atende_de_quem_a_ia_conduz(
+    logado, conversation, clinic_a, manager_single_clinic, inbox_a
+):
+    """
+    Cada botão da fila mostra o número DELE (29/07).
+
+    A asserção que importa é a última: `open` sozinho serve para os dois botões
+    e somaria coisas diferentes — o que a equipe atende com o que a IA conduz.
+    """
+    from apps.patients.models import Contact
+
+    take_over(conversation, manager_single_clinic)
+
+    da_ia = Conversation.objects.create(
+        clinic=clinic_a,
+        channel=inbox_a["channel"],
+        contact=Contact.objects.create(
+            clinic=clinic_a, wa_id="5585900000009", display_name="Rafael"
+        ),
+        status=ConversationStatus.OPEN,
+        attended_by=AttendedBy.BOT,
+    )
+
+    dados = logado.get("/api/v1/conversations/counters/").data
+
+    assert dados["attending"] == 1
+    assert dados["bot"] == 1
+    assert dados["waiting"] == 0
+    # O motivo de os dois campos existirem: `open` sozinho é 2 e não diz de quem
+    # é cada uma — os dois botões mostrariam o mesmo número.
+    assert dados["open"] == 2
+    # E o botão da IA conta a conversa CERTA, não só "alguma aberta".
+    assert Conversation.objects.filter(
+        pk=da_ia.pk, status=ConversationStatus.OPEN, attended_by=AttendedBy.BOT
+    ).exists()
+
+
 def test_filtro_de_status_aceita_lista(logado, conversation):
     """A fila padrão do front é "o que está vivo" — Resolvidas por filtro."""
     resolve(conversation, None)
