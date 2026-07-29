@@ -43,7 +43,21 @@ class MessageViewSet(
     }
 
     def get_queryset(self):
-        return super().get_queryset().order_by("wa_timestamp")
+        """
+        Do MAIS NOVO para o mais antigo — e é o cliente que inverte para
+        desenhar.
+
+        Parece ao contrário, mas é o que faz a conversa longa funcionar: a
+        página 1 tem de ser o FIM do papo, que é onde o atendimento continua.
+        Em ordem crescente, a primeira página de uma conversa de 800 mensagens
+        traria as 30 mais ANTIGAS — quem abrisse cairia no "oi" de seis meses
+        atrás, e as de hoje só apareceriam depois de 26 páginas.
+
+        `-id` desempata: mensagens do mesmo segundo (rajada de mídia, echo do
+        celular) sairiam em ordem instável entre uma página e outra, e a
+        paginação repetiria ou pularia balões.
+        """
+        return super().get_queryset().order_by("-wa_timestamp", "-id")
 
     @action(detail=True, methods=["post"], url_path="retry-media")
     def retry_media(self, request, pk=None):

@@ -10,8 +10,10 @@ e a asserção sobre a onda pode ser específica.
 """
 
 import subprocess
+from datetime import timedelta
 
 import pytest
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.inbox.choices import MediaState, MessageKind, SenderKind
@@ -369,3 +371,64 @@ def test_midia_de_outra_clinica_nao_vaza_no_retry(clinic_a, clinic_b, inbox_b, a
     assert resposta.status_code == 404
     media.refresh_from_db()
     assert media.state == MediaState.FAILED
+
+
+# ─────────────────────────── paginação da thread ───────────────────────────
+
+
+def test_thread_devolve_o_FIM_da_conversa_na_primeira_pagina(clinic_a, inbox_a, logado):
+    """
+    Achado do usuário em 28/07: abrir a conversa caía na primeira mensagem.
+
+    Em ordem crescente, a página 1 de uma conversa longa traz as mais ANTIGAS —
+    quem abre cai no "oi" de meses atrás e o atendimento de hoje só aparece
+    depois de rolar tudo. A API devolve do mais novo para o mais antigo, e o
+    cliente inverte para desenhar.
+    """
+    conversation = inbox_a["conversation"]
+    for i in range(5):
+        _mensagem(
+            clinic_a,
+            conversation,
+            kind=MessageKind.TEXT,
+            body=f"mensagem {i}",
+            wa_timestamp=timezone.now() - timedelta(minutes=10 - i),
+        )
+
+    dados = logado.get(
+        "/api/v1/messages/", {"conversation": conversation.pk, "limit": 2}
+    ).data
+
+    corpos = [m["body"] for m in dados["results"]]
+    # Asserção que PODE falhar: em ordem crescente viria ["mensagem 0", ...].
+    assert corpos == ["mensagem 4", "mensagem 3"]
+    assert dados["count"] == 5
+
+
+def test_paginacao_da_thread_nao_repete_nem_pula_no_mesmo_segundo(
+    clinic_a, inbox_a, logado
+):
+    """Rajada de mídia chega com o MESMO carimbo de tempo. Sem desempate por
+    id, a ordem varia entre uma página e outra — e a rolagem para cima repete
+    balões ou some com eles."""
+    conversation = inbox_a["conversation"]
+    instante = timezone.now()
+    for i in range(6):
+        _mensagem(
+            clinic_a,
+            conversation,
+            kind=MessageKind.TEXT,
+            body=f"rajada {i}",
+            wa_timestamp=instante,
+        )
+
+    primeira = logado.get(
+        "/api/v1/messages/", {"conversation": conversation.pk, "limit": 3}
+    ).data
+    segunda = logado.get(
+        "/api/v1/messages/",
+        {"conversation": conversation.pk, "limit": 3, "offset": 3},
+    ).data
+
+    ids = [m["id"] for m in primeira["results"]] + [m["id"] for m in segunda["results"]]
+    assert len(set(ids)) == 6, "houve repetição ou salto entre as páginas"
