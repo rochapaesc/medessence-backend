@@ -56,30 +56,123 @@ def fetch_media_asset(media_asset_id: int):
     O download é do ADAPTER, não desta task: na Cloud API a URL de mídia
     expira em ~5 min e exige o token do canal - baixar "por fora" com uma
     URL solta era coisa do Datafy (30 dias públicos) e morreu com ele.
+
+    A task termina SEMPRE com um estado: pronta, ou falhou com motivo. Antes
+    ela saía calada por três caminhos diferentes e a mídia ficava "baixando…"
+    para sempre na tela de quem estava esperando.
     """
+    from apps.inbox.audio import ler_metadados
+    from apps.inbox.choices import MediaState
     from apps.inbox.models import Channel, MediaAsset
     from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
     media = MediaAsset.objects.filter(pk=media_asset_id).first()
-    if media is None or media.stored_file:
-        return "skipped: sem mídia ou já baixada"
+    if media is None:
+        return "skipped: mídia não existe mais"
+    if media.stored_file:
+        return "skipped: já baixada"
 
     channel = Channel.objects.filter(clinic=media.clinic).first()
     if channel is None:
-        return "skipped: clínica sem canal"
+        return _media_falhou(media, "Clínica sem canal de WhatsApp configurado")
 
-    provider = get_whatsapp_provider(channel)
-    downloaded = provider.download_media(media.provider_media_id)
+    try:
+        downloaded = get_whatsapp_provider(channel).download_media(media.provider_media_id)
+    except Exception as exc:  # captura larga de propósito: o motivo tem de chegar à tela
+        logger.exception("Falha ao baixar mídia %s", media_asset_id)
+        return _media_falhou(media, _motivo_humano(exc))
+
     if not downloaded.content:
-        return "skipped: sem conteúdo"
+        # A URL da Meta expira: mídia velha simplesmente não vem mais.
+        return _media_falhou(media, "O provedor não devolveu o arquivo")
 
     content = downloaded.content
     mime = downloaded.mime_type or media.mime_type or ""
-    extension = mimetypes.guess_extension(mime.split(";")[0]) or ""
     media.mime_type = mime or media.mime_type
     media.size_bytes = len(content)
-    media.stored_file.save(f"{media.provider_media_id}{extension}", ContentFile(content), save=True)
+    media.duration_ms, media.waveform = ler_metadados(content, media.mime_type)
+    media.state = MediaState.READY
+    media.error = ""
+    media.stored_file.save(_nome_do_arquivo(media), ContentFile(content), save=False)
+    media.save()
+    _avisar_a_tela(media)
     return {"media_id": media.pk, "bytes": len(content)}
+
+
+def _motivo_humano(exc: Exception) -> str:
+    """
+    O erro como a recepção precisa lê-lo.
+
+    `str(exc)` de um erro da Meta é um despejo com fbtrace_id e objeto de
+    resposta dentro — texto de log, não de tela. Quem está atendendo precisa
+    saber duas coisas: se adianta tentar de novo e o que fazer se não adianta.
+    """
+    from apps.integrations.whatsapp.exceptions import (
+        WhatsAppAuthError,
+        WhatsAppNotConfiguredError,
+        WhatsAppRateLimitedError,
+        WhatsAppUnavailableError,
+    )
+
+    if isinstance(exc, WhatsAppAuthError):
+        return "Canal do WhatsApp desconectado — avise o suporte para reconectar."
+    if isinstance(exc, WhatsAppNotConfiguredError):
+        return "Canal do WhatsApp sem credenciais configuradas."
+    if isinstance(exc, WhatsAppRateLimitedError):
+        return "Limite de downloads do WhatsApp atingido — tente daqui a pouco."
+    if isinstance(exc, WhatsAppUnavailableError):
+        return "O WhatsApp não respondeu agora — tente de novo."
+    return "Não foi possível baixar o arquivo."
+
+
+def _media_falhou(media, motivo: str):
+    """Falha com MOTIVO e com aviso: mídia parada em silêncio vira um buraco
+    mudo na conversa, e quem está olhando não sabe se espera ou desiste."""
+    from apps.inbox.choices import MediaState
+
+    media.state = MediaState.FAILED
+    media.error = (motivo or "Não foi possível baixar o arquivo")[:200]
+    media.save(update_fields=["state", "error"])
+    _avisar_a_tela(media)
+    return f"failed: {media.error}"
+
+
+def _avisar_a_tela(media):
+    """
+    A tela está com um "Baixando…" girando desde que a mensagem chegou. O
+    download é assíncrono; sem este aviso, quem já estava com a conversa aberta
+    só veria a imagem no próximo F5.
+    """
+    from apps.inbox.models import Message
+    from apps.inbox.realtime import notify_media_updated
+
+    mensagem = Message.objects.filter(media_id=media.pk).order_by("id").first()
+    if mensagem is not None:
+        notify_media_updated(mensagem, media)
+
+
+def _nome_do_arquivo(media) -> str:
+    """
+    Nome no disco: id do provedor + extensão do MIME.
+
+    A extensão sai do `mimetypes` quando ele sabe, e de um mapa nosso quando
+    não sabe. `audio/ogg` — que é EXATAMENTE o formato do áudio de voz do
+    WhatsApp — devolve None no `guess_extension`, e o arquivo era salvo sem
+    extensão nenhuma: o navegador recebia algo que ele não sabia tocar.
+    """
+    mime = (media.mime_type or "").split(";")[0].strip().lower()
+    extensao = EXTENSOES_QUE_O_PYTHON_NAO_SABE.get(mime) or mimetypes.guess_extension(mime) or ""
+    return f"{media.provider_media_id}{extensao}"
+
+
+# MIMEs que a Meta manda e a biblioteca padrão do Python não conhece.
+EXTENSOES_QUE_O_PYTHON_NAO_SABE = {
+    "audio/ogg": ".ogg",  # áudio de voz do WhatsApp (opus)
+    "audio/opus": ".opus",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".aac",
+    "audio/amr": ".amr",
+}
 
 
 @shared_task(

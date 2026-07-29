@@ -3,8 +3,9 @@ Emissão de eventos em tempo real (§12). Papel único: empurrar eventos enxutos
 para o grupo da clínica. A fonte da verdade continua a API REST.
 
 Contrato de eventos (servidor → cliente):
-    message:new          · conversation_id, message{mínimo}
+    message:new          · conversation_id, message{mínimo, com media e caption}
     message:status       · provider_message_id, status
+    media:updated        · conversation_id, message_id, media{estado novo}
     conversation:updated · conversation_id, unread_count, preview, status,
                            attended_by, assigned_to, assigned_to_name
 """
@@ -29,6 +30,23 @@ def _broadcast(clinic_id: int, data: dict) -> None:
         logger.exception("Falha ao emitir evento realtime para a clínica %s", clinic_id)
 
 
+def _media_min(message) -> dict | None:
+    """
+    A mídia do balão, no MESMO formato do REST (`media_payload`) — dois
+    formatos para a mesma coisa fariam o balão mudar de forma quando o socket
+    chegasse antes da resposta do REST.
+
+    A URL sai RELATIVA aqui: o socket não tem request para saber o host
+    público, e o cliente já sabe resolver contra a origem da API. No REST ela
+    sai absoluta, e o cliente aceita as duas.
+    """
+    if not message.media_id:
+        return None
+    from apps.inbox.api.serializers.message import media_payload
+
+    return media_payload(message.media)
+
+
 def _message_min(message) -> dict:
     return {
         "id": message.pk,
@@ -39,7 +57,16 @@ def _message_min(message) -> dict:
         "provider_message_id": message.provider_message_id,
         "direction": message.direction,
         "kind": message.kind,
-        "body": (message.body or message.caption)[:200],
+        # Corpo e legenda viajam SEPARADOS. Iam fundidos num campo só
+        # (`body or caption`) e a tela não tinha como saber se aquele texto
+        # era a mensagem ou a legenda da foto — resultado: foto virava texto.
+        "body": (message.body or "")[:200],
+        "caption": (message.caption or "")[:200],
+        # Mesmos NOMES do REST: `media` é o id, `media_asset` é o objeto. Já
+        # foram a mesma chave com sentidos diferentes nos dois canais, e o
+        # cliente quebrava ao receber um objeto onde esperava um número.
+        "media": message.media_id,
+        "media_asset": _media_min(message),
         "sender_kind": message.sender_kind,
         "status": message.status,
         "status_error": message.status_error,
@@ -66,6 +93,24 @@ def notify_message_new(message) -> None:
             "event": "message:new",
             "conversation_id": message.conversation_id,
             "message": _message_min(message),
+        },
+    )
+
+
+def notify_media_updated(message, media) -> None:
+    """
+    O download terminou (ou desistiu). Vai como evento próprio, e não como um
+    `message:new` repetido, porque o balão JÁ ESTÁ na tela — o que mudou foi
+    só o estado da mídia dentro dele. Reemitir a mensagem inteira faria a
+    thread piscar e correria o risco de duplicar o balão.
+    """
+    _broadcast(
+        message.clinic_id,
+        {
+            "event": "media:updated",
+            "conversation_id": message.conversation_id,
+            "message_id": message.pk,
+            "media": _media_min(message) if message.media_id == media.pk else None,
         },
     )
 

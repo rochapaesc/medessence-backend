@@ -8,7 +8,12 @@ ENV APP_HOME=/home/app
 RUN mkdir $APP_HOME
 WORKDIR $APP_HOME
 
-RUN apt-get update && apt-get install -y netcat-openbsd && rm -rf /var/lib/apt/lists/*
+# ffmpeg: leitura de duração e desenho de onda do áudio (apps/inbox/audio.py).
+# Vai também nesta imagem porque a suíte roda aqui — e teste de onda com
+# ffmpeg ausente passaria sem provar nada.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends netcat-openbsd ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY ${REQUIREMENTS_PATH} $APP_HOME/${REQUIREMENTS_PATH}
 RUN pip install --upgrade --no-cache pip

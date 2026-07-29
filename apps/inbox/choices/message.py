@@ -47,6 +47,23 @@ class MessageStatus(TextChoices):
     FAILED = "failed", "Falhou"
 
 
+class MediaState(TextChoices):
+    """
+    Onde está o download da mídia (RF-INB-6). Existe porque a tela precisa
+    dizer a VERDADE em cada um dos três momentos: a mídia chega por webhook
+    mas o arquivo só existe depois que a task baixa da Meta, e a URL de lá
+    expira — quando expira, o arquivo nunca vem.
+
+    Sem este campo, "arquivo vazio" significava ao mesmo tempo "espere um
+    pouco" e "não vai vir nunca", e a tela mostrava um buraco mudo nos dois
+    casos.
+    """
+
+    PENDING = "pending", "Baixando"
+    READY = "ready", "Pronta"
+    FAILED = "failed", "Falhou"
+
+
 # Mapa canônico direção ← sender_kind (M8): a direção nunca diverge do autor.
 SENDER_TO_DIRECTION = {
     SenderKind.CONTACT: MessageDirection.IN,

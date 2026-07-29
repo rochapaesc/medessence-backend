@@ -47,12 +47,23 @@ def test_fetch_media_asset_rehospeda(monkeypatch, clinic_a, inbox_a):
     assert media.size_bytes == len(b"\x89PNG-bytes")
 
 
-def test_fetch_media_skip_sem_conteudo(clinic_a, inbox_a):
-    """O FAKE devolve content vazio - o fetch pula em vez de gravar arquivo oco."""
+def test_fetch_media_sem_conteudo_marca_falha(clinic_a, inbox_a):
+    """O FAKE devolve content vazio: não grava arquivo oco E não sai calado.
+
+    Saía como 'skipped' e a mídia ficava para sempre em 'Baixando…' na tela —
+    a mesma coisa que a mídia cuja URL expirou na Meta.
+    """
+    from apps.inbox.choices import MediaState
     from apps.inbox.tasks import fetch_media_asset
 
     media = MediaAsset.objects.create(clinic=clinic_a, provider_media_id="m2")
-    assert fetch_media_asset(media.pk) == "skipped: sem conteúdo"
+
+    resultado = fetch_media_asset(media.pk)
+
+    media.refresh_from_db()
+    assert resultado.startswith("failed:")
+    assert media.state == MediaState.FAILED
+    assert not media.stored_file.name
 
 
 def test_envio_com_erro_de_negocio_vira_failed_com_motivo(monkeypatch, inbox_a):

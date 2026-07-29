@@ -57,7 +57,7 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
     meta_type = message.get("type", "")
     message_kind = KIND_MAP.get(meta_type, MessageKind.UNSUPPORTED)
 
-    body = caption = media_id = mime_type = ""
+    body = caption = media_id = mime_type = filename = ""
     if meta_type == "text":
         body = (message.get("text") or {}).get("body", "")
     elif meta_type in MEDIA_KINDS:
@@ -65,6 +65,10 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
         media_id = payload.get("id", "")
         mime_type = payload.get("mime_type", "")
         caption = payload.get("caption", "")
+        # Só documento traz nome, e é o nome que o paciente vê no celular
+        # dele. Jogá-lo fora fazia o exame chegar na recepção como
+        # "1037387288883307.pdf".
+        filename = payload.get("filename", "")
 
     return WhatsAppEvent(
         kind=kind,
@@ -75,6 +79,7 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
         caption=caption,
         media_id=media_id,
         mime_type=mime_type,
+        filename=filename,
         reply_to_provider_id=(message.get("context") or {}).get("id", ""),
         wa_timestamp=_ts(message.get("timestamp")),
         contact_name=names.get(wa_id, ""),

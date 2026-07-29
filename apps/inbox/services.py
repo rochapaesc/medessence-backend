@@ -153,6 +153,7 @@ def _ingest_message(channel, event, sender_kind) -> bool:
             clinic=channel.clinic,
             provider_media_id=event.media_id,
             mime_type=event.mime_type,
+            filename=event.filename,
         )
 
     message = Message.objects.create(

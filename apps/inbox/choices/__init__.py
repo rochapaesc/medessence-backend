@@ -8,6 +8,7 @@ from apps.inbox.choices.conversation import (
 )
 from apps.inbox.choices.message import (
     SENDER_TO_DIRECTION,
+    MediaState,
     MessageDirection,
     MessageKind,
     MessageStatus,
@@ -22,6 +23,7 @@ __all__ = [
     "AttendedBy",
     "ConversationPriority",
     "ConversationStatus",
+    "MediaState",
     "MessageDirection",
     "MessageKind",
     "MessageStatus",

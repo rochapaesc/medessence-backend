@@ -1,5 +1,6 @@
 from django.utils import timezone
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.mixins import CreateModelMixin, ListModelMixin, RetrieveModelMixin
 from rest_framework.response import Response
 from rest_framework.status import HTTP_201_CREATED
@@ -9,6 +10,7 @@ from apps.core.api.viewsets.base import BaseGenericViewSet
 from apps.core.mixins import AuditMixin
 from apps.inbox.api.filtersets import MessageFilterset
 from apps.inbox.api.serializers import MessageCreateSerializer, MessageSerializer
+from apps.inbox.api.serializers.message import media_payload
 from apps.inbox.choices import SenderKind
 from apps.inbox.models import Message
 
@@ -42,6 +44,35 @@ class MessageViewSet(
 
     def get_queryset(self):
         return super().get_queryset().order_by("wa_timestamp")
+
+    @action(detail=True, methods=["post"], url_path="retry-media")
+    def retry_media(self, request, pk=None):
+        """
+        Reenfileira o download da mídia (o "Tentar de novo" da bolha).
+
+        Vale a pena tentar de novo porque a maioria das falhas é passageira:
+        rede caindo no meio, token expirado que já foi trocado, worker que
+        estava fora do ar. O que não volta é mídia velha demais — a URL da
+        Meta expira, e aí a falha se repete com o mesmo motivo, agora escrito
+        na tela em vez de silenciosa.
+        """
+        from apps.inbox.choices import MediaState
+        from apps.inbox.tasks import fetch_media_asset
+
+        message = self.get_object()
+        if not message.media_id:
+            raise ValidationError("Esta mensagem não tem mídia.")
+
+        media = message.media
+        if media.stored_file:
+            # Já está no disco: nada a refazer, e a tela só precisa se atualizar.
+            return Response(media_payload(media, request))
+
+        media.state = MediaState.PENDING
+        media.error = ""
+        media.save(update_fields=["state", "error"])
+        fetch_media_asset.delay(media.pk)
+        return Response(media_payload(media, request))
 
     def create(self, request, *args, **kwargs):
         """

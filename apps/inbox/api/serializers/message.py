@@ -9,10 +9,40 @@ from apps.inbox.choices import MessageKind
 from apps.inbox.models import Conversation, Message
 
 
+def media_payload(media, request=None) -> dict | None:
+    """
+    A mídia como a tela precisa dela: URL que abre em qualquer lugar, tipo,
+    nome, tamanho, duração, onda e o ESTADO do download.
+
+    Vive numa função solta (e não só no serializer) porque o evento de tempo
+    real manda exatamente o mesmo objeto — dois formatos para a mesma mídia
+    fariam o balão mudar de forma quando o socket chegasse antes do REST.
+    """
+    if media is None:
+        return None
+    url = media.stored_file.url if media.stored_file else ""
+    # URL ABSOLUTA: relativa funciona no localhost e quebra em qualquer outro
+    # lugar — o front pode estar em outra origem que a API.
+    if url and request is not None:
+        url = request.build_absolute_uri(url)
+    return {
+        "id": media.pk,
+        "url": url,
+        "mime_type": media.mime_type,
+        "filename": media.filename,
+        "size_bytes": media.size_bytes,
+        "duration_ms": media.duration_ms,
+        "waveform": media.waveform or [],
+        "state": media.state,
+        "error": media.error,
+    }
+
+
 class MessageSerializer(ModelSerializer):
     """Balão da thread (RF-INB-2) - leitura."""
 
     media_url = SerializerMethodField()
+    media_asset = SerializerMethodField()
     # Quem agiu, por extenso: a frase do evento ("Ana assumiu o atendimento")
     # e a assinatura da nota interna são montadas no front, e um id de usuário
     # obrigaria a tela a buscar o nome mensagem a mensagem.
@@ -30,6 +60,7 @@ class MessageSerializer(ModelSerializer):
             "caption",
             "media",
             "media_url",
+            "media_asset",
             "reply_to_provider_id",
             "status",
             "status_error",
@@ -44,9 +75,15 @@ class MessageSerializer(ModelSerializer):
         ]
 
     def get_media_url(self, obj):
-        if obj.media_id and obj.media.stored_file:
-            return obj.media.stored_file.url
-        return ""
+        """Mantido por compatibilidade com quem já lia este campo; o que a
+        tela usa agora é `media_asset`, que sabe também o estado e o nome."""
+        payload = self.get_media_asset(obj)
+        return payload["url"] if payload else ""
+
+    def get_media_asset(self, obj):
+        if not obj.media_id:
+            return None
+        return media_payload(obj.media, self.context.get("request"))
 
     def get_sent_by_name(self, obj):
         if not obj.sent_by_id:

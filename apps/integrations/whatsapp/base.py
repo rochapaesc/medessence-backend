@@ -33,6 +33,7 @@ class WhatsAppEvent:
     caption: str = ""
     media_id: str = ""
     mime_type: str = ""
+    filename: str = ""  # só documento traz: é o nome que o paciente vê
     reply_to_provider_id: str = ""
     status: str = ""  # para kind=STATUS: sent/delivered/read/failed
     status_error: str = ""  # para status=failed: motivo legível (errors[] da Meta)
