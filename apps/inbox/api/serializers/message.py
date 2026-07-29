@@ -62,6 +62,7 @@ class MessageSerializer(ModelSerializer):
             "media_url",
             "media_asset",
             "reply_to_provider_id",
+            "reaction",
             "status",
             "status_error",
             "is_internal",

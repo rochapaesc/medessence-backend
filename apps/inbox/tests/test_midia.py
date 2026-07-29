@@ -432,3 +432,110 @@ def test_paginacao_da_thread_nao_repete_nem_pula_no_mesmo_segundo(
 
     ids = [m["id"] for m in primeira["results"]] + [m["id"] for m in segunda["results"]]
     assert len(set(ids)) == 6, "houve repetição ou salto entre as páginas"
+
+
+# ───────────────────────────────── reações ─────────────────────────────────
+
+
+def _payload_de_reacao(*, wa_id, alvo_wamid, emoji, mid="wamid.REACT-1"):
+    return {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "contacts": [{"wa_id": wa_id, "profile": {"name": "Gabriel"}}],
+                            "messages": [
+                                {
+                                    "from": wa_id,
+                                    "id": mid,
+                                    "timestamp": "1785290675",
+                                    "type": "reaction",
+                                    "reaction": {"emoji": emoji, "message_id": alvo_wamid},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def test_reacao_cola_na_mensagem_e_NAO_vira_balao(clinic_a, inbox_a):
+    """
+    Achado ao vivo em 28/07: o usuário reagiu com 👍❤️😢 e cada reação virou um
+    balão "Não suportado" na thread, subindo a conversa na fila. Reação é um
+    selo na mensagem, não uma fala — e joinha não pede resposta.
+    """
+    from apps.inbox.services import ingest_events
+
+    conversation = inbox_a["conversation"]
+    alvo = _mensagem(
+        clinic_a,
+        conversation,
+        kind=MessageKind.TEXT,
+        body="Confirmo sua consulta para amanhã",
+        provider_message_id="wamid.ALVO",
+    )
+    antes = Message.objects.filter(conversation=conversation).count()
+
+    ingest_events(
+        inbox_a["channel"],
+        parse_meta_webhook(
+            _payload_de_reacao(
+                wa_id=inbox_a["contact"].wa_id, alvo_wamid="wamid.ALVO", emoji="👍"
+            )
+        ),
+    )
+
+    alvo.refresh_from_db()
+    assert alvo.reaction == "👍"
+    assert Message.objects.filter(conversation=conversation).count() == antes, (
+        "a reação não pode criar balão"
+    )
+
+
+def test_remover_a_reacao_limpa_o_selo(clinic_a, inbox_a):
+    """O WhatsApp manda o mesmo evento com emoji VAZIO ao desfazer."""
+    from apps.inbox.services import ingest_events
+
+    alvo = _mensagem(
+        clinic_a,
+        inbox_a["conversation"],
+        kind=MessageKind.TEXT,
+        body="oi",
+        provider_message_id="wamid.ALVO",
+        reaction="❤️",
+    )
+
+    ingest_events(
+        inbox_a["channel"],
+        parse_meta_webhook(
+            _payload_de_reacao(
+                wa_id=inbox_a["contact"].wa_id, alvo_wamid="wamid.ALVO", emoji=""
+            )
+        ),
+    )
+
+    alvo.refresh_from_db()
+    assert alvo.reaction == ""
+
+
+def test_reacao_a_mensagem_que_nao_temos_e_ignorada(clinic_a, inbox_a):
+    """Reação a uma conversa anterior à integração: não há onde colar o selo,
+    e inventar um balão seria pior do que ignorar."""
+    from apps.inbox.services import ingest_events
+
+    antes = Message.objects.count()
+
+    ingest_events(
+        inbox_a["channel"],
+        parse_meta_webhook(
+            _payload_de_reacao(
+                wa_id=inbox_a["contact"].wa_id, alvo_wamid="wamid.NUNCA-VISTO", emoji="👍"
+            )
+        ),
+    )
+
+    assert Message.objects.count() == antes

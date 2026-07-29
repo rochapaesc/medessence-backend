@@ -6,6 +6,7 @@ Contrato de eventos (servidor → cliente):
     message:new          · conversation_id, message{mínimo, com media e caption}
     message:status       · provider_message_id, status
     media:updated        · conversation_id, message_id, media{estado novo}
+    message:reaction     · conversation_id, message_id, reaction (vazio = removida)
     conversation:updated · conversation_id, unread_count, preview, status,
                            attended_by, assigned_to, assigned_to_name
 """
@@ -67,6 +68,7 @@ def _message_min(message) -> dict:
         # cliente quebrava ao receber um objeto onde esperava um número.
         "media": message.media_id,
         "media_asset": _media_min(message),
+        "reaction": message.reaction,
         "sender_kind": message.sender_kind,
         "status": message.status,
         "status_error": message.status_error,
@@ -93,6 +95,23 @@ def notify_message_new(message) -> None:
             "event": "message:new",
             "conversation_id": message.conversation_id,
             "message": _message_min(message),
+        },
+    )
+
+
+def notify_message_reaction(message) -> None:
+    """
+    A reação colou numa mensagem que já está na tela. Vai como evento próprio
+    (e não como conversa atualizada) porque a fila NÃO deve mexer: um joinha
+    não é conversa nova nem pedido de resposta.
+    """
+    _broadcast(
+        message.clinic_id,
+        {
+            "event": "message:reaction",
+            "conversation_id": message.conversation_id,
+            "message_id": message.pk,
+            "reaction": message.reaction,
         },
     )
 

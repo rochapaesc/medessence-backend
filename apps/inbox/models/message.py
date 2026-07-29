@@ -65,6 +65,12 @@ class Message(TenantScopedModel):
         related_name="messages",
     )
     reply_to_provider_id = CharField(verbose_name="Responde a (wamid)", max_length=128, blank=True)
+
+    # Reação do contato A ESTA mensagem (👍, ❤️...). Fica na mensagem alvo e
+    # não vira balão: reação é um selo, não uma fala — e uma reação virando
+    # mensagem faria a conversa subir na fila e pedir resposta por um joinha.
+    # Vazio = sem reação (a pessoa pode REMOVER o que reagiu).
+    reaction = CharField(verbose_name="Reação", max_length=16, blank=True)
     status = CharField(
         verbose_name="Status",
         max_length=10,

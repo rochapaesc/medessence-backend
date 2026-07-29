@@ -58,7 +58,12 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
     message_kind = KIND_MAP.get(meta_type, MessageKind.UNSUPPORTED)
 
     body = caption = media_id = mime_type = filename = ""
-    if meta_type == "text":
+    reaction_emoji = reaction_to = ""
+    if meta_type == "reaction":
+        reacao = message.get("reaction") or {}
+        reaction_emoji = reacao.get("emoji", "")
+        reaction_to = reacao.get("message_id", "")
+    elif meta_type == "text":
         body = (message.get("text") or {}).get("body", "")
     elif meta_type in MEDIA_KINDS:
         payload = message.get(meta_type) or {}
@@ -80,6 +85,8 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
         media_id=media_id,
         mime_type=mime_type,
         filename=filename,
+        reaction_emoji=reaction_emoji,
+        reaction_to=reaction_to,
         reply_to_provider_id=(message.get("context") or {}).get("id", ""),
         wa_timestamp=_ts(message.get("timestamp")),
         contact_name=names.get(wa_id, ""),

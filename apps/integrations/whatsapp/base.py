@@ -34,6 +34,11 @@ class WhatsAppEvent:
     media_id: str = ""
     mime_type: str = ""
     filename: str = ""  # só documento traz: é o nome que o paciente vê
+    # Reação (👍 numa mensagem): NÃO é mensagem nova — é um selo colado numa
+    # mensagem que já existe. `reaction_to` é o wamid do alvo; emoji vazio
+    # significa que a pessoa REMOVEU a reação.
+    reaction_emoji: str = ""
+    reaction_to: str = ""
     reply_to_provider_id: str = ""
     status: str = ""  # para kind=STATUS: sent/delivered/read/failed
     status_error: str = ""  # para status=failed: motivo legível (errors[] da Meta)

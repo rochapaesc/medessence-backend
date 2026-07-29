@@ -132,9 +132,43 @@ def _get_or_create_conversation(channel, event):
     return conversation
 
 
+def _ingest_reaction(channel, event) -> bool:
+    """
+    Reação (👍 numa mensagem) COLA na mensagem alvo — não vira balão.
+
+    Virava: o tipo `reaction` caía no `unsupported` e entrava na thread como
+    "Não suportado", subindo a conversa na fila e pedindo resposta por causa
+    de um joinha. Reação é um selo, não uma fala.
+
+    Emoji vazio é a REMOÇÃO da reação — o WhatsApp manda o mesmo evento sem
+    emoji quando a pessoa desfaz.
+    """
+    from apps.inbox.models import Message
+
+    alvo = Message.objects.filter(
+        clinic=channel.clinic, provider_message_id=event.reaction_to
+    ).first()
+    if alvo is None:
+        # Reação a uma mensagem que não temos (anterior à integração): não há
+        # onde colar o selo, e inventar um balão seria pior.
+        return False
+    if alvo.reaction == event.reaction_emoji:
+        return False
+    alvo.reaction = event.reaction_emoji
+    alvo.save(update_fields=["reaction", "updated_at"])
+
+    from apps.inbox.realtime import notify_message_reaction
+
+    notify_message_reaction(alvo)
+    return True
+
+
 def _ingest_message(channel, event, sender_kind) -> bool:
     """Upsert idempotente de uma mensagem IN (contato) ou echo (OUT do celular)."""
     from apps.inbox.models import MediaAsset, Message
+
+    if event.reaction_to:
+        return _ingest_reaction(channel, event)
 
     if not event.provider_message_id:
         return False
