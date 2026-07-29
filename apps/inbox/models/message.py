@@ -89,6 +89,11 @@ class Message(TenantScopedModel):
         '"Falhou" sem motivo não ajuda ninguém a agir.',
     )
 
+    # Nota interna reescrita. Marcado porque a equipe LÊ a nota como registro
+    # do que se sabia: uma que mudou de texto sem avisar faria alguém confiar
+    # numa versão que já não é a original. O antes/depois fica na auditoria.
+    edited_at = DateTimeField(verbose_name="Editada em", null=True, blank=True)
+
     # ---------------- nota interna e atividade (F2.5, §4.3.1) --------------
     is_internal = BooleanField(
         verbose_name="Nota interna",

@@ -95,8 +95,23 @@ class WhatsAppProvider(Protocol):
         ...
 
     def send_media(
-        self, to: str, kind: str, url_or_id: str, caption: str | None = None
-    ) -> SendResult: ...
+        self,
+        to: str,
+        kind: str,
+        url_or_id: str,
+        caption: str | None = None,
+        *,
+        filename: str | None = None,
+        mime_type: str | None = None,
+        reply_to: str | None = None,
+        is_voice: bool = False,
+    ) -> SendResult:
+        """Anexo. `url_or_id` aceita caminho local, URL pública ou media id."""
+        ...
+
+    def send_reaction(self, to: str, provider_message_id: str, emoji: str) -> SendResult:
+        """Cola (ou tira, com `emoji` vazio) o selo numa mensagem da conversa."""
+        ...
 
     def mark_read(self, provider_message_id: str) -> None:
         """`messages/read` no provedor (RF-INB-4)."""
@@ -104,6 +119,10 @@ class WhatsAppProvider(Protocol):
 
     def download_media(self, media_id: str) -> DownloadedMedia:
         """Baixa o ativo no provedor (autenticado) - para re-hospedar (RF-INB-6)."""
+        ...
+
+    def verify_credentials(self) -> dict:
+        """Sonda que NÃO envia nada — a porta de saída do canal desconectado."""
         ...
 
     def list_templates(self) -> list[Template]:

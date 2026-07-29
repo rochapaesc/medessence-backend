@@ -1,3 +1,4 @@
+from apps.inbox.api.serializers.contact_panel import ContactNoteSerializer
 from apps.inbox.api.serializers.conversation import (
     ContactSummarySerializer,
     ConversationSerializer,
@@ -8,6 +9,7 @@ from apps.inbox.api.serializers.label import (
 )
 from apps.inbox.api.serializers.message import (
     MessageCreateSerializer,
+    MessageEditSerializer,
     MessageSerializer,
 )
 from apps.inbox.api.serializers.quick_reply import (
@@ -16,11 +18,13 @@ from apps.inbox.api.serializers.quick_reply import (
 )
 
 __all__ = [
+    "ContactNoteSerializer",
     "ContactSummarySerializer",
     "ConversationLabelSerializer",
     "ConversationLabelSummarySerializer",
     "ConversationSerializer",
     "MessageCreateSerializer",
+    "MessageEditSerializer",
     "MessageSerializer",
     "QuickReplySerializer",
     "WhatsAppTemplateSerializer",

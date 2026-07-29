@@ -127,19 +127,75 @@ class MetaAdapter:
         return SendResult(provider_message_id=sent.id, raw={"id": sent.id})
 
     def send_media(
-        self, to: str, kind: str, url_or_id: str, caption: str | None = None
+        self,
+        to: str,
+        kind: str,
+        url_or_id: str,
+        caption: str | None = None,
+        *,
+        filename: str | None = None,
+        mime_type: str | None = None,
+        reply_to: str | None = None,
+        is_voice: bool = False,
     ) -> SendResult:
+        """
+        Manda o anexo. `url_or_id` aceita CAMINHO LOCAL, URL ou media id.
+
+        Passamos o caminho do arquivo no disco: o PyWa detecta que é caminho,
+        sobe o arquivo para a Meta e usa o media id resultante. O caminho da
+        URL exigiria que o nosso storage fosse alcançável pela internet — o
+        que não vale nem em desenvolvimento (localhost) nem em produção, onde
+        a mídia da clínica não deve ficar pública para quem tiver o link.
+        """
+        reply = reply_to or None
         senders = {
-            "image": lambda: self._wa.send_image(to=to, image=url_or_id, caption=caption),
-            "video": lambda: self._wa.send_video(to=to, video=url_or_id, caption=caption),
-            "audio": lambda: self._wa.send_audio(to=to, audio=url_or_id),
+            "image": lambda: self._wa.send_image(
+                to=to, image=url_or_id, caption=caption,
+                mime_type=mime_type, reply_to_message_id=reply,
+            ),
+            "video": lambda: self._wa.send_video(
+                to=to, video=url_or_id, caption=caption,
+                mime_type=mime_type, reply_to_message_id=reply,
+            ),
+            # `is_voice` é o que faz o balão chegar como NOTA DE VOZ no celular
+            # do paciente — com onda e play — em vez de anexo de áudio.
+            "audio": lambda: self._wa.send_audio(
+                to=to, audio=url_or_id, is_voice=is_voice,
+                mime_type=mime_type, reply_to_message_id=reply,
+            ),
+            "sticker": lambda: self._wa.send_sticker(
+                to=to, sticker=url_or_id, mime_type=mime_type,
+                reply_to_message_id=reply,
+            ),
             "document": lambda: self._wa.send_document(
-                to=to, document=url_or_id, caption=caption
+                to=to, document=url_or_id, caption=caption,
+                # Sem o nome, o paciente recebe "3f8a...bin" e não sabe se
+                # abre o laudo ou o preparo.
+                filename=filename, mime_type=mime_type,
+                reply_to_message_id=reply,
             ),
         }
         sender = senders.get(kind, senders["document"])
         try:
             sent = sender()
+        except pywa_errors.WhatsAppError as exc:
+            raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
+        return SendResult(provider_message_id=sent.id, raw={"id": sent.id})
+
+    def send_reaction(self, to: str, provider_message_id: str, emoji: str) -> SendResult:
+        """
+        Selo na mensagem. Emoji vazio TIRA — é o que a Meta manda no mesmo
+        evento, e é por isso que desfazer não tem endpoint próprio.
+        """
+        try:
+            if emoji:
+                sent = self._wa.send_reaction(
+                    to=to, emoji=emoji, message_id=provider_message_id
+                )
+            else:
+                sent = self._wa.remove_reaction(to=to, message_id=provider_message_id)
         except pywa_errors.WhatsAppError as exc:
             raise _translate(exc) from exc
         except httpx.TransportError as exc:
@@ -166,6 +222,34 @@ class MetaAdapter:
         except httpx.TransportError as exc:
             raise _rede(exc) from exc
         return DownloadedMedia(content=content, mime_type=url_info.mime_type or "")
+
+    def verify_credentials(self) -> dict:
+        """
+        Uma chamada real ao Graph só para saber se a credencial serve.
+
+        É a PORTA DE SAÍDA do canal desconectado. O canal se cura com qualquer
+        chamada bem-sucedida, mas com ele caído o envio e o reenvio ficam
+        bloqueados — sem uma sonda que não seja envio, trocar o token não
+        adiantaria: o sistema recusaria tudo para sempre esperando um sucesso
+        que ele mesmo impedia de acontecer.
+
+        Levanta `WhatsAppError` quando a Meta recusa. Não escolhi `send_text`
+        de propósito: a sonda não pode mandar mensagem para ninguém.
+        """
+        try:
+            # `phone_id` é keyword-only no PyWa (assinatura com `*`).
+            numero = self._wa.get_business_phone_number(
+                phone_id=self.channel.phone_number_id
+            )
+        except pywa_errors.WhatsAppError as exc:
+            raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
+        return {
+            "display_phone_number": getattr(numero, "display_phone_number", ""),
+            "verified_name": getattr(numero, "verified_name", ""),
+            "quality_rating": str(getattr(numero, "quality_rating", "") or ""),
+        }
 
     def list_templates(self) -> list[Template]:
         """

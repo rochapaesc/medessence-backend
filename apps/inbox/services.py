@@ -9,6 +9,7 @@ este módulo não conhece Datafy.
 """
 
 import logging
+from datetime import timedelta
 
 from django.db.models import F
 from django.utils import timezone
@@ -419,6 +420,223 @@ def _template_language(message) -> str:
     return idiomas[0] if idiomas else "pt_BR"
 
 
+# Quanto tempo uma mensagem falha continua reenviável. É o mesmo teto do
+# Chatwoot (`canRetry = !hasOneDayPassed(createdAt)`) e não é arbitrário: passa
+# de 24h, a janela da Meta fechou e o reenvio produziria a MESMA falha — o
+# botão só existiria para frustrar quem clica.
+JANELA_DE_REENVIO = timedelta(hours=24)
+
+
+def assinar_mensagem(message, user) -> bool:
+    """
+    Põe o nome de quem escreveu no COMEÇO da mensagem, em negrito:
+
+        *Gabriel Rocha:*
+        Bom dia, como posso ajudar
+
+    Do outro lado é um número só — o da clínica. Sem a assinatura, o paciente
+    não sabe se está falando com a Ana da recepção, com a doutora ou com um
+    robô, e responde "quem é?" antes de responder a pergunta.
+
+    O texto é gravado JÁ ASSINADO, e não assinado só na hora de enviar: assim
+    a thread mostra exatamente o que chegou no celular do paciente. Guardar um
+    corpo e mandar outro criaria duas versões da mesma fala.
+
+    Não assina: nota da equipe (não sai daqui), template (o conteúdo é o
+    aprovado pela Meta e mexer nele reprova o envio), mensagem da automação
+    (não tem pessoa por trás) e legenda de anexo (o nome dominaria a linha
+    curta que descreve a foto).
+
+    Devolve `True` quando assinou.
+    """
+    if message.is_internal or message.template_name:
+        return False
+    if message.kind != MessageKind.TEXT or not message.body.strip():
+        return False
+    if message.sender_kind != SenderKind.AGENT:
+        return False
+
+    nome = (user.get_full_name() or "").strip()
+    if not nome:
+        return False
+
+    # Dois pontos DENTRO do negrito: separa o nome da fala sem virar
+    # uma segunda linha de enfeite.
+    assinatura = f"*{nome}:*"
+    # Reenvio e eco não assinam de novo: a linha já está lá.
+    if message.body.startswith(assinatura):
+        return False
+
+    message.body = f"{assinatura}\n{message.body}"
+    message.save(update_fields=["body", "updated_at"])
+    return True
+
+
+def recalcular_ultima_mensagem(conversation) -> None:
+    """
+    Refaz a prévia da fila depois que uma mensagem sumiu.
+
+    Sem isto, apagar a última nota deixava a lista mostrando um texto que já
+    não existe — e a recepção clicaria na conversa procurando algo que sumiu.
+    """
+    from apps.inbox.models import Message
+
+    ultima = (
+        Message.objects.filter(conversation=conversation)
+        .exclude(kind=MessageKind.ACTIVITY)
+        .order_by("-wa_timestamp", "-id")
+        .first()
+    )
+    conversation.last_message_at = ultima.wa_timestamp if ultima else None
+    conversation.last_message_preview = _preview(ultima) if ultima else ""
+    conversation.save(
+        update_fields=["last_message_at", "last_message_preview", "updated_at"]
+    )
+
+
+def reagir(message, user, emoji: str) -> None:
+    """
+    O selo da EQUIPE numa mensagem, com dono (Bloco D).
+
+    Espelho do `_ingest_reaction`, que faz o mesmo para o que CHEGA. Emoji
+    vazio apaga a linha de VERDADE (não o soft delete): a linha marcada como
+    deletada continuaria ocupando a chave única, e reagir de novo na mesma
+    mensagem estouraria IntegrityError.
+
+    A reação vai para o WhatsApp em task — o paciente tem de ver o 👍 no
+    celular dele, senão é um selo que só existe na nossa tela.
+    """
+    from apps.inbox.choices import ReactionActor
+    from apps.inbox.models import MessageReaction
+    from apps.inbox.realtime import notify_message_reaction
+    from apps.inbox.tasks import send_whatsapp_reaction
+
+    if emoji:
+        MessageReaction.all_objects.update_or_create(
+            message=message,
+            actor_kind=ReactionActor.AGENT,
+            actor_user=user,
+            defaults={
+                "clinic": message.clinic,
+                "conversation_id": message.conversation_id,
+                "emoji": emoji,
+                "deleted_at": None,
+            },
+        )
+    else:
+        for reacao in MessageReaction.all_objects.filter(
+            message=message, actor_kind=ReactionActor.AGENT, actor_user=user
+        ):
+            reacao.hard_delete()
+
+    notify_message_reaction(message)
+    send_whatsapp_reaction.delay(message.pk, emoji)
+
+
+def mensagens_para_reenviar(clinic):
+    """
+    O que não saiu e ainda dá para tentar de novo.
+
+    Nota interna fica de fora porque ela nunca tentou sair; mensagem de mais
+    de 24h também, pelo motivo acima.
+    """
+    from apps.inbox.choices import ConversationStatus
+    from apps.inbox.models import Message
+
+    return Message.objects.filter(
+        clinic=clinic,
+        direction=MessageDirection.OUT,
+        status=MessageStatus.FAILED,
+        is_internal=False,
+        wa_timestamp__gte=timezone.now() - JANELA_DE_REENVIO,
+    ).exclude(
+        # Atendimento ENCERRADO não pede reenvio: quem resolveu decidiu que o
+        # assunto acabou, e a faixa cobrando "3 mensagens não saíram" mandaria
+        # a recepção reabrir conversa fechada para mandar algo vencido.
+        conversation__status=ConversationStatus.RESOLVED
+    )
+
+
+def pode_reenviar(message) -> bool:
+    """
+    Reenviar é útil? Template passa sempre (é o que existe para fora da
+    janela); o resto depende da janela da conversa estar aberta.
+    """
+    if message.kind == MessageKind.TEMPLATE and message.template_name:
+        return True
+    return message.conversation.window_open
+
+
+def reenviar(message) -> bool:
+    """
+    Devolve a mensagem para a fila de envio. `False` quando não adianta.
+
+    Nenhum dos três repositórios de referência reenvia sozinho ao reconectar —
+    Chatwoot põe o botão no balão, whatomate só faz lote em campanha. O motivo
+    é bom: mensagem que ficou presa meia hora pode ter virado assunto vencido,
+    e quem decide isso é quem atende, não o sistema.
+    """
+    if not pode_reenviar(message):
+        return False
+
+    message.status = ""
+    message.status_error = ""
+    # A mensagem passa a valer AGORA, não na hora em que foi escrita.
+    #
+    # No celular do paciente ela chega neste instante; se a thread a mantivesse
+    # às 20:22 de ontem, a conversa teria um buraco: uma fala antiga no meio do
+    # passado que o outro lado só leu hoje. O relógio do balão tem de ser o do
+    # envio de verdade — é o que os dois lados veem igual.
+    message.wa_timestamp = timezone.now()
+    message.save(
+        update_fields=["status", "status_error", "wa_timestamp", "updated_at"]
+    )
+
+    # A conversa sobe na fila e ganha a prévia nova: a mensagem que acabou de
+    # sair é a última do fio, e a lista tem de refletir isso.
+    apply_message_to_conversation(message, created=True)
+
+    from apps.inbox.realtime import notify_conversation_updated_on_commit
+    from apps.inbox.tasks import send_whatsapp_message
+
+    notify_conversation_updated_on_commit(message.conversation)
+    send_whatsapp_message.delay(message.pk)
+    return True
+
+
+def _enviar_anexo(provider, to: str, message):
+    """
+    O anexo pelo CAMINHO no disco — o PyWa sobe o arquivo e usa o media id.
+
+    A alternativa seria mandar a URL do nosso storage, o que exigiria que a
+    mídia da clínica fosse pública na internet para a Meta buscar. Não é: laudo
+    e exame não podem ficar acessíveis a quem tiver o link.
+    """
+    media = message.media
+    try:
+        arquivo = media.stored_file.path
+    except NotImplementedError:
+        # Storage remoto (S3 e afins) não tem caminho local. O PyWa aceita os
+        # bytes direto — mais caro, mas continua funcionando sem tornar a
+        # mídia da clínica pública para a Meta buscar por URL.
+        with media.stored_file.open("rb") as f:
+            arquivo = f.read()
+
+    return provider.send_media(
+        to,
+        message.kind,
+        arquivo,
+        message.caption or None,
+        filename=media.filename or None,
+        mime_type=media.mime_type or None,
+        reply_to=message.reply_to_provider_id or None,
+        # Áudio com onda calculada é gravação da recepção: vai como nota de
+        # voz. Áudio anexado de um arquivo vai como áudio comum — que é o que
+        # ele é, e o que o paciente espera ver.
+        is_voice=bool(media.waveform),
+    )
+
+
 def send_message(message) -> None:
     """Envia uma mensagem OUT pendente pelo provider do canal e grava o wamid
     e o status. Chamado pela task `send_whatsapp_message`."""
@@ -443,6 +661,8 @@ def send_message(message) -> None:
             result = provider.send_template(
                 to, message.template_name, _template_language(message)
             )
+        elif message.media_id:
+            result = _enviar_anexo(provider, to, message)
         else:
             result = provider.send_text(
                 to, message.body, message.reply_to_provider_id or None
@@ -465,9 +685,20 @@ def send_message(message) -> None:
             MOTIVO_CREDENCIAL if isinstance(exc, WhatsAppAuthError) else str(exc)
         )
         message.save(update_fields=["status", "status_error", "updated_at"])
-        # Sem realtime aqui: o evento message:status é endereçado por wamid,
-        # que uma falha de envio não tem. A resposta REST do composer e o
-        # refetch da thread mostram o estado.
+        # Avisa a tela pelo ID da mensagem — ela nunca chegou a ter wamid.
+        # Antes daqui o balão ficava eterno em "enviando", e a recepção só
+        # descobria que não saiu quando o paciente não respondia (queda de
+        # 29/07). Com o evento, o balão vira vermelho com o botão Reenviar.
+        from apps.inbox.realtime import notify_message_status
+
+        notify_message_status(
+            message.clinic_id,
+            "",
+            MessageStatus.FAILED,
+            conversation.pk,
+            message_id=message.pk,
+            error=message.status_error,
+        )
         return
 
     # Deu certo: o canal está vivo (o `reauthorized!` do Chatwoot).

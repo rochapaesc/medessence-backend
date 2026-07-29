@@ -4,9 +4,10 @@ para o grupo da clínica. A fonte da verdade continua a API REST.
 
 Contrato de eventos (servidor → cliente):
     message:new          · conversation_id, message{mínimo, com media e caption}
-    message:status       · provider_message_id, status
+    message:status       · provider_message_id | message_id, status, error
     media:updated        · conversation_id, message_id, media{estado novo}
-    channel:health       · disconnected, reason, display_number (clínica inteira)
+    channel:health       · disconnected, reason, display_number,
+                           failed_messages (clínica inteira)
     message:reaction     · conversation_id, message_id, reactions[] (com dono)
     conversation:updated · conversation_id, unread_count, preview, status,
                            attended_by, assigned_to, assigned_to_name
@@ -69,6 +70,20 @@ def _reactions_min(message) -> list[dict]:
     ]
 
 
+def _citacao_min(message) -> dict | None:
+    """A mensagem citada, como o balão precisa dela. `None` quando ela não está
+    no nosso banco (resposta a algo anterior à integração)."""
+    if not message.reply_to_provider_id:
+        return None
+    from apps.inbox.api.serializers.message import citacao_payload
+    from apps.inbox.models import Message
+
+    citada = Message.objects.filter(
+        clinic_id=message.clinic_id, provider_message_id=message.reply_to_provider_id
+    ).first()
+    return citacao_payload(citada) if citada else None
+
+
 def _message_min(message) -> dict:
     return {
         "id": message.pk,
@@ -90,6 +105,10 @@ def _message_min(message) -> dict:
         "media": message.media_id,
         "media_asset": _media_min(message),
         "reactions": _reactions_min(message),
+        # A citação vai montada: o balão que chega pelo socket tem de nascer
+        # com o chip, e o cliente não tem como resolver um wamid sozinho.
+        "reply_to_provider_id": message.reply_to_provider_id,
+        "reply_to": _citacao_min(message),
         "content_data": message.content_data,
         "sender_kind": message.sender_kind,
         "status": message.status,
@@ -144,6 +163,8 @@ def notify_channel_health(channel) -> None:
     da clínica inteira: sem isto, a faixa só apareceria no próximo F5 — e
     quem está atendendo continuaria escrevendo mensagens que não saem.
     """
+    from apps.inbox.services import mensagens_para_reenviar
+
     _broadcast(
         channel.clinic_id,
         {
@@ -151,6 +172,11 @@ def notify_channel_health(channel) -> None:
             "disconnected": channel.disconnected,
             "reason": channel.disconnect_reason,
             "display_number": channel.display_number,
+            # Quantas ficaram presas na queda. Sem este número no MESMO
+            # evento, a faixa verde de "reconectado" apareceria sem saber se
+            # há algo a reenviar, e só descobriria no próximo F5 — que é
+            # justamente quando a recepção já voltou a digitar.
+            "failed_messages": mensagens_para_reenviar(channel.clinic_id).count(),
         },
     )
 
@@ -243,12 +269,23 @@ def notify_conversation_updated_on_commit(conversation) -> None:
 
 
 def notify_message_status(
-    clinic_id: int, provider_message_id: str, status: str, conversation_id: int | None = None
+    clinic_id: int,
+    provider_message_id: str,
+    status: str,
+    conversation_id: int | None = None,
+    *,
+    message_id: int | None = None,
+    error: str = "",
 ) -> None:
     """
     Tique de entrega. `conversation_id` vai junto porque o cliente precisa
     saber QUAL thread atualizar - sem ele, a tela teria de procurar o wamid
     em todas as conversas abertas (ou recarregar por um tique).
+
+    `message_id` existe para o caso que o wamid NÃO cobre: a mensagem que
+    falhou no envio nunca chegou a ter wamid. Sem ele, o balão ficava eterno
+    em "enviando" e a recepção só descobria que não saiu porque o paciente
+    não respondeu — foi exatamente o que aconteceu na queda de 29/07.
     """
     _broadcast(
         clinic_id,
@@ -256,6 +293,8 @@ def notify_message_status(
             "event": "message:status",
             "conversation_id": conversation_id,
             "provider_message_id": provider_message_id,
+            "message_id": message_id,
             "status": status,
+            "error": error,
         },
     )

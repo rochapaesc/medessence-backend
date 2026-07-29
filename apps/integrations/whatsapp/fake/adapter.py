@@ -65,9 +65,24 @@ class FakeWhatsAppAdapter:
         return SendResult(provider_message_id=fake_wamid(), raw={"fake": True, "template": name})
 
     def send_media(
-        self, to: str, kind: str, url_or_id: str, caption: str | None = None
+        self,
+        to: str,
+        kind: str,
+        url_or_id: str,
+        caption: str | None = None,
+        *,
+        filename: str | None = None,
+        mime_type: str | None = None,
+        reply_to: str | None = None,
+        is_voice: bool = False,
     ) -> SendResult:
+        # O dublê aceita a MESMA assinatura do adapter real de propósito: um
+        # fake mais permissivo esconderia justamente o erro de parâmetro que
+        # só a Meta reprova (foi assim que o idioma do template passou).
         return SendResult(provider_message_id=fake_wamid(), raw={"fake": True, "kind": kind})
+
+    def send_reaction(self, to: str, provider_message_id: str, emoji: str) -> SendResult:
+        return SendResult(provider_message_id=fake_wamid(), raw={"fake": True, "emoji": emoji})
 
     def mark_read(self, provider_message_id: str) -> None:
         return None
@@ -75,6 +90,15 @@ class FakeWhatsAppAdapter:
     def download_media(self, media_id: str) -> DownloadedMedia:
         # FAKE não tem bytes reais - content vazio faz o fetch pular.
         return DownloadedMedia(content=b"", mime_type="image/jpeg")
+
+    def verify_credentials(self) -> dict:
+        # O dublê sempre aprova. Quem testa a RECUSA injeta um provedor que
+        # levanta — dublê que decide sozinho quando falhar esconde o caminho.
+        return {
+            "display_phone_number": "+55 85 99999-0000",
+            "verified_name": "Clínica de teste",
+            "quality_rating": "GREEN",
+        }
 
     def list_templates(self) -> list[Template]:
         return [

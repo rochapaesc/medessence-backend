@@ -156,6 +156,41 @@ def desenho_de_onda(caminho: str, *, barras: int = WAVEFORM_BARS) -> list[int]:
     return [max(2, round(pico * 100 / teto)) for pico in picos]
 
 
+def converter_para_opus(conteudo: bytes) -> bytes | None:
+    """
+    O áudio gravado no navegador no formato que a Meta aceita.
+
+    O Chrome só grava `audio/webm`, que a Cloud API recusa. O wacrm resolve
+    embarcando uma biblioteca de Opus no cliente; aqui converte-se no
+    servidor, onde o ffmpeg já está por causa do desenho de onda — uma
+    dependência a menos no front, e funciona igual em qualquer navegador.
+
+    `audio/ogg` com Opus é o formato da nota de voz do WhatsApp: assim o
+    balão chega no celular do paciente com onda e botão de play, e não como
+    anexo genérico. Devolve `None` quando não deu para converter, e aí quem
+    chama recusa o envio em vez de mandar um arquivo que a Meta rejeitaria.
+    """
+    with _arquivo(conteudo) as caminho:
+        return _run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                caminho,
+                "-ac",
+                "1",  # voz é mono; estéreo só dobraria o tamanho
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "32k",  # fala inteligível com arquivo pequeno
+                "-f",
+                "ogg",
+                "pipe:1",
+            ]
+        )
+
+
 def ler_metadados(conteudo: bytes, mime: str) -> tuple[int | None, list[int]]:
     """(duração_ms, onda) para o que for áudio ou vídeo; (None, []) no resto."""
     if mime.startswith("audio/"):

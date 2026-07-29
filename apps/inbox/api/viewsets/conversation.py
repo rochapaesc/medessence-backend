@@ -5,16 +5,24 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.core.api.viewsets import ClinicScopedReadOnlyViewSet
+from apps.core.health import saude_do_processamento
 from apps.core.mixins import AuditMixin
 from apps.inbox.api.filtersets import ConversationFilterset
 from apps.inbox.api.serializers import ConversationSerializer
 from apps.inbox.choices import ConversationPriority, ConversationStatus
-from apps.inbox.models import Conversation
+from apps.inbox.models import Conversation, Message
 
 # Teto do seletor de pessoas. Não é paginação: quem procura alguém fora do
 # teto usa a busca, que é o caminho desenhado para isso. Devolver a clínica
 # inteira faria uma tela de escolha carregar uma lista que ninguém lê.
 AGENTS_LIMIT = 30
+
+# Quanto o painel do contato mostra sem virar uma segunda tela. São tetos, não
+# paginação: quem quer o histórico completo abre a conversa antiga; quem quer
+# o arquivo antigo rola a thread. O painel é para reconhecer a pessoa rápido.
+ARQUIVOS_NO_PAINEL = 12
+ATENDIMENTOS_ANTERIORES = 5
+NOTAS_DO_ATENDIMENTO = 20
 
 
 class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
@@ -322,6 +330,170 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         PatientContact.objects.get_or_create(patient=patient, contact=conversation.contact)
         return Response(self.get_serializer(conversation).data)
 
+    @action(detail=True, methods=["post"], url_path="unlink-patient")
+    def unlink_patient(self, request, pk=None):
+        """
+        Desfaz o vínculo conversa↔paciente (RF-INB-7).
+
+        Vincular errado acontece — dois pacientes com o mesmo sobrenome, o
+        número do filho cadastrado na mãe. Sem desfazer, o engano fica na tela
+        para sempre e a recepção passa a desconfiar do vínculo inteiro.
+
+        Solta APENAS esta conversa. O `PatientContact` continua: ele é o
+        histórico de que este número já atendeu aquele paciente, e apagá-lo
+        junto destruiria o vínculo N:N do responsável familiar (RF-PAC-7) por
+        causa de um engano numa conversa.
+        """
+        conversation = self.get_object()
+        if conversation.patient_id is None:
+            raise ValidationError("Esta conversa não está vinculada a ninguém.")
+
+        conversation.patient = None
+        conversation.save(update_fields=["patient", "updated_at"])
+        return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["get"], url_path="contact-panel")
+    def contact_panel(self, request, pk=None):
+        """
+        Quem está do outro lado, em uma chamada só (Bloco C).
+
+        Numa requisição e não em cinco (o caminho do Chatwoot, que carrega por
+        acordeão) porque o painel abre inteiro: a recepção não pode esperar
+        cinco vezes para saber com quem está falando.
+        """
+        from apps.inbox.api.serializers.contact_panel import (
+            ContactNoteSerializer,
+            arquivo_payload,
+            atendimento_anterior_payload,
+            paciente_payload,
+        )
+        from apps.inbox.choices import ActivityType
+        from apps.patients.models import ContactNote, PatientContact
+
+        conversation = self.get_object()
+        contact = conversation.contact
+
+        # Um número pode atender vários pacientes (RF-PAC-7, responsável
+        # familiar). A recepção precisa ver isso: metade dos enganos de
+        # atendimento é responder sobre a pessoa errada da mesma casa.
+        vinculos = (
+            PatientContact.objects.filter(contact=contact)
+            .select_related("patient")
+            .order_by("-is_primary", "patient__name")
+        )
+        outros = [
+            paciente_payload(v.patient, is_primary=v.is_primary)
+            for v in vinculos
+            if v.patient_id != conversation.patient_id
+        ]
+
+        arquivos = (
+            Message.objects.filter(conversation=conversation, media__isnull=False)
+            .select_related("media")
+            .order_by("-wa_timestamp", "-id")[:ARQUIVOS_NO_PAINEL]
+        )
+
+        # Atendimentos encerrados, não "conversas anteriores": a conversa é
+        # única por contato aqui, então o que tem histórico é o EVENTO de
+        # encerramento na linha do tempo.
+        anteriores = (
+            Message.objects.filter(
+                conversation__contact=contact, activity_type=ActivityType.RESOLVED
+            )
+            .select_related("sent_by")
+            .order_by("-wa_timestamp")[:ATENDIMENTOS_ANTERIORES]
+        )
+
+        # As notas escritas NO CHAT (RF-ATD-3) também entram no painel — o
+        # usuário procurou por elas aqui. São coisas diferentes da nota do
+        # contato e continuam separadas: a do atendimento morre com ele, a do
+        # contato acompanha a pessoa. Juntar as duas numa lista só apagaria
+        # essa diferença, que é o que dá sentido às duas.
+        notas_do_chat = (
+            Message.objects.filter(conversation=conversation, is_internal=True)
+            .select_related("sent_by")
+            .order_by("-wa_timestamp")[:NOTAS_DO_ATENDIMENTO]
+        )
+
+        return Response(
+            {
+                "contact": {
+                    "id": contact.pk,
+                    "wa_id": contact.wa_id,
+                    "display_name": contact.display_name,
+                },
+                "patient": paciente_payload(conversation.patient),
+                "other_patients": outros,
+                "notes": ContactNoteSerializer(
+                    ContactNote.objects.filter(contact=contact).select_related("author"),
+                    many=True,
+                ).data,
+                "conversation_notes": [
+                    {
+                        "id": n.pk,
+                        "body": n.body,
+                        "author_name": (
+                            (n.sent_by.get_full_name() or n.sent_by.email)
+                            if n.sent_by_id
+                            else ""
+                        ),
+                        "at": n.wa_timestamp,
+                        "edited": n.edited_at is not None,
+                    }
+                    for n in notas_do_chat
+                ],
+                "files": [arquivo_payload(m, request) for m in arquivos],
+                "previous_services": [
+                    atendimento_anterior_payload(e) for e in anteriores
+                ],
+            }
+        )
+
+    @action(detail=False, methods=["post"], url_path="check-channel")
+    def check_channel(self, request):
+        """
+        "Já reconectei — verificar": sonda a Meta e cura o canal se der certo.
+
+        É a PORTA DE SAÍDA do canal desconectado, e ela precisa existir porque
+        o resto se fecha: o canal só se cura com uma chamada bem-sucedida, mas
+        com ele caído o envio e o reenvio ficam bloqueados. Sem uma sonda que
+        não seja envio, trocar o token não adiantava — o sistema recusava tudo
+        para sempre esperando um sucesso que ele mesmo impedia.
+
+        A sonda NÃO manda mensagem para ninguém: pergunta os dados do número.
+        """
+        from apps.inbox.models import Channel
+        from apps.inbox.services import registrar_saude_do_canal
+        from apps.integrations.whatsapp.exceptions import WhatsAppError
+        from apps.integrations.whatsapp.registry import get_whatsapp_provider
+
+        canal = Channel.objects.filter(clinic=self.clinic).first()
+        if canal is None:
+            raise ValidationError("Esta clínica não tem canal de WhatsApp configurado.")
+
+        try:
+            dados = get_whatsapp_provider(canal).verify_credentials()
+        except WhatsAppError as exc:
+            # Continua recusada: conta como falha (o canal já está no chão, e
+            # não tem como cair duas vezes) e devolve o motivo REAL da Meta —
+            # é ele que diz se o problema é token, número ou permissão.
+            registrar_saude_do_canal(canal, erro=exc)
+            canal.refresh_from_db()
+            return Response(
+                {"ok": False, "detail": str(exc), "channel": self._saude_do_canal()}
+            )
+        except Exception as exc:  # rede, id inexistente, resposta inesperada
+            return Response(
+                {
+                    "ok": False,
+                    "detail": f"Não consegui falar com a Meta: {exc}",
+                    "channel": self._saude_do_canal(),
+                }
+            )
+
+        registrar_saude_do_canal(canal)
+        return Response({"ok": True, "info": dados, "channel": self._saude_do_canal()})
+
     @action(detail=False, methods=["get"], url_path="counters")
     def counters(self, request):
         """Contadores do inbox (RNF-5) - endpoint dedicado."""
@@ -341,20 +513,36 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
                 # mudança, e quem abre o Inbox com o canal já morto ficaria
                 # sem aviso nenhum.
                 "channel": self._saude_do_canal(),
+                # Saúde do PROCESSAMENTO. Sem isto, worker parado é invisível
+                # até o paciente reclamar — e aí já virou bola de neve.
+                "processing": saude_do_processamento(),
             }
         )
 
     def _saude_do_canal(self) -> dict:
         from apps.inbox.models import Channel
+        from apps.inbox.services import mensagens_para_reenviar
+
+        # Quantas ficaram presas. Vai junto com a saúde porque é a mesma
+        # faixa que mostra as duas coisas: caída avisa o problema, reconectada
+        # oferece o conserto ("3 mensagens não saíram. Reenviar?").
+        presas = mensagens_para_reenviar(self.clinic).count()
 
         canal = Channel.objects.filter(clinic=self.clinic).first()
         if canal is None:
-            return {"configured": False, "disconnected": False, "reason": "", "display_number": ""}
+            return {
+                "configured": False,
+                "disconnected": False,
+                "reason": "",
+                "display_number": "",
+                "failed_messages": presas,
+            }
         return {
             "configured": True,
             "disconnected": canal.disconnected,
             "reason": canal.disconnect_reason,
             "display_number": canal.display_number,
+            "failed_messages": presas,
         }
 
     def _resolve_clinic_user(self, user_id):

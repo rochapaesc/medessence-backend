@@ -1,7 +1,13 @@
 from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.mixins import CreateModelMixin, ListModelMixin, RetrieveModelMixin
+from rest_framework.mixins import (
+    CreateModelMixin,
+    DestroyModelMixin,
+    ListModelMixin,
+    RetrieveModelMixin,
+    UpdateModelMixin,
+)
 from rest_framework.response import Response
 from rest_framework.status import HTTP_201_CREATED
 
@@ -9,9 +15,13 @@ from apps.core.api.viewsets import ClinicScopedMixin
 from apps.core.api.viewsets.base import BaseGenericViewSet
 from apps.core.mixins import AuditMixin
 from apps.inbox.api.filtersets import MessageFilterset
-from apps.inbox.api.serializers import MessageCreateSerializer, MessageSerializer
+from apps.inbox.api.serializers import (
+    MessageCreateSerializer,
+    MessageEditSerializer,
+    MessageSerializer,
+)
 from apps.inbox.api.serializers.message import media_payload
-from apps.inbox.choices import SenderKind
+from apps.inbox.choices import MessageStatus, SenderKind
 from apps.inbox.models import Message
 
 
@@ -21,6 +31,8 @@ class MessageViewSet(
     CreateModelMixin,
     ListModelMixin,
     RetrieveModelMixin,
+    UpdateModelMixin,
+    DestroyModelMixin,
     BaseGenericViewSet,
 ):
     """
@@ -40,6 +52,8 @@ class MessageViewSet(
 
     action_serializer_classes = {
         "create": MessageCreateSerializer,
+        "update": MessageEditSerializer,
+        "partial_update": MessageEditSerializer,
     }
 
     def get_queryset(self):
@@ -95,6 +109,103 @@ class MessageViewSet(
         fetch_media_asset.delay(media.pk)
         return Response(media_payload(media, request))
 
+    @action(detail=True, methods=["post"], url_path="react")
+    def react(self, request, pk=None):
+        """
+        Cola (ou tira, com emoji vazio) o selo da EQUIPE numa mensagem.
+
+        A tabela já guardava reação de atendente desde a fatia 4 — só não havia
+        por onde criar uma. Sem isto a recepção recebia 👍 do paciente e não
+        tinha como devolver, o que no WhatsApp é a resposta mais barata que
+        existe para "recebi, obrigada".
+        """
+        from apps.inbox.services import reagir
+
+        message = self.get_object()
+        self._assert_can_write(message.conversation)
+        emoji = (request.data.get("emoji") or "").strip()
+        if len(emoji) > 16:
+            raise ValidationError("Reação inválida.")
+        if not message.provider_message_id:
+            raise ValidationError(
+                "Esta mensagem ainda não chegou ao WhatsApp — não dá para reagir."
+            )
+
+        reagir(message, request.user, emoji)
+
+        message.refresh_from_db()
+        serializer = MessageSerializer(message, context=self.get_serializer_context())
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="resend")
+    def resend(self, request, pk=None):
+        """
+        Reenvia UMA mensagem que falhou (o botão no balão vermelho).
+
+        É o padrão do Chatwoot (`MessageError.vue`): quem decide reenviar é
+        quem atende. Uma mensagem presa meia hora pode ter virado assunto
+        vencido — reenviar sozinho ao reconectar mandaria para o paciente algo
+        que não faz mais sentido.
+        """
+        from apps.inbox.services import reenviar
+
+        message = self.get_object()
+        self._assert_can_write(message.conversation)
+        self._assert_canal_no_ar()
+
+        if message.status != MessageStatus.FAILED or message.is_internal:
+            raise ValidationError("Esta mensagem não está aguardando reenvio.")
+        if not reenviar(message):
+            raise ValidationError(
+                "A janela de 24h desta conversa fechou. Agora só por template aprovado."
+            )
+
+        message.refresh_from_db()
+        serializer = MessageSerializer(message, context=self.get_serializer_context())
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["post"], url_path="resend-failed")
+    def resend_failed(self, request):
+        """
+        Reenvia tudo o que ficou preso na queda (o botão da faixa verde).
+
+        Devolve o que aconteceu com cada grupo em vez de um "pronto" mudo: se
+        3 falharam e só 2 saem, a recepção tem de saber que 1 continua parada
+        — faixa que some calada é como se perde a confiança nela.
+        """
+        from apps.inbox.services import mensagens_para_reenviar, reenviar
+
+        self._assert_canal_no_ar()
+
+        reenviadas, fora_da_janela = 0, 0
+        # Da mais ANTIGA para a mais nova: cada reenvio carimba o horário de
+        # agora, então processar fora de ordem inverteria a conversa — o
+        # paciente receberia a resposta antes da pergunta.
+        presas = (
+            mensagens_para_reenviar(self.clinic)
+            .select_related("conversation")
+            .order_by("wa_timestamp", "id")
+        )
+        for message in presas:
+            if reenviar(message):
+                reenviadas += 1
+            else:
+                fora_da_janela += 1
+        return Response({"reenviadas": reenviadas, "fora_da_janela": fora_da_janela})
+
+    def _assert_canal_no_ar(self):
+        """
+        Reenviar para um canal morto só produz a mesma falha, agora com a
+        recepção achando que resolveu.
+        """
+        from apps.inbox.models import Channel
+
+        canal = Channel.objects.filter(clinic=self.clinic).first()
+        if canal is not None and canal.disconnected:
+            raise ValidationError(
+                "O WhatsApp ainda está desconectado. Reenvie quando a conexão voltar."
+            )
+
     def create(self, request, *args, **kwargs):
         """
         Responde com o serializer de LEITURA, não o de escrita.
@@ -126,6 +237,81 @@ class MessageViewSet(
             headers=self.get_success_headers(read.data),
         )
 
+    # ------------------------- editar e excluir ------------------------- #
+
+    def perform_update(self, serializer):
+        """
+        Reescreve a NOTA INTERNA — e só ela.
+
+        Mensagem enviada fica intocada, e não é limitação nossa: a Cloud API
+        não edita mensagem entregue. O paciente já leu o original; mudar o
+        texto aqui faria a thread contar uma história que o celular dele
+        desmente. Nenhum dos três repositórios de referência edita mensagem.
+        """
+        self._assert_pode_mexer(serializer.instance, acao="editar")
+        if not serializer.instance.is_internal:
+            raise ValidationError(
+                "Só nota da equipe pode ser editada. Mensagem já enviada o "
+                "paciente recebeu — para corrigir, mande outra."
+            )
+        super().perform_update(serializer)  # AuditMixin guarda o antes/depois
+        serializer.instance.edited_at = timezone.now()
+        serializer.instance.save(update_fields=["edited_at", "updated_at"])
+
+        from apps.inbox.realtime import notify_conversation_updated_on_commit
+
+        notify_conversation_updated_on_commit(serializer.instance.conversation)
+
+    def perform_destroy(self, instance):
+        """
+        Apaga o que NUNCA CHEGOU ao paciente: nota da equipe e mensagem que
+        falhou.
+
+        Mensagem entregue não some daqui porque não some de lá — a Cloud API
+        não revoga. Deixar apagar daria a falsa sensação de que sumiu dos dois
+        lados, que é pior do que não ter o botão.
+
+        É soft delete: a linha fica, a auditoria registra quem apagou. "Fica o
+        registro para o sistema" é requisito, não detalhe de implementação.
+        """
+        self._assert_pode_mexer(instance, acao="excluir")
+        entregue = bool(instance.provider_message_id) and not instance.is_internal
+        if entregue:
+            raise ValidationError(
+                "Esta mensagem já foi entregue ao paciente e não pode ser "
+                "apagada — o WhatsApp dele continuaria mostrando."
+            )
+        conversation = instance.conversation
+        super().perform_destroy(instance)  # AuditMixin registra o DELETE
+
+        # A prévia da fila pode ser a mensagem que acabou de sumir.
+        from apps.inbox.realtime import notify_conversation_updated_on_commit
+        from apps.inbox.services import recalcular_ultima_mensagem
+
+        recalcular_ultima_mensagem(conversation)
+        notify_conversation_updated_on_commit(conversation)
+
+    def _assert_pode_mexer(self, message, *, acao: str):
+        """
+        Mexe quem escreveu, ou o gestor.
+
+        Nota de colega não é para outro atendente reescrever: ela é registro do
+        que AQUELA pessoa soube. O gestor entra porque alguém precisa poder
+        limpar o que foi escrito errado quando quem escreveu não está mais.
+        """
+        if message.activity_type:
+            raise ValidationError("Evento da linha do tempo não pode ser alterado.")
+        self._assert_can_write(message.conversation)
+
+        from apps.accounts.choices import MembershipRole
+
+        eh_autor = message.sent_by_id == self.request.user.pk
+        eh_gestor = self.membership.role == MembershipRole.MANAGER
+        if not (eh_autor or eh_gestor):
+            raise PermissionDenied(
+                f"Só quem escreveu (ou um gestor) pode {acao} esta mensagem."
+            )
+
     def _assert_can_write(self, conversation):
         """
         Recusa quem não tem a caneta, com erro que a tela sabe traduzir em
@@ -148,6 +334,13 @@ class MessageViewSet(
     def perform_create(self, serializer):
         super().perform_create(serializer)  # AuditMixin → ClinicScoped → save
         message = serializer.instance
+
+        # Assina ANTES de qualquer coisa: a prévia da fila, o evento de tempo
+        # real e a task de envio precisam ver o texto final. Assinar depois
+        # deixaria os três com a versão sem nome.
+        from apps.inbox.services import assinar_mensagem
+
+        assinar_mensagem(message, self.request.user)
 
         # Escrever em conversa livre é o ato que a assume (RF-ATD-14) — senão
         # a recepção daria dois cliques para responder a primeira do dia.

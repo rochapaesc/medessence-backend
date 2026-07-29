@@ -1,4 +1,13 @@
-from django.db.models import CASCADE, BooleanField, CharField, ForeignKey, Q, UniqueConstraint
+from django.db.models import (
+    CASCADE,
+    SET_NULL,
+    BooleanField,
+    CharField,
+    ForeignKey,
+    Q,
+    TextField,
+    UniqueConstraint,
+)
 
 from apps.core.models import BaseModel, TenantScopedModel
 
@@ -67,3 +76,41 @@ class PatientContact(BaseModel):
 
     def __str__(self):
         return f"{self.contact} → {self.patient}"
+
+
+class ContactNote(TenantScopedModel):
+    """
+    Anotação sobre a PESSOA do outro lado do número — não sobre o atendimento.
+
+    Diferente da nota interna da conversa (RF-ATD-3), que morre junto com o
+    atendimento encerrado. "Prefere ser chamada de Malu", "o filho João agenda
+    por ela", "não atende antes das 10h" precisa sobreviver ao encerramento e
+    aparecer na próxima vez que este número escrever. É a nota do contato do
+    Chatwoot (`ContactNotes`) e do wacrm (`contact_notes`).
+
+    Não é dado clínico: mora no contato, não no prontuário.
+    """
+
+    contact = ForeignKey(
+        Contact,
+        verbose_name="Contato",
+        on_delete=CASCADE,
+        related_name="notes",
+    )
+    author = ForeignKey(
+        "accounts.User",
+        verbose_name="Autor",
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contact_notes",
+    )
+    body = TextField(verbose_name="Anotação")
+
+    class Meta:
+        verbose_name = "Nota do contato"
+        verbose_name_plural = "Notas do contato"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.contact}: {self.body[:40]}"

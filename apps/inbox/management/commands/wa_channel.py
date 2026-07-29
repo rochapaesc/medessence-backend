@@ -158,19 +158,19 @@ class Command(BaseCommand):
 
         provider = get_whatsapp_provider(channel)
         try:
-            # `phone_id` é keyword-only no PyWa (assinatura com `*`).
-            numero = provider._wa.get_business_phone_number(
-                phone_id=channel.phone_number_id
-            )
+            # A MESMA sonda que a tela usa no "Já reconectei — verificar". Este
+            # comando furava para o `_wa` do PyWa; agora as duas portas de
+            # saída passam pelo mesmo lugar, e uma não pode divergir da outra.
+            numero = provider.verify_credentials()
         except WhatsAppError as exc:
             raise CommandError(f"A Meta recusou as credenciais: {exc}") from exc
         except Exception as exc:  # rede, id inexistente, resposta inesperada
             raise CommandError(f"Não consegui falar com a Meta: {exc}") from exc
 
         self.stdout.write(self.style.SUCCESS("Credenciais VÁLIDAS na Meta."))
-        self.stdout.write(f"  Número .......... {getattr(numero, 'display_phone_number', '—')}")
-        self.stdout.write(f"  Nome verificado . {getattr(numero, 'verified_name', '—')}")
-        self.stdout.write(f"  Qualidade ....... {getattr(numero, 'quality_rating', '—')}")
+        self.stdout.write(f"  Número .......... {numero.get('display_phone_number') or '—'}")
+        self.stdout.write(f"  Nome verificado . {numero.get('verified_name') or '—'}")
+        self.stdout.write(f"  Qualidade ....... {numero.get('quality_rating') or '—'}")
 
         try:
             templates = provider.list_templates()

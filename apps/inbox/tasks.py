@@ -232,6 +232,45 @@ def mark_whatsapp_read(conversation_id: int):
     return {"conversation_id": conversation_id, "wamid": last_inbound.provider_message_id}
 
 
+@shared_task(
+    queue="outbound",
+    autoretry_for=(WhatsAppRateLimitedError, WhatsAppUnavailableError),
+    retry_backoff=30,
+    max_retries=3,
+)
+def send_whatsapp_reaction(message_id: int, emoji: str):
+    """
+    Leva o selo da equipe para o WhatsApp do paciente.
+
+    Em task e não no request porque o selo já apareceu na tela pelo evento de
+    tempo real: fazer a recepção esperar a Meta para ver o próprio 👍 seria
+    lento à toa. Se a Meta recusar, o selo continua nosso e a mensagem de erro
+    não vale interromper quem atende — é reação, não resposta.
+    """
+    from apps.inbox.models import Message
+    from apps.integrations.whatsapp.exceptions import WhatsAppError
+    from apps.integrations.whatsapp.registry import get_whatsapp_provider
+
+    message = (
+        Message.objects.filter(pk=message_id)
+        .select_related("conversation__channel", "conversation__contact")
+        .first()
+    )
+    if message is None or not message.provider_message_id:
+        return "skipped: mensagem sem wamid"
+
+    conversation = message.conversation
+    provider = get_whatsapp_provider(conversation.channel)
+    try:
+        provider.send_reaction(
+            conversation.contact.wa_id, message.provider_message_id, emoji
+        )
+    except WhatsAppError as exc:
+        logger.warning("reação recusada pela Meta: %s", exc)
+        return "falhou"
+    return {"message_id": message_id, "emoji": emoji}
+
+
 @shared_task(queue="sync")
 def refresh_wa_templates():
     """Beat (6h): fan-out do refresh de templates por canal."""

@@ -167,3 +167,98 @@ def test_verificacao_do_canal(inbox_a):
     canal = Channel.objects.get(pk=inbox_a["channel"].pk)
 
     assert canal.disconnected is False
+
+
+def test_counters_entrega_a_saude_do_processamento(api_client, manager_single_clinic, inbox_a):
+    """
+    A tela precisa saber do PROCESSAMENTO já na primeira carga.
+
+    Worker parado é invisível até o paciente reclamar — e aí já virou bola de
+    neve. Vem junto da saúde do canal porque é a mesma faixa que mostra as
+    duas coisas.
+    """
+    from apps.core.health import registrar_batimento
+
+    registrar_batimento()
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.get("/api/v1/conversations/counters/")
+
+    assert resposta.status_code == 200
+    assert resposta.data["processing"]["alive"] is True
+    assert "queued" in resposta.data["processing"]
+
+
+# ─────────────── porta de saída do canal desconectado ─────────────── #
+
+
+def _derruba(canal, motivo="Credencial expirada"):
+    from django.utils import timezone
+
+    canal.disconnected_at = timezone.now()
+    canal.disconnect_reason = motivo
+    canal.auth_error_count = 2
+    canal.save(update_fields=["disconnected_at", "disconnect_reason", "auth_error_count"])
+
+
+def test_verificar_cura_o_canal_quando_a_credencial_volta(
+    api_client, manager_single_clinic, inbox_a
+):
+    """
+    A porta de saída do impasse.
+
+    O canal só se cura com uma chamada bem-sucedida, mas com ele caído o envio
+    e o reenvio ficam bloqueados. Sem uma sonda que NÃO seja envio, trocar o
+    token não adiantava — o sistema recusava tudo para sempre esperando um
+    sucesso que ele mesmo impedia de acontecer. (Achado ao vivo em 29/07.)
+    """
+    canal = inbox_a["channel"]
+    _derruba(canal)
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.post("/api/v1/conversations/check-channel/")
+
+    assert resposta.status_code == 200
+    assert resposta.data["ok"] is True
+    canal.refresh_from_db()
+    assert canal.disconnected is False
+    assert canal.auth_error_count == 0
+    # A tela recebe a saúde NOVA na mesma resposta: a faixa some sem F5.
+    assert resposta.data["channel"]["disconnected"] is False
+
+
+def test_verificar_com_credencial_ainda_recusada_devolve_o_motivo_da_meta(
+    api_client, manager_single_clinic, inbox_a, monkeypatch
+):
+    """Frase genérica mandaria a recepção adivinhar; o motivo da Meta diz se o
+    problema é token, número ou permissão."""
+    from apps.integrations.whatsapp.exceptions import WhatsAppAuthError
+
+    class _Recusado:
+        def verify_credentials(self):
+            raise WhatsAppAuthError("Session has expired on 29-Jul-26 06:00 PDT")
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider", lambda c: _Recusado()
+    )
+    canal = inbox_a["channel"]
+    _derruba(canal)
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.post("/api/v1/conversations/check-channel/")
+
+    assert resposta.data["ok"] is False
+    assert "Session has expired" in resposta.data["detail"]
+    canal.refresh_from_db()
+    assert canal.disconnected is True
+
+
+def test_verificar_sem_canal_configurado_explica(
+    api_client, manager_single_clinic, clinic_a
+):
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.post("/api/v1/conversations/check-channel/")
+
+    assert resposta.status_code == 400
+    assert "não tem canal" in str(resposta.data)
