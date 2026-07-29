@@ -6,7 +6,7 @@ Contrato de eventos (servidor → cliente):
     message:new          · conversation_id, message{mínimo}
     message:status       · provider_message_id, status
     conversation:updated · conversation_id, unread_count, preview, status,
-                           attended_by, assigned_to_name
+                           attended_by, assigned_to, assigned_to_name
 """
 
 import logging
@@ -97,6 +97,14 @@ def notify_conversation_updated(conversation) -> None:
             "conversation_id": conversation.pk,
             "unread_count": conversation.unread_count,
             "preview": conversation.last_message_preview,
+            # A ORDEM da fila é recência dentro da prioridade: sem a data real,
+            # o cliente usava o relógio local e a ordenação divergia do
+            # servidor a cada evento.
+            "last_message_at": (
+                conversation.last_message_at.isoformat()
+                if conversation.last_message_at
+                else None
+            ),
             "status": conversation.status,
             "attended_by": conversation.attended_by,
             "priority": conversation.priority,
@@ -106,6 +114,11 @@ def notify_conversation_updated(conversation) -> None:
             "waiting_since": (
                 conversation.waiting_since.isoformat() if conversation.waiting_since else None
             ),
+            # Nome E id: o nome é para exibir ("Fulana está atendendo"), o id é
+            # para o cliente decidir se o "agent" sou EU — sem ele, quem acabou
+            # de assumir pelo próprio envio via a tela travar com o próprio
+            # nome no banner (aconteceu ao vivo em 28/07).
+            "assigned_to": conversation.assigned_to_id,
             "assigned_to_name": (
                 conversation.assigned_to.get_full_name() if conversation.assigned_to_id else ""
             ),
@@ -116,6 +129,14 @@ def notify_conversation_updated(conversation) -> None:
             # avisa, o REST confirma.
         },
     )
+
+
+def notify_conversation_updated_on_commit(conversation) -> None:
+    """Como o `notify_message_new_on_commit`: quem cria mensagem dentro de
+    transação emite só depois do commit."""
+    from django.db import transaction
+
+    transaction.on_commit(lambda: notify_conversation_updated(conversation))
 
 
 def notify_message_status(

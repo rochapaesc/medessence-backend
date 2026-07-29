@@ -28,6 +28,26 @@ def _receive(layer, channel_name):
     return async_to_sync(layer.receive)(channel_name)
 
 
+def _drain(layer, channel_name, limit=6):
+    """Recebe o que houver SEM bloquear: `layer.receive` espera para sempre,
+    e um teste que espera para sempre não falha - trava."""
+    import asyncio
+
+    async def um():
+        try:
+            return await asyncio.wait_for(layer.receive(channel_name), timeout=0.3)
+        except asyncio.TimeoutError:
+            return None
+
+    eventos = []
+    for _ in range(limit):
+        recebido = async_to_sync(um)()
+        if recebido is None:
+            break
+        eventos.append(recebido["data"])
+    return eventos
+
+
 def test_inbound_emite_message_new_e_conversation_updated(clinic_a, inbox_a):
     layer, channel_name = _subscribe(clinic_a.id)
     payload = build_inbound_payload(wa_id="5585900000010", body="chegou")
@@ -130,3 +150,76 @@ def test_ws_auth_sem_token_recusa(clinic_a):
 # porque o async_to_sync conflita com o teardown de conexões do pytest-django
 # (exigiria pytest-asyncio + gestão async de DB). A lógica de grupo/contrato e
 # o gate de auth já são cobertos pelos testes acima.
+
+
+def test_consumer_diz_hello_e_responde_ping(manager_single_clinic, clinic_a):
+    """
+    O "hello" é o sinal de vida: o handshake do WebSocket no navegador é
+    preguiçoso, e sem um primeiro frame o cliente marcava online no otimismo -
+    era isso que fazia a tela piscar online/offline. O pong é o watchdog:
+    queda silenciosa não fecha socket, então o cliente pinga e espera resposta.
+
+    `ApplicationCommunicator` do asgiref, e não `channels.testing`: o __init__
+    de channels.testing importa o daphne, que não instalamos (ASGI = uvicorn).
+    """
+    import json
+
+    from asgiref.testing import ApplicationCommunicator
+
+    from apps.accounts.models import Membership
+    from apps.inbox.consumers import InboxConsumer
+
+    membership = Membership.objects.get(user=manager_single_clinic, clinic=clinic_a)
+
+    async def cenario():
+        comm = ApplicationCommunicator(
+            InboxConsumer.as_asgi(),
+            {"type": "websocket", "path": "/ws/inbox/", "headers": [], "membership": membership},
+        )
+        await comm.send_input({"type": "websocket.connect"})
+        aceito = await comm.receive_output(1)
+        assert aceito["type"] == "websocket.accept"
+
+        hello = json.loads((await comm.receive_output(1))["text"])
+        assert hello == {"event": "hello"}
+
+        await comm.send_input({"type": "websocket.receive", "text": '{"event": "ping"}'})
+        pong = json.loads((await comm.receive_output(1))["text"])
+        assert pong == {"event": "pong"}
+
+        await comm.send_input({"type": "websocket.disconnect", "code": 1000})
+        await comm.wait(1)
+
+    async_to_sync(cenario)()
+
+
+def test_envio_do_atendente_emite_conversation_updated(
+    api_client, manager_single_clinic, inbox_a, django_capture_on_commit_callbacks
+):
+    """Antes, só o INBOUND emitia conversation:updated: a mensagem enviada não
+    subia a conversa na fila de ninguém — achado do usuário em 28/07."""
+    api_client.force_authenticate(manager_single_clinic)
+    conversation = inbox_a["conversation"]
+    # Inbound antes: sem ele a janela de 24h está fechada e o texto livre
+    # leva 400 - o teste quer o caminho do envio, não o da janela.
+    make_message(conversation, sender_kind=SenderKind.CONTACT)
+    layer, channel_name = _subscribe(conversation.clinic_id)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        resposta = api_client.post(
+            "/api/v1/messages/",
+            {"conversation": conversation.pk, "body": "subiu?"},
+            format="json",
+        )
+    assert resposta.status_code == 201
+
+    eventos = _drain(layer, channel_name)
+    atualizacoes = [e for e in eventos if e["event"] == "conversation:updated"]
+    assert atualizacoes, f"nenhum conversation:updated em {[e['event'] for e in eventos]}"
+    assert atualizacoes[-1]["preview"] == "subiu?"
+    # A data REAL vai no evento: sem ela o cliente ordenava pelo relógio local.
+    assert atualizacoes[-1]["last_message_at"]
+    # A posse viaja COMPLETA: escrever assume (RF-ATD-14), e o cliente decide
+    # "sou eu?" pelo id — só o nome fazia quem enviou ver a própria tela travar.
+    assert atualizacoes[-1]["attended_by"] == "agent"
+    assert atualizacoes[-1]["assigned_to"] == manager_single_clinic.pk

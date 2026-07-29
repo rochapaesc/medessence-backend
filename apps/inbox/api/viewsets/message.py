@@ -103,6 +103,14 @@ class MessageViewSet(
         if not message.is_internal:
             self._claim_if_free(message.conversation)
 
+        # A fila de TODO MUNDO reordena e ganha a prévia nova quando o
+        # atendente escreve - antes, só o inbound emitia conversation:updated
+        # e a mensagem enviada não subia a conversa na lista de ninguém.
+        # Vale também para a nota interna: ela vira prévia.
+        from apps.inbox.realtime import notify_conversation_updated_on_commit
+
+        notify_conversation_updated_on_commit(message.conversation)
+
         # Nota interna nunca vai para o provedor (RF-ATD-3).
         if message.is_internal:
             return
