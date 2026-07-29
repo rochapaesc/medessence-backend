@@ -1,3 +1,5 @@
+from rest_framework.exceptions import PermissionDenied
+
 from apps.core.api.viewsets.base import BaseModelViewSet
 from apps.core.api.viewsets.scoped import ClinicScopedMixin
 from apps.core.mixins import AuditMixin
@@ -30,6 +32,28 @@ class ContactNoteViewSet(AuditMixin, ClinicScopedMixin, BaseModelViewSet):
         return {"clinic": self.clinic, "author": self.request.user}
 
     def perform_update(self, serializer):
+        self._assert_pode_mexer(serializer.instance, acao="editar")
         # O AUTOR não muda na edição: a assinatura diz quem registrou aquilo,
         # e trocá-la para quem corrigiu apagaria de quem era a informação.
         super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        self._assert_pode_mexer(instance, acao="excluir")
+        super().perform_destroy(instance)
+
+    def _assert_pode_mexer(self, nota, *, acao: str):
+        """
+        Mexe quem escreveu, ou o gestor — a MESMA regra das mensagens.
+
+        A barreira vive no SERVIDOR: o front mostra o lápis para todo mundo e
+        traduz o 403 em aviso, então sem esta guarda qualquer colega
+        reescreveria o registro do outro por um PATCH direto.
+        """
+        from apps.accounts.choices import MembershipRole
+
+        eh_autor = nota.author_id == self.request.user.pk
+        eh_gestor = self.membership.role == MembershipRole.MANAGER
+        if not (eh_autor or eh_gestor):
+            raise PermissionDenied(
+                f"Só quem escreveu (ou um gestor) pode {acao} esta nota."
+            )

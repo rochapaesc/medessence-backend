@@ -170,6 +170,74 @@ def test_notas_sao_escopadas_por_clinica(logado, inbox_a, inbox_b, clinic_b):
     assert all("outra clínica" not in n["body"] for n in resposta.data["results"])
 
 
+@pytest.fixture
+def colega_atendente(db, clinic_a):
+    from apps.accounts.choices import MembershipRole
+    from apps.accounts.models import Membership
+    from conftest import make_user
+
+    user = make_user("colega.notas@teste.dev")
+    Membership.objects.create(user=user, clinic=clinic_a, role=MembershipRole.ATTENDANT)
+    return user
+
+
+def test_nota_de_colega_nao_pode_ser_editada_nem_apagada(
+    api_client, colega_atendente, inbox_a, manager_single_clinic
+):
+    """
+    A MESMA regra das mensagens, no servidor: mexe quem escreveu, ou o gestor.
+
+    O front mostra o lápis para todo mundo e traduz o 403 em aviso — sem a
+    barreira aqui, qualquer colega reescreveria o registro do outro por um
+    PATCH direto, e a assinatura da nota viraria mentira.
+    """
+    nota = ContactNote.objects.create(
+        clinic=inbox_a["conversation"].clinic,
+        contact=inbox_a["contact"],
+        author=manager_single_clinic,
+        body="Prefere ser chamada de Malu.",
+    )
+    api_client.force_authenticate(colega_atendente)
+
+    editada = api_client.patch(
+        f"{NOTES}{nota.pk}/", {"body": "reescrita"}, format="json"
+    )
+    apagada = api_client.delete(f"{NOTES}{nota.pk}/")
+
+    assert editada.status_code == 403
+    assert apagada.status_code == 403
+    nota.refresh_from_db()
+    assert nota.body == "Prefere ser chamada de Malu."
+
+
+def test_autor_edita_e_gestor_apaga_nota_de_outro(
+    api_client, colega_atendente, inbox_a, manager_single_clinic
+):
+    """O gestor entra porque alguém precisa poder limpar o que foi escrito
+    errado quando quem escreveu não está mais."""
+    nota = ContactNote.objects.create(
+        clinic=inbox_a["conversation"].clinic,
+        contact=inbox_a["contact"],
+        author=colega_atendente,
+        body="Filho João agenda por ela.",
+    )
+
+    api_client.force_authenticate(colega_atendente)
+    editada = api_client.patch(
+        f"{NOTES}{nota.pk}/", {"body": "Filho João agenda por ela (WhatsApp)."},
+        format="json",
+    )
+    assert editada.status_code == 200
+    nota.refresh_from_db()
+    # A correção não rouba a autoria: a assinatura diz quem SOUBE, não quem
+    # digitou por último.
+    assert nota.author == colega_atendente
+
+    api_client.force_authenticate(manager_single_clinic)
+    apagada = api_client.delete(f"{NOTES}{nota.pk}/")
+    assert apagada.status_code == 204
+
+
 # ──────────────────────────── citação e reação ────────────────────────────
 
 
