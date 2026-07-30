@@ -410,3 +410,130 @@ def test_painel_traz_as_notas_escritas_NO_CHAT(logado, inbox_a, manager_single_c
     assert notas[0]["author_name"]
     # E continua separado das notas DO CONTATO.
     assert resposta.data["notes"] == []
+
+
+# ───────────── Quem usa este número (RF-PAC-7.1) ─────────────
+
+
+@pytest.fixture
+def familia(inbox_a):
+    """Mãe principal do número, conversa vinculada ao FILHO — o caso em que o
+    selo de principal mentia."""
+    from apps.patients.vinculos import vincular
+
+    clinic = inbox_a["conversation"].clinic
+    contato = inbox_a["contact"]
+    mae = Patient.objects.create(clinic=clinic, name="Maria Silva")
+    filho = Patient.objects.create(clinic=clinic, name="João Silva")
+    vincular(mae, contato)  # primeiro do número: principal
+    vincular(filho, contato)
+    conversa = inbox_a["conversation"]
+    conversa.patient = filho
+    conversa.save(update_fields=["patient"])
+    return {"mae": mae, "filho": filho, "conversa": conversa, "contato": contato}
+
+
+def test_selo_de_principal_vem_do_BANCO_nao_do_default(logado, familia):
+    """
+    O paciente da conversa saía com `is_primary` FIXO em true, então o filho
+    aparecia como principal quando a principal era a mãe — e é essa flag que a
+    seção e o diálogo "para quem é" usam para o selo.
+    """
+    resposta = _painel(logado, familia["conversa"])
+
+    assert resposta.data["patient"]["name"] == "João Silva"
+    assert resposta.data["patient"]["is_primary"] is False, "o principal é a mãe"
+    outros = {p["name"]: p["is_primary"] for p in resposta.data["other_patients"]}
+    assert outros["Maria Silva"] is True
+    # Um principal, nunca dois: é o que a lista da seção mostra.
+    todos = [resposta.data["patient"], *resposta.data["other_patients"]]
+    assert sum(1 for p in todos if p["is_primary"]) == 1
+
+
+def test_paciente_da_conversa_que_E_o_principal_vem_marcado(logado, inbox_a):
+    from apps.patients.vinculos import vincular
+
+    vincular(inbox_a["patient"], inbox_a["contact"])
+    resposta = _painel(logado, inbox_a["conversation"])
+    assert resposta.data["patient"]["is_primary"] is True
+
+
+def test_adicionar_paciente_ao_numero_nao_troca_o_da_conversa(logado, familia):
+    """A ação existe justamente porque o `link-patient` trocaria."""
+    clinic = familia["conversa"].clinic
+    pedro = Patient.objects.create(clinic=clinic, name="Pedro Silva")
+
+    resposta = logado.post(
+        f"{CONVERSATIONS}{familia['conversa'].id}/add-contact-patient/",
+        {"patient": pedro.pk},
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    familia["conversa"].refresh_from_db()
+    assert familia["conversa"].patient_id == familia["filho"].pk
+    assert PatientContact.objects.filter(
+        contact=familia["contato"], patient=pedro
+    ).exists()
+
+
+def test_definir_principal_pela_API(logado, familia):
+    resposta = logado.post(
+        f"{CONVERSATIONS}{familia['conversa'].id}/set-primary-patient/",
+        {"patient": familia["filho"].pk},
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    vinculos = PatientContact.objects.filter(contact=familia["contato"], is_primary=True)
+    assert vinculos.count() == 1
+    assert vinculos.first().patient_id == familia["filho"].pk
+
+
+def test_remover_do_numero_conta_quem_foi_promovido(logado, familia):
+    """A tela precisa contar: sem isso a recepção descobre depois que o
+    destino das mensagens mudou."""
+    resposta = logado.post(
+        f"{CONVERSATIONS}{familia['conversa'].id}/remove-contact-patient/",
+        {"patient": familia["mae"].pk},
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.data["promoted_to_primary"]["name"] == "João Silva"
+
+
+def test_remover_o_paciente_DA_conversa_solta_a_conversa(logado, familia):
+    resposta = logado.post(
+        f"{CONVERSATIONS}{familia['conversa'].id}/remove-contact-patient/",
+        {"patient": familia["filho"].pk},
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.data["patient"] is None
+    familia["conversa"].refresh_from_db()
+    assert familia["conversa"].patient_id is None
+
+
+def test_remover_quem_nao_usa_o_numero_avisa(logado, familia):
+    clinic = familia["conversa"].clinic
+    de_fora = Patient.objects.create(clinic=clinic, name="Alheio")
+    resposta = logado.post(
+        f"{CONVERSATIONS}{familia['conversa'].id}/remove-contact-patient/",
+        {"patient": de_fora.pk},
+        format="json",
+    )
+    assert resposta.status_code == 400
+
+
+def test_vinculo_de_outra_clinica_nao_entra(logado, familia, clinic_b):
+    """Escopo: paciente de outro tenant não vira vínculo daqui."""
+    alheio = Patient.objects.create(clinic=clinic_b, name="De Outra")
+    resposta = logado.post(
+        f"{CONVERSATIONS}{familia['conversa'].id}/add-contact-patient/",
+        {"patient": alheio.pk},
+        format="json",
+    )
+    assert resposta.status_code == 400
+    assert not PatientContact.objects.filter(patient=alheio).exists()

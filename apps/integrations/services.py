@@ -340,22 +340,23 @@ def upsert_patient(clinic, ehr_patient) -> tuple[Patient, bool]:
 
 
 def _link_contact(clinic, patient) -> None:
-    """Vincula o Contact pelo telefone (RF-PAC-7): N pacientes por número."""
+    """
+    Vincula o Contact pelo telefone (RF-PAC-7): N pacientes por número.
+
+    A resolução do número e a regra do principal vivem em `patients.vinculos`
+    — antes estavam copiadas aqui, e este caminho criava o contato pela grafia
+    CRUA do EHR: um número sem o nono dígito virava um segundo contato do
+    mesmo celular (§6.2).
+    """
+    from apps.patients.vinculos import contato_do_numero, vincular
+
     if not patient.phone:
         return
-    contact, _ = Contact.objects.get_or_create(
-        clinic=clinic,
-        wa_id=patient.phone,
-        defaults={"display_name": patient.name.split(" ")[0]},
+    contact, _ = contato_do_numero(
+        clinic, patient.phone, display_name=patient.name.split(" ")[0]
     )
-    already = PatientContact.objects.filter(patient=patient, contact=contact).exists()
-    if not already:
-        has_primary = PatientContact.objects.filter(contact=contact, is_primary=True).exists()
-        PatientContact.objects.create(
-            patient=patient,
-            contact=contact,
-            is_primary=not has_primary,  # primeiro paciente do número vira o principal
-        )
+    if contact is not None:
+        vincular(patient, contact)
 
 
 def _sync_ehr_tag_assignments(clinic, patient, bitmask: int) -> None:

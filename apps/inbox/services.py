@@ -201,8 +201,9 @@ def iniciar_conversa(clinic, user, *, patient=None, phone=None):
     from apps.inbox.attendance import log_activity
     from apps.inbox.models import Channel, Conversation
     from apps.inbox.realtime import notify_conversation_updated_on_commit
-    from apps.patients.models import Contact, PatientContact
-    from apps.patients.phone import canonizar_telefone, grafia_alternativa, pode_ser_celular
+    from apps.patients.models import PatientContact
+    from apps.patients.phone import canonizar_telefone, pode_ser_celular
+    from apps.patients.vinculos import contato_do_numero, vincular
 
     channel = Channel.objects.filter(clinic=clinic).first()
     if channel is None:
@@ -231,32 +232,15 @@ def iniciar_conversa(clinic, user, *, patient=None, phone=None):
             raise ConversaSemDestino(
                 "Este número não pode receber WhatsApp (telefone fixo)."
             )
-        # As duas grafias do nono dígito (§6.2) ANTES de criar — é o que
-        # impede o contato duplicado quando a Meta usa a forma curta.
-        grafias = [numero]
-        alternativa = grafia_alternativa(numero)
-        if alternativa:
-            grafias.append(alternativa)
-        contact = Contact.objects.filter(clinic=clinic, wa_id__in=grafias).first()
-        if contact is None:
-            contact = Contact.objects.create(
-                clinic=clinic,
-                wa_id=numero,
-                display_name=(patient.name if patient is not None else "")[:160],
-            )
+        # Procura pelas duas grafias do nono dígito antes de criar (§6.2).
+        contact, _ = contato_do_numero(
+            clinic, numero, display_name=patient.name if patient is not None else ""
+        )
 
     if patient is not None:
         # Registra o vínculo número↔paciente; o primeiro do número vira o
-        # principal (mesma regra do sync do EHR).
-        PatientContact.objects.get_or_create(
-            patient=patient,
-            contact=contact,
-            defaults={
-                "is_primary": not PatientContact.objects.filter(
-                    contact=contact, is_primary=True
-                ).exists()
-            },
-        )
+        # principal (regra única em `patients.vinculos`).
+        vincular(patient, contact)
 
     conversation, created = Conversation.objects.get_or_create(
         clinic=clinic,

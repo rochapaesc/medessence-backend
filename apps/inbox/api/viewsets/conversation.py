@@ -368,31 +368,88 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
     def link_patient(self, request, pk=None):
         """Vincula a conversa a um paciente (RF-INB-7) e garante o vínculo
         contato↔paciente em PatientContact."""
-        from apps.patients.models import Patient, PatientContact
+        from apps.patients.vinculos import vincular
 
         conversation = self.get_object()
+        patient = self._paciente_do_corpo(request)
+
+        conversation.patient = patient
+        conversation.save(update_fields=["patient", "updated_at"])
+        # O primeiro paciente do número vira o principal - regra única em
+        # `vinculos.vincular` (antes estava copiada aqui, no /start/ e no sync
+        # do EHR, e ninguém virava principal por este caminho: o auto-vínculo
+        # da conversa nova (RF-INB-7) nunca acontecia para estes números).
+        vincular(patient, conversation.contact)
+        return Response(self.get_serializer(conversation).data)
+
+    def _paciente_do_corpo(self, request):
+        from apps.patients.models import Patient
+
         patient_id = request.data.get("patient")
         if not patient_id:
             raise ValidationError({"patient": "Informe o paciente."})
         patient = Patient.objects.filter(clinic=self.clinic, pk=patient_id).first()
         if patient is None:
             raise ValidationError({"patient": "Paciente não encontrado nesta clínica."})
+        return patient
 
-        conversation.patient = patient
-        conversation.save(update_fields=["patient", "updated_at"])
-        PatientContact.objects.get_or_create(
-            patient=patient,
-            contact=conversation.contact,
-            # O primeiro paciente do número vira o principal (mesma regra do
-            # sync do EHR e do /start/) - antes ninguém virava, e o auto-vínculo
-            # da conversa nova (RF-INB-7) nunca acontecia para estes números.
-            defaults={
-                "is_primary": not PatientContact.objects.filter(
-                    contact=conversation.contact, is_primary=True
-                ).exists()
-            },
-        )
+    @action(detail=True, methods=["post"], url_path="add-contact-patient")
+    def add_contact_patient(self, request, pk=None):
+        """
+        Acrescenta um paciente ao NÚMERO (RF-PAC-7.1) — o segundo filho da
+        mesma casa. Não mexe no paciente da conversa: para isso existe o
+        `link-patient`, e confundir os dois foi o motivo desta ação existir.
+        """
+        from apps.patients.vinculos import vincular
+
+        conversation = self.get_object()
+        patient = self._paciente_do_corpo(request)
+        vincular(patient, conversation.contact)
         return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["post"], url_path="set-primary-patient")
+    def set_primary_patient(self, request, pk=None):
+        """Troca o principal do número (RF-PAC-7.1): é para ele que vão as
+        mensagens que a clínica iniciar por qualquer paciente do contato."""
+        from apps.patients.models import PatientContact
+        from apps.patients.vinculos import definir_principal
+
+        conversation = self.get_object()
+        patient = self._paciente_do_corpo(request)
+        try:
+            definir_principal(patient, conversation.contact)
+        except PatientContact.DoesNotExist as exc:
+            raise ValidationError({"patient": str(exc)}) from exc
+        return Response(self.get_serializer(conversation).data)
+
+    @action(detail=True, methods=["post"], url_path="remove-contact-patient")
+    def remove_contact_patient(self, request, pk=None):
+        """
+        Tira o paciente do NÚMERO (RF-PAC-7.1). Diferente de `unlink-patient`,
+        que solta só a conversa e preserva o vínculo.
+
+        Devolve o que aconteceu junto — quem foi promovido a principal — para a
+        tela poder contar em vez de a recepção descobrir depois.
+        """
+        from apps.patients.models import PatientContact
+        from apps.patients.vinculos import desvincular
+
+        conversation = self.get_object()
+        patient = self._paciente_do_corpo(request)
+        try:
+            efeito = desvincular(patient, conversation.contact)
+        except PatientContact.DoesNotExist as exc:
+            raise ValidationError({"patient": str(exc)}) from exc
+
+        conversation.refresh_from_db()
+        if efeito["conversas_soltas"]:
+            self._notify(conversation)
+        data = self.get_serializer(conversation).data
+        promovido = efeito["promoveu"]
+        data["promoted_to_primary"] = (
+            {"id": promovido.pk, "name": promovido.name} if promovido else None
+        )
+        return Response(data)
 
     @action(detail=True, methods=["post"], url_path="unlink-patient")
     def unlink_patient(self, request, pk=None):
@@ -432,7 +489,8 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
             paciente_payload,
         )
         from apps.inbox.choices import ActivityType
-        from apps.patients.models import ContactNote, PatientContact
+        from apps.patients.models import ContactNote
+        from apps.patients.vinculos import pacientes_do_contato
 
         conversation = self.get_object()
         contact = conversation.contact
@@ -440,16 +498,19 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         # Um número pode atender vários pacientes (RF-PAC-7, responsável
         # familiar). A recepção precisa ver isso: metade dos enganos de
         # atendimento é responder sobre a pessoa errada da mesma casa.
-        vinculos = (
-            PatientContact.objects.filter(contact=contact)
-            .select_related("patient")
-            .order_by("-is_primary", "patient__name")
-        )
+        vinculos = pacientes_do_contato(contact)
         outros = [
             paciente_payload(v.patient, is_primary=v.is_primary)
             for v in vinculos
             if v.patient_id != conversation.patient_id
         ]
+        # O `is_primary` do paciente DA CONVERSA vem do banco, não do default
+        # do helper: com a flag fixa em True o filho aparecia como principal
+        # quando o principal era a mãe — e é essa flag que o diálogo "para
+        # quem é" e a seção "Quem usa este número" usam para o selo.
+        principal_do_contato = next(
+            (v.patient_id for v in vinculos if v.is_primary), None
+        )
 
         arquivos = (
             Message.objects.filter(conversation=conversation, media__isnull=False)
@@ -486,7 +547,13 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
                     "wa_id": contact.wa_id,
                     "display_name": contact.display_name,
                 },
-                "patient": paciente_payload(conversation.patient),
+                "patient": paciente_payload(
+                    conversation.patient,
+                    is_primary=(
+                        conversation.patient_id is not None
+                        and conversation.patient_id == principal_do_contato
+                    ),
+                ),
                 "other_patients": outros,
                 "notes": ContactNoteSerializer(
                     ContactNote.objects.filter(contact=contact).select_related("author"),
