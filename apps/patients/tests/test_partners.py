@@ -338,3 +338,69 @@ def test_atendente_nao_abre_documento(
     entrada = ClinicalEntry.objects.filter(kind=ClinicalEntryKind.PRESCRIPTION).first()
     api_client.force_authenticate(attendant_a)
     assert api_client.get(_url_abrir(entrada)).status_code == 403
+
+
+# --------------------- contagem por dia (o calendário) ---------------------
+
+
+CAL = "/api/v1/partners/calendar/"
+
+
+def test_calendario_conta_documentos_por_dia(
+    api_client, manager_single_clinic, cenario, sem_conferencia
+):
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.get(CAL, {"year": 2026, "month": 7})
+
+    assert resposta.status_code == 200
+    # Dia 30: 2 receitas + 1 exame. Dia 2: a receita do Caio.
+    assert resposta.data["by_day"] == {"2": 1, "30": 3}
+    # A NOTA do dia 30 não entra na conta - a área é de receita e exame.
+    assert sum(resposta.data["by_day"].values()) == 4
+
+
+def test_calendario_respeita_o_filtro_de_profissional(
+    api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
+):
+    outro = Practitioner.objects.create(clinic=clinic_a, name="Dr. Bruno")
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.get(
+        CAL, {"year": 2026, "month": 7, "practitioner": outro.pk}
+    )
+    assert resposta.data["by_day"] == {}
+
+
+def test_calendario_de_dezembro_nao_estoura_o_ano(
+    api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
+):
+    """Dezembro fecha em 1º de janeiro do ANO seguinte - o mês 13 não existe."""
+    ClinicalEntry.objects.create(
+        clinic=clinic_a,
+        patient=cenario["ana"],
+        kind=ClinicalEntryKind.PRESCRIPTION,
+        origin=ClinicalOrigin.EHR,
+        date=datetime(2026, 12, 20, 10, tzinfo=dt_timezone.utc),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.get(CAL, {"year": 2026, "month": 12})
+
+    assert resposta.status_code == 200
+    assert resposta.data["by_day"] == {"20": 1}
+
+
+def test_calendario_recusa_mes_invalido(
+    api_client, manager_single_clinic, sem_conferencia
+):
+    api_client.force_authenticate(manager_single_clinic)
+    assert api_client.get(CAL, {"year": 2026, "month": 13}).status_code == 400
+    assert api_client.get(CAL, {"year": "x", "month": 7}).status_code == 400
+
+
+def test_calendario_tem_a_mesma_cerca_da_area(
+    api_client, partner_a, attendant_a, cenario, sem_conferencia
+):
+    api_client.force_authenticate(partner_a)
+    assert api_client.get(CAL, {"year": 2026, "month": 7}).status_code == 200
+
+    api_client.force_authenticate(attendant_a)
+    assert api_client.get(CAL, {"year": 2026, "month": 7}).status_code == 403

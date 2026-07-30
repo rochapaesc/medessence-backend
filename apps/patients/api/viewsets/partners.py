@@ -17,6 +17,8 @@ from datetime import datetime, time, timedelta
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
+from django.db.models import Count
+from django.db.models.functions import TruncDate
 from django.http import HttpResponse
 from django.utils import timezone as dj_timezone
 from django.utils.html import strip_tags
@@ -55,6 +57,17 @@ def _dia(valor: str, campo: str):
         raise ValidationError({campo: "Use a data no formato AAAA-MM-DD."}) from exc
 
 
+def _fuso(clinic):
+    """
+    O dia da CLÍNICA, não o dia UTC: a receita das 21h pertence ao dia em que
+    a recepção a viveu (mesma régua do `/appointments/summary/`).
+    """
+    try:
+        return ZoneInfo(clinic.timezone)
+    except Exception:
+        return dj_timezone.get_default_timezone()
+
+
 class PartnersSummaryView(APIView):
     """`GET /partners/summary/?from=&to=[&practitioner=]` - o período da tela."""
 
@@ -70,12 +83,7 @@ class PartnersSummaryView(APIView):
         if fim < inicio:
             raise ValidationError({"to": "O fim do período vem antes do começo."})
 
-        # O dia da clínica, não o dia UTC: a consulta das 21h pertence ao dia
-        # em que a recepção a viveu (mesma régua do /appointments/summary/).
-        try:
-            tz = ZoneInfo(clinic.timezone)
-        except Exception:
-            tz = dj_timezone.get_default_timezone()
+        tz = _fuso(clinic)
         de = datetime.combine(inicio, time.min, tzinfo=tz)
         ate = datetime.combine(fim + timedelta(days=1), time.min, tzinfo=tz)
 
@@ -278,3 +286,56 @@ class PartnerDocumentOpenView(APIView):
         except ValueError:
             return ""
         return (query.get("id") or [""])[0]
+
+
+class PartnersCalendarView(APIView):
+    """
+    `GET /partners/calendar/?year=&month=[&practitioner=]` - quantos documentos
+    por dia do mês.
+
+    Existe para o calendário da tela **mostrar onde tem coisa** antes de o
+    usuário clicar: navegar às cegas obriga a abrir dia a dia para descobrir
+    que a clínica não atendeu na terça. Agregado no banco, como o
+    `/appointments/summary/` - a alternativa seria baixar o mês inteiro só
+    para contar.
+    """
+
+    permission_classes = [IsPartnerArea]
+    partner_allowed = True
+
+    def get(self, request):
+        clinic = resolve_active_membership(request).clinic
+        try:
+            ano = int(request.query_params.get("year"))
+            mes = int(request.query_params.get("month"))
+            primeiro = datetime(ano, mes, 1).date()
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"month": "Informe ano e mês válidos."}) from exc
+
+        tz = _fuso(clinic)
+        de = datetime.combine(primeiro, time.min, tzinfo=tz)
+        seguinte = datetime(ano + (mes // 12), (mes % 12) + 1, 1).date()
+        ate = datetime.combine(seguinte, time.min, tzinfo=tz)
+
+        entradas = ClinicalEntry.objects.filter(
+            clinic=clinic,
+            kind__in=KINDS_PARCEIROS,
+            date__gte=de,
+            date__lt=ate,
+            patient__isnull=False,
+        )
+        profissional = request.query_params.get("practitioner")
+        if profissional:
+            entradas = entradas.filter(practitioner_id=profissional)
+
+        # `order_by()` limpa a ordenação padrão: sem isso o `date` entra no
+        # GROUP BY e a contagem sai fragmentada (uma linha por documento).
+        por_dia = {
+            str(linha["dia"].day): linha["total"]
+            for linha in entradas.order_by()
+            .annotate(dia=TruncDate("date", tzinfo=tz))
+            .values("dia")
+            .annotate(total=Count("id"))
+            .order_by("dia")
+        }
+        return Response({"year": ano, "month": mes, "by_day": por_dia})

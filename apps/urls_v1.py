@@ -2,6 +2,7 @@ from django.urls import include, path
 
 from apps.patients.api.viewsets.partners import (
     PartnerDocumentOpenView,
+    PartnersCalendarView,
     PartnersSummaryView,
 )
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
@@ -36,6 +37,7 @@ urlpatterns = [
 
     # Área de Parceiros (RF-PAR): a ÚNICA superfície que o papel partner vê.
     path("partners/summary/", PartnersSummaryView.as_view(), name="partners-summary"),
+    path("partners/calendar/", PartnersCalendarView.as_view(), name="partners-calendar"),
     path(
         "partners/documents/<int:pk>/open/",
         PartnerDocumentOpenView.as_view(),
