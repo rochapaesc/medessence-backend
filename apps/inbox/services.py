@@ -14,7 +14,15 @@ from datetime import timedelta
 from django.db.models import F
 from django.utils import timezone
 
-from apps.inbox.choices import MessageDirection, MessageKind, MessageStatus, SenderKind
+from apps.inbox.choices import (
+    ActivityType,
+    AttendedBy,
+    ConversationStatus,
+    MessageDirection,
+    MessageKind,
+    MessageStatus,
+    SenderKind,
+)
 from apps.integrations.whatsapp.base import WhatsAppEventKind
 
 logger = logging.getLogger(__name__)
@@ -112,14 +120,39 @@ def ingest_events(channel, events) -> dict:
     return stats
 
 
-def _get_or_create_conversation(channel, event):
-    from apps.patients.models import Contact, PatientContact
+def _resolver_contato(clinic, event):
+    """
+    Contato pelo wa_id, com a autocura do nono dígito (§6.2): se o wa_id exato
+    não existe mas a grafia alternativa (com/sem o 9) existe, o contato é
+    RENOMEADO para a forma que a Meta usou — ela é dona do wa_id. Conversa,
+    histórico e vínculos ficam intactos porque a FK não muda. É o que fecha o
+    ciclo do outbound-first: criamos com 9 por palpite e a primeira resposta
+    do paciente corrige o palpite sozinha.
+    """
+    from apps.patients.models import Contact
+    from apps.patients.phone import grafia_alternativa
 
-    contact, _ = Contact.objects.get_or_create(
-        clinic=channel.clinic,
-        wa_id=event.wa_id,
-        defaults={"display_name": event.contact_name[:160]},
-    )
+    contact = Contact.objects.filter(clinic=clinic, wa_id=event.wa_id).first()
+    if contact is None:
+        alternativa = grafia_alternativa(event.wa_id)
+        if alternativa:
+            contact = Contact.objects.filter(clinic=clinic, wa_id=alternativa).first()
+            if contact is not None:
+                contact.wa_id = event.wa_id
+                contact.save(update_fields=["wa_id", "updated_at"])
+    if contact is None:
+        contact, _ = Contact.objects.get_or_create(
+            clinic=clinic,
+            wa_id=event.wa_id,
+            defaults={"display_name": event.contact_name[:160]},
+        )
+    return contact
+
+
+def _get_or_create_conversation(channel, event):
+    from apps.patients.models import PatientContact
+
+    contact = _resolver_contato(channel.clinic, event)
     conversation, created = channel.conversations.get_or_create(
         clinic=channel.clinic,
         channel=channel,
@@ -142,6 +175,110 @@ def _get_or_create_conversation(channel, event):
             conversation.patient = link.patient
             conversation.save(update_fields=["patient", "updated_at"])
     return conversation
+
+
+# --------------------------------------------------------------------- #
+# Conversa iniciada pela clínica (RF-INB-11)
+# --------------------------------------------------------------------- #
+
+
+class ConversaSemDestino(ValueError):
+    """Não há número para onde a conversa possa ir (ou ele não é celular)."""
+
+
+def iniciar_conversa(clinic, user, *, patient=None, phone=None):
+    """
+    Get-or-create da conversa outbound-first (RF-INB-11). Devolve
+    `(conversation, created)`.
+
+    Resolução do número (RF-PAC-8): contato principal do paciente → telefone
+    do cadastro → sem ambos, `ConversaSemDestino`. Criada, a conversa nasce
+    ABERTA com quem clicou (regra do Chatwoot: open + assignee = criador) —
+    nunca "Aguardando", que significa "o paciente espera por nós". Existente,
+    NADA muda: navegar não rouba posse nem reabre Resolvida (RF-ATD-2 — quem
+    reabre é a resposta do paciente).
+    """
+    from apps.inbox.attendance import log_activity
+    from apps.inbox.models import Channel, Conversation
+    from apps.inbox.realtime import notify_conversation_updated_on_commit
+    from apps.patients.models import Contact, PatientContact
+    from apps.patients.phone import canonizar_telefone, grafia_alternativa, pode_ser_celular
+
+    channel = Channel.objects.filter(clinic=clinic).first()
+    if channel is None:
+        raise ConversaSemDestino("Esta clínica não tem canal de WhatsApp configurado.")
+
+    contact = None
+    if patient is not None:
+        link = (
+            PatientContact.objects.filter(patient=patient)
+            .order_by("-is_primary", "pk")
+            .select_related("contact")
+            .first()
+        )
+        if link is not None:
+            contact = link.contact
+
+    if contact is None:
+        numero = canonizar_telefone(phone if patient is None else patient.phone)
+        if not numero:
+            raise ConversaSemDestino(
+                "Paciente sem telefone e sem contato vinculado."
+                if patient is not None
+                else "Informe um número de telefone."
+            )
+        if not pode_ser_celular(numero):
+            raise ConversaSemDestino(
+                "Este número não pode receber WhatsApp (telefone fixo)."
+            )
+        # As duas grafias do nono dígito (§6.2) ANTES de criar — é o que
+        # impede o contato duplicado quando a Meta usa a forma curta.
+        grafias = [numero]
+        alternativa = grafia_alternativa(numero)
+        if alternativa:
+            grafias.append(alternativa)
+        contact = Contact.objects.filter(clinic=clinic, wa_id__in=grafias).first()
+        if contact is None:
+            contact = Contact.objects.create(
+                clinic=clinic,
+                wa_id=numero,
+                display_name=(patient.name if patient is not None else "")[:160],
+            )
+
+    if patient is not None:
+        # Registra o vínculo número↔paciente; o primeiro do número vira o
+        # principal (mesma regra do sync do EHR).
+        PatientContact.objects.get_or_create(
+            patient=patient,
+            contact=contact,
+            defaults={
+                "is_primary": not PatientContact.objects.filter(
+                    contact=contact, is_primary=True
+                ).exists()
+            },
+        )
+
+    conversation, created = Conversation.objects.get_or_create(
+        clinic=clinic,
+        channel=channel,
+        contact=contact,
+        defaults={
+            "patient": patient,
+            "status": ConversationStatus.OPEN,
+            "attended_by": AttendedBy.AGENT,
+            "assigned_to": user,
+            "attended_since": timezone.now(),
+        },
+    )
+    if created:
+        log_activity(
+            conversation,
+            ActivityType.ASSIGNED,
+            user=user,
+            data={"from": AttendedBy.NONE, "by": "start"},
+        )
+        notify_conversation_updated_on_commit(conversation)
+    return conversation, created
 
 
 MOTIVO_CREDENCIAL = "Canal do WhatsApp desconectado — avise o suporte para reconectar."

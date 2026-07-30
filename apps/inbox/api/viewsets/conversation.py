@@ -31,6 +31,9 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
     do inbox são ações explícitas (o corpo da conversa é derivado das
     mensagens, não editável direto):
 
+        POST /start/              inicia/encontra a conversa de um paciente ou
+                                  telefone (RF-INB-11) - a ÚNICA porta de
+                                  criação fora do webhook
         POST /{id}/read/          zera as não lidas (RF-INB-4)
         POST /{id}/assign/        assume o atendimento (RF-INB-5/8)
         POST /{id}/mark-waiting/  marca como aguardando atendente (manual - F2)
@@ -311,6 +314,56 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
         notify_conversation_updated(conversation)
 
+    @action(detail=False, methods=["post"], url_path="start")
+    def start(self, request):
+        """
+        Inicia (ou encontra) a conversa de um `patient` OU `phone` (RF-INB-11).
+
+        Criada, nasce Aberta com quem clicou e entra em "Atendendo";
+        existente, só devolve — navegar não rouba posse nem reabre Resolvida.
+        `created` na resposta diz qual dos dois aconteceu.
+        """
+        from apps.inbox.services import ConversaSemDestino, iniciar_conversa
+        from apps.patients.models import Patient
+
+        patient_id = request.data.get("patient")
+        phone = (request.data.get("phone") or "").strip()
+        if bool(patient_id) == bool(phone):
+            raise ValidationError({"detail": "Informe `patient` OU `phone` (exatamente um)."})
+
+        patient = None
+        if patient_id:
+            patient = Patient.objects.filter(clinic=self.clinic, pk=patient_id).first()
+            if patient is None:
+                raise ValidationError({"patient": "Paciente não encontrado nesta clínica."})
+
+        try:
+            conversation, created = iniciar_conversa(
+                self.clinic, request.user, patient=patient, phone=phone or None
+            )
+        except ConversaSemDestino as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+
+        data = self.get_serializer(conversation).data
+        data["created"] = created
+        # A tela avisa quando a conversa NÃO vai no número do próprio paciente
+        # (criança sem WhatsApp → número do responsável). O backend é quem
+        # sabe: o front da agenda não tem o telefone do paciente à mão.
+        data["own_number"] = self._numero_do_proprio(patient, conversation)
+        return Response(data, status=201 if created else 200)
+
+    @staticmethod
+    def _numero_do_proprio(patient, conversation) -> bool:
+        from apps.patients.phone import canonizar_telefone, grafia_alternativa
+
+        if patient is None:
+            return True
+        canonico = canonizar_telefone(patient.phone)
+        if not canonico:
+            return False
+        grafias = {canonico, grafia_alternativa(canonico) or canonico}
+        return conversation.contact.wa_id in grafias
+
     @action(detail=True, methods=["post"], url_path="link-patient")
     def link_patient(self, request, pk=None):
         """Vincula a conversa a um paciente (RF-INB-7) e garante o vínculo
@@ -327,7 +380,18 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
         conversation.patient = patient
         conversation.save(update_fields=["patient", "updated_at"])
-        PatientContact.objects.get_or_create(patient=patient, contact=conversation.contact)
+        PatientContact.objects.get_or_create(
+            patient=patient,
+            contact=conversation.contact,
+            # O primeiro paciente do número vira o principal (mesma regra do
+            # sync do EHR e do /start/) - antes ninguém virava, e o auto-vínculo
+            # da conversa nova (RF-INB-7) nunca acontecia para estes números.
+            defaults={
+                "is_primary": not PatientContact.objects.filter(
+                    contact=conversation.contact, is_primary=True
+                ).exists()
+            },
+        )
         return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["post"], url_path="unlink-patient")

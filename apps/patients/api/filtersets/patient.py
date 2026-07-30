@@ -8,6 +8,7 @@ from django_filters.rest_framework import (
 
 from apps.patients.choices import PatientStatus
 from apps.patients.models import Patient
+from apps.patients.phone import grafias_de_busca, so_digitos
 
 
 class PatientFilterset(FilterSet):
@@ -24,9 +25,14 @@ class PatientFilterset(FilterSet):
         fields = ["search", "tag", "city", "status", "practitioner", "source", "state"]
 
     def filter_search(self, queryset, name, value):
-        return queryset.filter(
-            Q(name__icontains=value) | Q(cpf__icontains=value) | Q(phone__icontains=value)
-        )
+        filtro = Q(name__icontains=value) | Q(cpf__icontains=value) | Q(phone__icontains=value)
+        digitos = so_digitos(value)
+        if len(digitos) >= 8:
+            # Busca por telefone de verdade (§6.2): o mesmo número vive em
+            # várias grafias no banco (EHR com 55, form sem, wa_id com/sem o
+            # nono 9) — o icontains cru acima só acha coincidência de formato.
+            filtro |= Q(phone__in=grafias_de_busca(digitos))
+        return queryset.filter(filtro)
 
     def filter_tag(self, queryset, name, value):
         return queryset.filter(

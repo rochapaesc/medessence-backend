@@ -10,6 +10,7 @@ from apps.core.masking import is_masked, mask_cpf
 from apps.patients.api.serializers.tag import TagSummarySerializer
 from apps.patients.choices import TagOrigin
 from apps.patients.models import Patient, PatientTag, Tag
+from apps.patients.phone import canonizar_telefone
 
 
 class PatientReadSerializer(ModelSerializer):
@@ -116,6 +117,11 @@ class PatientWriteSerializer(ClinicalContentGateMixin, ModelSerializer):
         write_only=True,
         queryset=Tag.objects.all(),
     )
+
+    def validate_phone(self, value):
+        # Regra do nono dígito (§6.2): guarda a forma canônica — dígitos com
+        # DDI, celular BR com o 9 — para o número casar com o wa_id da Meta.
+        return canonizar_telefone(value)
 
     def validate_cpf(self, value):
         """

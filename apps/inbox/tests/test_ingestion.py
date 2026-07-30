@@ -266,3 +266,63 @@ def test_ingest_escopado_por_canal(clinic_a, clinic_b, inbox_a, inbox_b):
     assert Message.objects.filter(clinic=clinic_a).count() == 1
     assert Message.objects.filter(clinic=clinic_b).count() == 1
     assert not Conversation.objects.filter(clinic=clinic_a, contact__wa_id="5585900002222").exists()
+
+
+# ------------------- Autocura do nono dígito (§6.2) -------------------
+
+
+def test_inbound_com_grafia_alternativa_renomeia_o_contato(clinic_a, inbox_a):
+    """
+    Criamos o contato com o 9 (palpite do outbound-first); a Meta identifica o
+    número SEM o 9 → o contato é RENOMEADO para a forma dela e a conversa é a
+    MESMA — nada duplica, o vínculo com o paciente sobrevive.
+    """
+    from apps.patients.models import Contact
+
+    channel = inbox_a["channel"]
+    contato = Contact.objects.create(clinic=clinic_a, wa_id="5585988765432")
+    conversa = Conversation.objects.create(clinic=clinic_a, channel=channel, contact=contato)
+
+    payload = build_inbound_payload(wa_id="558588765432", body="cheguei")
+    ingest_events(channel, parse_meta_webhook(payload))
+
+    contato.refresh_from_db()
+    assert contato.wa_id == "558588765432"  # a Meta é dona do wa_id
+    assert Contact.objects.filter(clinic=clinic_a, wa_id__contains="88765432").count() == 1
+    mensagem = Message.objects.get(clinic=clinic_a, body="cheguei")
+    assert mensagem.conversation_id == conversa.pk
+
+
+def test_inbound_de_numero_novo_nao_mexe_nos_existentes(clinic_a, inbox_a):
+    from apps.patients.models import Contact
+
+    channel = inbox_a["channel"]
+    Contact.objects.create(clinic=clinic_a, wa_id="5585988765432")
+
+    ingest_events(
+        channel, parse_meta_webhook(build_inbound_payload(wa_id="5585911112222", body="olá"))
+    )
+
+    assert Contact.objects.filter(clinic=clinic_a, wa_id="5585988765432").exists()
+    assert Contact.objects.filter(clinic=clinic_a, wa_id="5585911112222").exists()
+
+
+def test_grafia_exata_existente_nao_renomeia_nada(clinic_a, inbox_a):
+    """Se a grafia exata existe, a autocura nem é consultada — inclusive quando
+    a alternativa TAMBÉM existe (zumbi antigo): o exato vence."""
+    from apps.patients.models import Contact
+
+    channel = inbox_a["channel"]
+    exato = Contact.objects.create(clinic=clinic_a, wa_id="558588765432")
+    zumbi = Contact.objects.create(clinic=clinic_a, wa_id="5585988765432")
+
+    ingest_events(
+        channel, parse_meta_webhook(build_inbound_payload(wa_id="558588765432", body="oi"))
+    )
+
+    exato.refresh_from_db()
+    zumbi.refresh_from_db()
+    assert exato.wa_id == "558588765432"
+    assert zumbi.wa_id == "5585988765432"  # intocado
+    mensagem = Message.objects.get(clinic=clinic_a, body="oi")
+    assert mensagem.conversation.contact_id == exato.pk

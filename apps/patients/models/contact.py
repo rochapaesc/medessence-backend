@@ -29,7 +29,14 @@ class Contact(TenantScopedModel):
         verbose_name = "Contato"
         verbose_name_plural = "Contatos"
         constraints = [
-            UniqueConstraint(fields=["clinic", "wa_id"], name="uniq_contact_wa_id"),
+            # Unicidade entre registros VIVOS, como nas demais constraints do
+            # projeto — sem a condição, um contato soft-deletado travava a
+            # recriação do mesmo número para sempre (era a única sem ela).
+            UniqueConstraint(
+                fields=["clinic", "wa_id"],
+                condition=Q(deleted_at__isnull=True),
+                name="uniq_contact_wa_id",
+            ),
         ]
 
     def __str__(self):
