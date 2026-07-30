@@ -197,7 +197,7 @@ def test_abrir_o_periodo_dispara_a_conferencia_dos_atendidos(
     assert set(pacientes) == {cenario["ana"].pk, cenario["beto"].pk, cenario["caio"].pk}
 
 
-def test_conferencia_recente_nao_dispara_de_novo(
+def test_conferencia_recente_do_MESMO_publico_nao_dispara_de_novo(
     api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
 ):
     clinic_a.ehr_provider = "fake"
@@ -208,6 +208,13 @@ def test_conferencia_recente_nao_dispara_de_novo(
         kind=SyncRunKind.MEDICAL_RECORDS,
         started_at=agora,
         finished_at=agora,
+        stats={
+            "patient_ids": [
+                cenario["ana"].pk,
+                cenario["beto"].pk,
+                cenario["caio"].pk,
+            ]
+        },
     )
     api_client.force_authenticate(manager_single_clinic)
 
@@ -215,6 +222,31 @@ def test_conferencia_recente_nao_dispara_de_novo(
 
     assert resposta.data["refreshing"] is False
     assert sem_conferencia == []
+
+
+def test_trocar_de_dia_confere_o_publico_NOVO_mesmo_com_rodada_recente(
+    api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
+):
+    """A trava de 5 minutos é por PÚBLICO, não só por relógio: o calendário
+    existe para pular de dia, e o dia novo tem pacientes que a rodada recente
+    não cobriu."""
+    clinic_a.ehr_provider = "fake"
+    clinic_a.save(update_fields=["ehr_provider"])
+    agora = timezone.now()
+    SyncRun.objects.create(
+        clinic=clinic_a,
+        kind=SyncRunKind.MEDICAL_RECORDS,
+        started_at=agora,
+        finished_at=agora,
+        # A rodada recente cobriu OUTRO público (o dia 30 de outra tela).
+        stats={"patient_ids": [999999]},
+    )
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
+
+    assert resposta.data["refreshing"] is True
+    assert len(sem_conferencia) == 1
 
 
 def test_conferencia_em_andamento_avisa_sem_disparar_outra(

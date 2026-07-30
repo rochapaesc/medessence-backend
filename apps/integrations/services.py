@@ -620,6 +620,10 @@ def pull_medical_records(clinic, patient=None, patients=None) -> SyncRun:
             targets = [patient]
         elif patients is not None:
             targets = [p for p in patients if p.external_id]
+            # Quem foi conferido fica no run: é o que deixa a tela Parceiros
+            # saber que um PERÍODO NOVO ainda não foi coberto, sem derrubar a
+            # trava de reentrada dos 5 minutos.
+            stats["patient_ids"] = [p.pk for p in targets]
         else:
             cutoff = timezone.now() - timedelta(days=90)
             targets = list(

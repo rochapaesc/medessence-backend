@@ -195,7 +195,12 @@ class PartnersSummaryView(APIView):
         if ultima and ultima.finished_at and (
             dj_timezone.now() - ultima.finished_at < CONFERENCIA_INTERVALO
         ):
-            return False
+            # A trava só vale para o MESMO público: navegar para outro dia
+            # logo em seguida (o calendário existe para isso) precisa conferir
+            # os pacientes daquele dia, que a rodada recente não cobriu.
+            conferidos = set(ultima.stats.get("patient_ids") or [])
+            if set(pacientes_do_periodo) <= conferidos:
+                return False
 
         from apps.integrations.tasks import sync_partner_records
 
