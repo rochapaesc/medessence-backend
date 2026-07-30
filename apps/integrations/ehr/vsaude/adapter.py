@@ -31,6 +31,8 @@ from apps.core.html import sanitize_html
 from apps.integrations.ehr.base import (
     EHRAppointment,
     EHRAvailability,
+    EHRFile,
+    EHRFolderListing,
     EHRCareUnit,
     EHRClinicalEntry,
     EHRInsuranceCompany,
@@ -680,3 +682,102 @@ class VSaudeAdapter:
             )
             for item in items
         ]
+
+    # ---------------- arquivos do paciente (RF-PRO-7) ---------------- #
+
+    #: Pastas que a vSaúde cria sozinha, com o nome que a tela mostra.
+    #: Calibrado na clínica real em 30/07/2026: são QUATRO, não uma, e
+    #: `.exams`/`.prescriptions` guardam o pedido e a receita que o médico
+    #: emitiu — some-las esconderia justo o que a ficha existe para mostrar.
+    PASTAS_DE_SISTEMA = {
+        ".exams": "Exames",
+        ".prescriptions": "Receitas",
+        ".terms": "Termos assinados",
+    }
+
+    #: `.internal` é bagagem do EHR e não é assunto de ninguém na clínica.
+    #: ⚠️ Some pelo NOME: no tenant real `isHidden` vem `false` em todas as
+    #: pastas de sistema, então filtrar pela flag não esconderia nada.
+    PASTAS_OCULTAS = {".internal"}
+
+    def _arquivo(self, item: dict, *, is_directory: bool) -> EHRFile:
+        nome = item.get("name") or ""
+        sistema = bool(item.get("system"))
+        return EHRFile(
+            external_id=str(item.get("id") or ""),
+            name=self.PASTAS_DE_SISTEMA.get(nome, nome),
+            is_directory=is_directory,
+            size=int(item.get("size") or 0),
+            mime_type=item.get("mimeType") or "",
+            # Só o ARQUIVO traz o endereço do blob; na pasta o `path` é o
+            # caminho interno do storage e não serve para abrir nada.
+            url="" if is_directory else (item.get("path") or ""),
+            created_at=item.get("creationTime") or "",
+            # Pasta de sistema é read-only mesmo quando o EHR não diz: é ele
+            # quem escreve lá, e deixar a recepção mexer criaria conflito.
+            read_only=bool(item.get("isReadOnly")) or sistema,
+            can_delete=bool(item.get("allowDelete")) and not sistema,
+            system=sistema,
+            hidden=bool(item.get("isHidden")) or nome in self.PASTAS_OCULTAS,
+        )
+
+    def list_files(
+        self, patient_external_id: str, folder_external_id: str = ""
+    ) -> EHRFolderListing:
+        body = {
+            "patient": patient_external_id,
+            "sorting": "name asc",
+            "deletedOnly": False,
+        }
+        if folder_external_id:
+            body["id"] = folder_external_id
+        result = self.client.post("FilesService/ListFolder", body) or {}
+
+        pastas = [
+            self._arquivo(item, is_directory=True)
+            for item in (result.get("folders") or [])
+        ]
+        arquivos = [
+            self._arquivo(item, is_directory=False)
+            for item in (result.get("files") or [])
+        ]
+        return EHRFolderListing(
+            folder_external_id=str(result.get("id") or ""),
+            folder_name=self.PASTAS_DE_SISTEMA.get(
+                result.get("name") or "", result.get("name") or ""
+            ),
+            # Oculta some aqui, não na tela: assim nenhum caminho da API
+            # devolve a `.internal` por engano.
+            folders=[p for p in pastas if not p.hidden],
+            files=[a for a in arquivos if not a.hidden],
+        )
+
+    def upload_file(
+        self,
+        patient_external_id: str,
+        folder_external_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> None:
+        data = {"ownerPatient": patient_external_id}
+        if folder_external_id:
+            data["parent"] = folder_external_id
+        self.client.post_multipart(
+            "FilesService/UploadMultiple",
+            data=data,
+            files=[("files", (filename, content, content_type))],
+        )
+
+    def rename_file(self, file_external_id: str, name: str) -> str:
+        result = (
+            self.client.post(
+                "FileManagerService/Rename", {"id": file_external_id, "name": name}
+            )
+            or {}
+        )
+        # O servidor devolve o nome COM a extensão que ele preservou.
+        return result.get("name") or name
+
+    def delete_file(self, file_external_id: str) -> None:
+        self.client.post("FilesService/Delete", params={"id": file_external_id})

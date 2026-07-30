@@ -185,6 +185,42 @@ class EHRInsuranceCompany:
     plans: list[EHRInsurancePlan] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class EHRFile:
+    """
+    Um item da árvore de arquivos do paciente (RF-PRO-7).
+
+    `url` é o endereço do arquivo no storage do EHR e **não pode sair na
+    listagem da nossa API** — ele só é entregue pela ação de abrir, que é a
+    que audita (§4.10). Aqui ele existe porque o adapter o recebe do provedor.
+    """
+
+    external_id: str
+    name: str
+    is_directory: bool = False
+    size: int = 0
+    mime_type: str = ""
+    url: str = ""
+    created_at: str = ""
+    #: O EHR gerou este item (pasta de exames, pedido emitido) — não se
+    #: renomeia nem se apaga por aqui.
+    read_only: bool = False
+    can_delete: bool = True
+    #: Pasta de sistema: `.internal` some da tela, `.exams` vira "Exames".
+    system: bool = False
+    hidden: bool = False
+
+
+@dataclass(frozen=True)
+class EHRFolderListing:
+    """Conteúdo de uma pasta: subpastas e arquivos, já separados."""
+
+    folder_external_id: str = ""
+    folder_name: str = ""
+    folders: list[EHRFile] = field(default_factory=list)
+    files: list[EHRFile] = field(default_factory=list)
+
+
 @runtime_checkable
 class EHRProvider(Protocol):
     """Interface de leitura da F1 - um adapter por provedor."""
@@ -245,6 +281,38 @@ class EHRProvider(Protocol):
         self, professional_external_id: str
     ) -> list[EHRProfessionalProcedure]:
         """Procedimentos oferecidos POR profissional (duração/preço do form)."""
+        ...
+
+    # ---------------- arquivos do paciente (RF-PRO-7) ---------------- #
+    # Proxy AO VIVO, sem espelho local (decisão de 30/07/2026, §18): a
+    # listagem sai do EHR na hora, como o `get_availability`.
+
+    def list_files(
+        self, patient_external_id: str, folder_external_id: str = ""
+    ) -> EHRFolderListing:
+        """Conteúdo de uma pasta do paciente. Sem pasta = raiz."""
+        ...
+
+    def upload_file(
+        self,
+        patient_external_id: str,
+        folder_external_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> None:
+        """
+        Envia um arquivo para a pasta. Não devolve nada: a vSaúde responde
+        vazio e o chamador re-lista para confirmar.
+        """
+        ...
+
+    def rename_file(self, file_external_id: str, name: str) -> str:
+        """Renomeia e devolve o nome final (o EHR preserva a extensão)."""
+        ...
+
+    def delete_file(self, file_external_id: str) -> None:
+        """Remove o arquivo do prontuário."""
         ...
 
     # ------------------- escrita (write-through, §10.2) ------------------- #

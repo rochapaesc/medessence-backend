@@ -301,3 +301,139 @@ def test_transition_sem_rota_e_noop(clinic):
     assert adapter.transition_appointment("appt-1", "in_progress") is False
     assert adapter.transition_appointment("appt-1", "scheduled") is False
     assert client.calls == []
+
+
+# --------------------------------------------------------------------------
+# Arquivos do paciente (RF-PRO-7)
+#
+# Shape REAL, capturado na clínica 3 em 30/07/2026. Duas coisas aqui só se
+# descobrem no tenant de verdade: as pastas de sistema são QUATRO (o swagger
+# não as lista) e todas vêm com `isHidden: false` - filtrar pela flag não
+# esconderia nem a `.internal`.
+# --------------------------------------------------------------------------
+
+RAIZ_REAL = {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "name": "Arquivos",
+    "folders": [
+        {
+            "id": "f-atestado",
+            "name": "Atestado Médico",
+            # Pasta comum vem READ-ONLY no tenant real: isso é sobre RENOMEAR
+            # a pasta, não sobre poder guardar arquivo dentro dela.
+            "isReadOnly": True,
+            "allowDelete": True,
+            "system": False,
+            "isHidden": False,
+            "size": 0,
+            "path": "3519/apps/proj/files/pac/f-atestado",
+        },
+        {
+            "id": "f-internal",
+            "name": ".internal",
+            "isReadOnly": True,
+            "allowDelete": False,
+            "system": True,
+            "isHidden": False,
+        },
+        {
+            "id": "f-exams",
+            "name": ".exams",
+            "isReadOnly": True,
+            "allowDelete": False,
+            "system": True,
+            "isHidden": False,
+        },
+        {
+            "id": "f-prescriptions",
+            "name": ".prescriptions",
+            "isReadOnly": True,
+            "allowDelete": False,
+            "system": True,
+            "isHidden": False,
+        },
+        {
+            "id": "f-terms",
+            "name": ".terms",
+            "isReadOnly": True,
+            "allowDelete": False,
+            "system": True,
+            "isHidden": False,
+        },
+    ],
+    "files": [],
+}
+
+PEDIDO_REAL = {
+    "id": "a-pedido",
+    "name": "Pedido 10/06/2026 174234.pdf",
+    "size": 405172,
+    # O arquivo gerado pelo EHR trava o nome mas PERMITE apagar.
+    "isReadOnly": True,
+    "allowDelete": True,
+    "system": False,
+    "isHidden": False,
+    "creationTime": "2026-06-10T17:42:34Z",
+    "path": (
+        "https://stvsaudeprd.blob.core.windows.net/vsaude/3519/apps/proj/"
+        "files/pac/f-exams/5505db01.pdf"
+    ),
+}
+
+
+def test_pastas_de_sistema_ganham_nome_legivel_e_a_internal_some(clinic):
+    client = RecordingClient(post_result=RAIZ_REAL)
+    adapter = VSaudeAdapter(clinic, client=client)
+
+    listagem = adapter.list_files("guid-paciente")
+
+    assert [p.name for p in listagem.folders] == [
+        "Atestado Médico",
+        "Exames",
+        "Receitas",
+        "Termos assinados",
+    ], "a .internal é bagagem do EHR e não é assunto de ninguém na clínica"
+    # Some pelo NOME: no tenant real `isHidden` é false em TODAS elas.
+    assert all(f.get("isHidden") is False for f in RAIZ_REAL["folders"])
+
+    _, path, body = client.last("POST")
+    assert path == "FilesService/ListFolder"
+    assert body == {
+        "patient": "guid-paciente",
+        "sorting": "name asc",
+        "deletedOnly": False,
+    }
+
+
+def test_pasta_do_EHR_vem_marcada_e_a_comum_nao(clinic):
+    """É a marca de sistema, não o `isReadOnly`, que decide se a pasta aceita
+    envio: no tenant real pasta COMUM também vem read-only."""
+    adapter = VSaudeAdapter(clinic, client=RecordingClient(post_result=RAIZ_REAL))
+    por_nome = {p.name: p for p in adapter.list_files("guid-paciente").folders}
+
+    assert por_nome["Exames"].system is True
+    assert por_nome["Exames"].can_delete is False
+    assert por_nome["Atestado Médico"].system is False
+    assert por_nome["Atestado Médico"].can_delete is True
+
+
+def test_a_pasta_nao_traz_endereco_de_blob(clinic):
+    """No item de pasta o `path` é caminho interno do storage; abri-lo não
+    levaria a lugar nenhum."""
+    adapter = VSaudeAdapter(clinic, client=RecordingClient(post_result=RAIZ_REAL))
+    assert all(p.url == "" for p in adapter.list_files("guid-paciente").folders)
+
+
+def test_arquivo_traz_a_URL_do_blob_e_respeita_o_que_o_EHR_trava(clinic):
+    dentro = {"id": "f-exams", "name": ".exams", "folders": [], "files": [PEDIDO_REAL]}
+    adapter = VSaudeAdapter(clinic, client=RecordingClient(post_result=dentro))
+
+    listagem = adapter.list_files("guid-paciente", "f-exams")
+
+    assert listagem.folder_name == "Exames"
+    arquivo = listagem.files[0]
+    assert arquivo.url.startswith("https://stvsaudeprd.blob.core.windows.net/")
+    assert arquivo.size == 405172
+    # Nome travado pelo EHR, exclusão liberada - são decisões separadas.
+    assert arquivo.read_only is True
+    assert arquivo.can_delete is True

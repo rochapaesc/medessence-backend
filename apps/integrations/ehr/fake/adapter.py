@@ -14,6 +14,7 @@ dados - o pull deve ser idempotente sobre eles. Casos cobertos de propósito:
 """
 
 import re
+from dataclasses import replace
 from datetime import timedelta
 from typing import ClassVar
 
@@ -23,6 +24,8 @@ from faker import Faker
 from apps.integrations.ehr.base import (
     EHRAppointment,
     EHRAvailability,
+    EHRFile,
+    EHRFolderListing,
     EHRCareUnit,
     EHRClinicalEntry,
     EHRInsuranceCompany,
@@ -287,6 +290,114 @@ class FakeAdapter:
             has_availability=True,
             times=["09:00", "09:30", "10:00", "14:00", "14:30"],
         )
+
+    # ---------------- arquivos do paciente (RF-PRO-7) ---------------- #
+    #
+    # Guardados em memória por processo: o suficiente para exercitar a aba
+    # (entrar em pasta, subir, renomear, apagar) sem EHR real. Reinicia com o
+    # servidor, e isso é de propósito - dado de dev não deve parecer perene.
+
+    _ARQUIVOS: ClassVar[dict] = {}
+
+    def _pastas_iniciais(self, patient_external_id: str) -> dict:
+        """A mesma forma da vSaúde: duas pastas do usuário e a de exames."""
+        return {
+            "": [
+                EHRFile(
+                    external_id=f"folder-atestado-{patient_external_id}",
+                    name="Atestado Médico",
+                    is_directory=True,
+                ),
+                EHRFile(
+                    external_id=f"folder-exames-{patient_external_id}",
+                    name="Exames",
+                    is_directory=True,
+                    system=True,
+                    read_only=True,
+                    can_delete=False,
+                ),
+            ],
+            f"folder-exames-{patient_external_id}": [
+                EHRFile(
+                    external_id=f"file-pedido-{patient_external_id}",
+                    name="Pedido 02/09/2025 162540.pdf",
+                    size=243251,
+                    mime_type="application/pdf",
+                    url="https://exemplo.invalido/fake/pedido.pdf",
+                    created_at="2025-09-02T16:25:48Z",
+                    read_only=True,
+                    can_delete=False,
+                ),
+            ],
+        }
+
+    def _arvore(self, patient_external_id: str) -> dict:
+        return self._ARQUIVOS.setdefault(
+            patient_external_id, self._pastas_iniciais(patient_external_id)
+        )
+
+    def list_files(
+        self, patient_external_id: str, folder_external_id: str = ""
+    ) -> EHRFolderListing:
+        arvore = self._arvore(patient_external_id)
+        itens = arvore.get(folder_external_id, [])
+        nome = ""
+        if folder_external_id:
+            nome = next(
+                (
+                    p.name
+                    for p in arvore.get("", [])
+                    if p.external_id == folder_external_id
+                ),
+                "",
+            )
+        return EHRFolderListing(
+            folder_external_id=folder_external_id,
+            folder_name=nome,
+            folders=[i for i in itens if i.is_directory],
+            files=[i for i in itens if not i.is_directory],
+        )
+
+    def upload_file(
+        self,
+        patient_external_id: str,
+        folder_external_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> None:
+        arvore = self._arvore(patient_external_id)
+        arvore.setdefault(folder_external_id, []).append(
+            EHRFile(
+                external_id=f"file-{len(content)}-{filename}",
+                name=filename,
+                size=len(content),
+                mime_type=content_type,
+                url=f"https://exemplo.invalido/fake/{filename}",
+                created_at=timezone.now().isoformat(),
+            )
+        )
+
+    def rename_file(self, file_external_id: str, name: str) -> str:
+        for itens in self._ARQUIVOS.values():
+            for pasta, lista in itens.items():
+                for i, item in enumerate(lista):
+                    if item.external_id != file_external_id:
+                        continue
+                    # Como a vSaúde: a extensão é do servidor, não de quem
+                    # digitou.
+                    extensao = item.name.rpartition(".")[2]
+                    final = f"{name}.{extensao}" if extensao else name
+                    lista[i] = replace(item, name=final)
+                    return final
+        return name
+
+    def delete_file(self, file_external_id: str) -> None:
+        for itens in self._ARQUIVOS.values():
+            for pasta, lista in itens.items():
+                itens[pasta] = [
+                    i for i in lista if i.external_id != file_external_id
+                ]
 
     # -------------------- escrita (registro em memória) ------------------- #
     # Estado de escrita fica em dicts DE CLASSE, particionados por clínica:

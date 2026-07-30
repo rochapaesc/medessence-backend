@@ -54,6 +54,16 @@ class VSaudeClient:
             kwargs["params"] = params
         return self._request("POST", path, **kwargs)
 
+    def post_multipart(self, path: str, data: dict, files: list):
+        """
+        POST multipart (upload de arquivo do paciente, RF-PRO-7).
+
+        `files` no formato do requests: `[("files", (nome, bytes, mime))]`.
+        Note que o Content-Type é do requests, não nosso: definir na mão
+        quebra o boundary.
+        """
+        return self._request("POST", path, data=data, files=files)
+
     def put(self, path: str, body: dict | None = None):
         """PUT (updates full-object, ex.: PatientService/Update)."""
         return self._request("PUT", path, json=body or {})

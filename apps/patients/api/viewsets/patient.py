@@ -10,6 +10,7 @@ from apps.core.masking import is_masked
 from apps.core.mixins import AuditMixin, SoftDeleteMixin
 from apps.core.models.audit_log import AuditAction
 from apps.patients.api.filtersets import PatientFilterset
+from apps.patients.api.viewsets.patient_files import PatientFilesMixin
 from apps.patients.api.serializers import (
     PatientDetailSerializer,
     PatientReadSerializer,
@@ -19,7 +20,11 @@ from apps.patients.models import Patient, PatientTag, Tag
 
 
 class PatientViewSet(
-    EHRDataGuardMixin, AuditMixin, SoftDeleteMixin, ClinicScopedModelViewSet
+    PatientFilesMixin,
+    EHRDataGuardMixin,
+    AuditMixin,
+    SoftDeleteMixin,
+    ClinicScopedModelViewSet,
 ):
     """
     CRM de pacientes (RF-PAC-1..7), escopado pela clínica ativa.
