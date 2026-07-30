@@ -437,3 +437,31 @@ def test_arquivo_traz_a_URL_do_blob_e_respeita_o_que_o_EHR_trava(clinic):
     # Nome travado pelo EHR, exclusão liberada - são decisões separadas.
     assert arquivo.read_only is True
     assert arquivo.can_delete is True
+
+
+def test_excluir_arquivo_usa_DELETE_e_nao_POST(clinic):
+    """⚠️ Com POST a vSaúde devolve 405 e a exclusão NUNCA acontecia - achado
+    ao vivo em 30/07/2026, com a captura da rota dizendo POST. Mesma pegadinha
+    do `RemoveTag`, que é PUT. Nenhum teste de unidade pegaria: o dublê aceita
+    o verbo que a gente inventar."""
+    client = RecordingClient()
+    adapter = VSaudeAdapter(clinic, client=client)
+
+    adapter.delete_file("arq-1")
+
+    metodo, path, params = client.last("DELETE")
+    assert (metodo, path) == ("DELETE", "FilesService/Delete")
+    assert params == {"id": "arq-1"}
+    assert not [c for c in client.calls if c[0] == "POST"]
+
+
+def test_a_pasta_aberta_diz_se_e_do_prontuario(clinic):
+    """O nome sai daqui traduzido ("Exames"), então quem precisa recusar
+    escrita não teria como reconhecê-la depois."""
+    dentro = {"id": "f-exams", "name": ".exams", "folders": [], "files": []}
+    adapter = VSaudeAdapter(clinic, client=RecordingClient(post_result=dentro))
+    assert adapter.list_files("guid", "f-exams").folder_is_system is True
+
+    comum = {"id": "f-atestado", "name": "Atestado Médico", "folders": [], "files": []}
+    adapter = VSaudeAdapter(clinic, client=RecordingClient(post_result=comum))
+    assert adapter.list_files("guid", "f-atestado").folder_is_system is False

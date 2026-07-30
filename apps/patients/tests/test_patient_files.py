@@ -38,6 +38,8 @@ class _ProviderFalso:
             return EHRFolderListing(
                 folder_external_id="pasta-exames",
                 folder_name="Exames",
+                # A pasta que o próprio prontuário administra.
+                folder_is_system=True,
                 files=[
                     EHRFile(
                         external_id="arq-1",
@@ -47,6 +49,24 @@ class _ProviderFalso:
                         url=URL_BLOB,
                         read_only=True,
                         can_delete=False,
+                    )
+                ],
+            )
+        if folder_external_id == "pasta-atestado":
+            return EHRFolderListing(
+                folder_external_id="pasta-atestado",
+                folder_name="Atestado Médico",
+                files=[
+                    EHRFile(
+                        external_id="arq-2",
+                        name="Guia.pdf",
+                        size=1024,
+                        mime_type="application/pdf",
+                        url=URL_BLOB,
+                        # Como o prontuário devolve o que NÓS subimos: travado
+                        # no papel, mas o Rename funciona (calibrado ao vivo).
+                        read_only=True,
+                        can_delete=True,
                     )
                 ],
             )
@@ -227,10 +247,14 @@ def test_atendente_ENVIA(api_client, attendant_a, paciente, provider):
 def test_atendente_nao_renomeia_nem_exclui(api_client, attendant_a, paciente, provider):
     api_client.force_authenticate(attendant_a)
     renomear = api_client.post(
-        _url(paciente, "rename/"), {"file": "arq-1", "name": "Novo"}, format="json"
+        _url(paciente, "rename/"),
+        {"file": "arq-2", "name": "Novo", "folder": "pasta-atestado"},
+        format="json",
     )
     excluir = api_client.post(
-        _url(paciente, "delete/"), {"file": "arq-1"}, format="json"
+        _url(paciente, "delete/"),
+        {"file": "arq-2", "folder": "pasta-atestado"},
+        format="json",
     )
     assert renomear.status_code == 403
     assert excluir.status_code == 403
@@ -283,12 +307,14 @@ def test_renomear_devolve_o_nome_final_do_servidor(
     api_client.force_authenticate(manager_single_clinic)
 
     resposta = api_client.post(
-        _url(paciente, "rename/"), {"file": "arq-1", "name": "Teste"}, format="json"
+        _url(paciente, "rename/"),
+        {"file": "arq-2", "name": "Teste", "folder": "pasta-atestado"},
+        format="json",
     )
 
     assert resposta.status_code == 200
     assert resposta.data["name"] == "Teste.pdf"
-    assert provider.renomeados == [("arq-1", "Teste")]
+    assert provider.renomeados == [("arq-2", "Teste")]
 
 
 def test_excluir_chama_o_ehr_e_devolve_a_lista(
@@ -297,11 +323,15 @@ def test_excluir_chama_o_ehr_e_devolve_a_lista(
     api_client.force_authenticate(manager_single_clinic)
 
     resposta = api_client.post(
-        _url(paciente, "delete/"), {"file": "arq-1"}, format="json"
+        _url(paciente, "delete/"),
+        {"file": "arq-2", "folder": "pasta-atestado"},
+        format="json",
     )
 
     assert resposta.status_code == 200
-    assert provider.apagados == ["arq-1"]
+    assert provider.apagados == ["arq-2"]
+    # Volta a pasta ABERTA, não a raiz: a tela continua onde o usuário estava.
+    assert resposta.data["folder"]["name"] == "Atestado Médico"
     assert AuditLog.objects.filter(
         resource="PatientFile", action=AuditAction.DELETE
     ).exists()
@@ -318,3 +348,133 @@ def test_paciente_de_outra_clinica_nao_abre(
     )
     api_client.force_authenticate(manager_single_clinic)
     assert api_client.get(_url(alheio)).status_code == 404
+
+
+# ------------------- a pasta do prontuário é só leitura -------------------
+#
+# Calibrado ao vivo em 30/07/2026: a vSaúde ACEITA gravar dentro das pastas
+# dela própria. O botão escondido na tela não era regra nenhuma - quem faz o
+# "somente leitura" do RF-PRO-7 valer somos nós.
+
+
+def test_enviar_para_a_pasta_do_prontuario_e_recusado(
+    api_client, manager_single_clinic, paciente, provider
+):
+    api_client.force_authenticate(manager_single_clinic)
+    arquivo = SimpleUploadedFile("intruso.pdf", b"%PDF-1.4", content_type="application/pdf")
+
+    resposta = api_client.post(
+        _url(paciente, "upload/"),
+        {"file": arquivo, "folder": "pasta-exames"},
+        format="multipart",
+    )
+
+    assert resposta.status_code == 400
+    assert "preenchida pelo prontuário" in str(resposta.data)
+    assert provider.enviados == [], "não pode nem viajar até o EHR"
+
+
+def test_renomear_e_excluir_dentro_da_pasta_do_prontuario_sao_recusados(
+    api_client, manager_single_clinic, paciente, provider
+):
+    api_client.force_authenticate(manager_single_clinic)
+
+    renomear = api_client.post(
+        _url(paciente, "rename/"),
+        {"file": "arq-1", "name": "Outro", "folder": "pasta-exames"},
+        format="json",
+    )
+    excluir = api_client.post(
+        _url(paciente, "delete/"),
+        {"file": "arq-1", "folder": "pasta-exames"},
+        format="json",
+    )
+
+    assert renomear.status_code == 400
+    assert excluir.status_code == 400
+    assert provider.renomeados == []
+    assert provider.apagados == []
+
+
+def test_omitir_a_pasta_NAO_e_atalho_para_escapar_do_gate(
+    api_client, manager_single_clinic, paciente, provider
+):
+    """Se `folder` fosse opcional, bastaria não mandá-lo para alterar um
+    arquivo que mora na pasta do prontuário."""
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.post(
+        _url(paciente, "rename/"), {"file": "arq-1", "name": "Outro"}, format="json"
+    )
+
+    assert resposta.status_code == 400
+    assert provider.renomeados == []
+
+
+def test_arquivo_travado_pelo_EHR_nao_e_excluido_mesmo_em_pasta_comum(
+    api_client, manager_single_clinic, paciente, provider
+):
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.post(
+        _url(paciente, "delete/"),
+        {"file": "arq-1", "folder": "pasta-atestado"},
+        format="json",
+    )
+    # `arq-1` não mora nesta pasta - o gate confere isso antes de chamar o EHR.
+    assert resposta.status_code == 400
+    assert provider.apagados == []
+
+
+def test_renomear_arquivo_read_only_em_pasta_comum_FUNCIONA(
+    api_client, manager_single_clinic, paciente, provider
+):
+    """O prontuário devolve `isReadOnly: true` em TODO arquivo que sobe por
+    nós, e mesmo assim o Rename dele funciona (verificado ao vivo). Tratar a
+    flag como trava mataria o Renomear na prática."""
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.post(
+        _url(paciente, "rename/"),
+        {"file": "arq-2", "name": "Guia nova", "folder": "pasta-atestado"},
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    assert provider.renomeados == [("arq-2", "Guia nova")]
+
+
+def test_upload_devolve_a_pasta_ABERTA_e_nao_a_raiz(
+    api_client, manager_single_clinic, paciente, provider
+):
+    """A pasta vem no CORPO do multipart; lendo da querystring a resposta
+    voltava com a raiz e a tela trocava de conteúdo sozinha."""
+    api_client.force_authenticate(manager_single_clinic)
+    arquivo = SimpleUploadedFile("guia.pdf", b"%PDF-1.4", content_type="application/pdf")
+
+    resposta = api_client.post(
+        _url(paciente, "upload/"),
+        {"file": arquivo, "folder": "pasta-atestado"},
+        format="multipart",
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.data["folder"]["name"] == "Atestado Médico"
+
+
+def test_teto_de_tamanho_recusa_antes_de_viajar(
+    api_client, manager_single_clinic, paciente, provider
+):
+    """10 MB é o teto: acima disso a subida engasga no meio (a vSaúde não
+    recusa por tamanho, ela para de responder)."""
+    api_client.force_authenticate(manager_single_clinic)
+    grande = SimpleUploadedFile(
+        "exame.pdf", b"x" * (11 * 1024 * 1024), content_type="application/pdf"
+    )
+
+    resposta = api_client.post(
+        _url(paciente, "upload/"), {"file": grande}, format="multipart"
+    )
+
+    assert resposta.status_code == 400
+    assert "10 MB" in str(resposta.data)
+    assert provider.enviados == []

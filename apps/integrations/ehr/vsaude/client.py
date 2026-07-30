@@ -23,6 +23,10 @@ from apps.integrations.ehr.exceptions import (
 )
 
 DEFAULT_TIMEOUT = 30  # segundos
+
+#: Upload de arquivo do paciente (RF-PRO-7): a escrita é lenta e não pode
+#: morrer na metade. Ver `post_multipart`.
+UPLOAD_TIMEOUT = 180  # segundos
 PAGE_SIZE = 100
 MAX_429_RETRIES = 4  # absorve rajadas (ex.: backfill de vários meses)
 RETRY_AFTER_CAP = 15  # s - teto do respeito ao header Retry-After
@@ -61,8 +65,14 @@ class VSaudeClient:
         `files` no formato do requests: `[("files", (nome, bytes, mime))]`.
         Note que o Content-Type é do requests, não nosso: definir na mão
         quebra o boundary.
+
+        Timeout próprio: subir arquivo é lento (medido em 30/07/2026 contra a
+        clínica real, ~0,5 MB/s), e os 30s do padrão derrubavam o envio no
+        meio da escrita. O teto de tamanho é da API, não daqui.
         """
-        return self._request("POST", path, data=data, files=files)
+        return self._request(
+            "POST", path, timeout=UPLOAD_TIMEOUT, data=data, files=files
+        )
 
     def put(self, path: str, body: dict | None = None):
         """PUT (updates full-object, ex.: PatientService/Update)."""
@@ -83,14 +93,14 @@ class VSaudeClient:
                 pass
         return min(2**attempt, RETRY_AFTER_CAP)
 
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, timeout: int | None = None, **kwargs):
         url = f"{self.base_url}/{path.lstrip('/')}"
-        # Rajada de 429 (backfill): recua e reтenta a MESMA request algumas
+        # Rajada de 429 (backfill): recua e retenta a MESMA request algumas
         # vezes antes de desistir - o beat cobre o que sobrar.
         for attempt in range(MAX_429_RETRIES + 1):
             try:
                 response = self.session.request(
-                    method, url, timeout=DEFAULT_TIMEOUT, **kwargs
+                    method, url, timeout=timeout or DEFAULT_TIMEOUT, **kwargs
                 )
             except requests.RequestException as exc:
                 raise EHRUnavailableError(f"vSaúde inacessível: {exc}") from exc

@@ -25,8 +25,11 @@ from apps.integrations.ehr.registry import get_ehr_provider
 #: Só o que a vSaúde aceita — recusar aqui evita a viagem e o erro genérico.
 TIPOS_ACEITOS = ("application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic")
 
-#: Teto local, até a calibração dizer o do EHR (P13).
-TAMANHO_MAXIMO = 25 * 1024 * 1024
+#: Teto de tamanho. Calibrado ao vivo em 30/07/2026: a vSaúde não recusa por
+#: tamanho, ela ENGASGA — a subida corre a ~0,5 MB/s e 30 MB morrem no meio da
+#: escrita. 10 MB sobe em ~26s, que já é o limite do que se espera de uma tela,
+#: e cobre com folga o exame digitalizado (os reais da clínica têm 0,1 a 1,5 MB).
+TAMANHO_MAXIMO = 10 * 1024 * 1024
 
 
 def _arquivo_payload(arquivo, *, com_url: bool = False) -> dict:
@@ -76,6 +79,27 @@ class PatientFilesMixin:
             )
         return patient, get_ehr_provider(self.clinic), None
 
+    def _pasta_gravavel(self, provider, patient, folder_id):
+        """
+        A pasta onde a escrita vai cair, recusando as do prontuário.
+
+        A vSaúde ACEITA gravar dentro das pastas dela (verificado ao vivo em
+        30/07/2026): quem faz valer o "somente leitura" do RF-PRO-7 somos nós.
+        Devolve a listagem, que o chamador reaproveita para conferir o item.
+        """
+        try:
+            alvo = provider.list_files(patient.external_id, folder_id)
+        except EHRError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        if alvo.folder_is_system:
+            raise ValidationError(
+                {
+                    "folder": f"A pasta {alvo.folder_name} é preenchida pelo "
+                    "prontuário e não aceita alteração por aqui."
+                }
+            )
+        return alvo
+
     def _so_quem_ve_conteudo(self):
         """
         Abrir, renomear e excluir pressupõem saber o que o arquivo É — é
@@ -89,15 +113,21 @@ class PatientFilesMixin:
             )
 
     @action(detail=True, methods=["get"], url_path="files")
-    def files(self, request, pk=None):
-        """Conteúdo de uma pasta (`?folder=<id>`). Sem `folder` = raiz."""
+    def files(self, request, pk=None, folder=None):
+        """
+        Conteúdo de uma pasta (`?folder=<id>`). Sem `folder` = raiz.
+
+        `folder` explícito existe para o envio e a exclusão reaproveitarem
+        esta resposta: eles mandam a pasta no CORPO, e ler da querystring
+        devolvia a raiz enquanto a tela continuava dentro da pasta.
+        """
         patient, provider, erro = self._paciente_com_ehr(pk)
         if erro is not None:
             return erro
+        if folder is None:
+            folder = request.query_params.get("folder", "")
         try:
-            listagem = provider.list_files(
-                patient.external_id, request.query_params.get("folder", "")
-            )
+            listagem = provider.list_files(patient.external_id, folder)
         except EHRError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
 
@@ -182,6 +212,10 @@ class PatientFilesMixin:
                 {"file": f"Arquivo acima de {TAMANHO_MAXIMO // (1024 * 1024)} MB."}
             )
 
+        destino = request.data.get("folder", "")
+        if destino:
+            self._pasta_gravavel(provider, patient, destino)
+
         try:
             provider.upload_file(
                 patient.external_id,
@@ -204,7 +238,7 @@ class PatientFilesMixin:
         )
         # A vSaúde responde VAZIO no upload: a lista volta relida, que é a
         # única prova de que o arquivo entrou.
-        return self.files(request, pk=pk)
+        return self.files(request, pk=pk, folder=destino)
 
     @action(detail=True, methods=["post"], url_path="files/rename")
     def rename_file(self, request, pk=None):
@@ -217,6 +251,12 @@ class PatientFilesMixin:
         nome = (request.data.get("name") or "").strip()
         if not file_id or not nome:
             raise ValidationError({"detail": "Informe o arquivo e o novo nome."})
+
+        # `folder` é obrigatório de propósito: é ele que diz se o arquivo mora
+        # numa pasta do prontuário. Sem exigir, bastaria omitir para escapar.
+        alvo = self._pasta_gravavel(provider, patient, request.data.get("folder", ""))
+        if not any(a.external_id == file_id for a in alvo.files):
+            raise ValidationError({"file": "Arquivo não encontrado nesta pasta."})
 
         try:
             final = provider.rename_file(file_id, nome)
@@ -245,6 +285,13 @@ class PatientFilesMixin:
         if not file_id:
             raise ValidationError({"file": "Informe o arquivo."})
 
+        alvo = self._pasta_gravavel(provider, patient, request.data.get("folder", ""))
+        item = next((a for a in alvo.files if a.external_id == file_id), None)
+        if item is None:
+            raise ValidationError({"file": "Arquivo não encontrado nesta pasta."})
+        if not item.can_delete:
+            raise ValidationError({"file": "O prontuário não deixa excluir este arquivo."})
+
         try:
             provider.delete_file(file_id)
         except EHRError as exc:
@@ -255,8 +302,8 @@ class PatientFilesMixin:
             action=AuditAction.DELETE,
             resource="PatientFile",
             resource_id=file_id,
-            payload={"patient": patient.pk},
+            payload={"patient": patient.pk, "file_name": item.name},
             request=request,
             clinic=self.clinic,
         )
-        return self.files(request, pk=pk)
+        return self.files(request, pk=pk, folder=request.data.get("folder", ""))

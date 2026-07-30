@@ -217,6 +217,10 @@ class EHRFolderListing:
 
     folder_external_id: str = ""
     folder_name: str = ""
+    #: A pasta ABERTA é do próprio prontuário (`.exams` e companhia). Vem
+    #: no DTO porque a API precisa recusar envio para dentro dela, e o nome
+    #: que sai daqui já está traduzido — não dá para reconhecê-la depois.
+    folder_is_system: bool = False
     folders: list[EHRFile] = field(default_factory=list)
     files: list[EHRFile] = field(default_factory=list)
 

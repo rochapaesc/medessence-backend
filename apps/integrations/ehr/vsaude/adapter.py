@@ -741,11 +741,14 @@ class VSaudeAdapter:
             self._arquivo(item, is_directory=False)
             for item in (result.get("files") or [])
         ]
+        nome_cru = result.get("name") or ""
         return EHRFolderListing(
             folder_external_id=str(result.get("id") or ""),
-            folder_name=self.PASTAS_DE_SISTEMA.get(
-                result.get("name") or "", result.get("name") or ""
-            ),
+            folder_name=self.PASTAS_DE_SISTEMA.get(nome_cru, nome_cru),
+            # O nome traduzido não denuncia mais a origem: quem precisa
+            # recusar envio para cá tem que saber agora.
+            folder_is_system=nome_cru in self.PASTAS_DE_SISTEMA
+            or nome_cru in self.PASTAS_OCULTAS,
             # Oculta some aqui, não na tela: assim nenhum caminho da API
             # devolve a `.internal` por engano.
             folders=[p for p in pastas if not p.hidden],
@@ -780,4 +783,9 @@ class VSaudeAdapter:
         return result.get("name") or name
 
     def delete_file(self, file_external_id: str) -> None:
-        self.client.post("FilesService/Delete", params={"id": file_external_id})
+        # ⚠️ É DELETE, não POST: com POST a vSaúde devolve 405 e a exclusão
+        # nunca acontecia (achado ao vivo em 30/07/2026 — a captura da rota
+        # dizia POST). Mesma pegadinha do `RemoveTag`, que é PUT.
+        # Vai para a LIXEIRA do prontuário, não some: o item reaparece na
+        # listagem com `deletedOnly: true`, com `isDeleted` e `deletionTime`.
+        self.client.delete("FilesService/Delete", params={"id": file_external_id})
