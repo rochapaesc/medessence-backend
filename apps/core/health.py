@@ -135,7 +135,7 @@ def saude_do_processamento() -> dict:
             # separa é a fila: parada, ninguém está publicando; crescendo,
             # ninguém está consumindo.
             "reason": (
-                "Nenhum batimento registrado — worker ou agendador fora do ar."
+                "Nenhum batimento registrado. Worker ou agendador fora do ar."
             ),
         }
 

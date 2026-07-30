@@ -265,7 +265,7 @@ def iniciar_conversa(clinic, user, *, patient=None, phone=None):
     return conversation, created
 
 
-MOTIVO_CREDENCIAL = "Canal do WhatsApp desconectado — avise o suporte para reconectar."
+MOTIVO_CREDENCIAL = "Canal do WhatsApp desconectado. Avise o suporte para reconectar."
 
 
 def registrar_saude_do_canal(channel, *, erro=None) -> None:

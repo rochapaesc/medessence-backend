@@ -219,7 +219,7 @@ def test_erro_de_rede_no_download_vira_estado_e_nao_silencio(clinic_a, inbox_a, 
 
     media.refresh_from_db()
     assert media.state == MediaState.FAILED
-    assert media.error == "O WhatsApp não respondeu agora — tente de novo."
+    assert media.error == "O WhatsApp não respondeu agora. Tente de novo."
 
 
 def test_token_morto_vira_frase_HUMANA_e_nao_despejo_da_meta(clinic_a, inbox_a, monkeypatch):
@@ -237,7 +237,7 @@ def test_token_morto_vira_frase_HUMANA_e_nao_despejo_da_meta(clinic_a, inbox_a, 
     fetch_media_asset(media.pk)
 
     media.refresh_from_db()
-    assert media.error == "Canal do WhatsApp desconectado — avise o suporte para reconectar."
+    assert media.error == "Canal do WhatsApp desconectado. Avise o suporte para reconectar."
     assert "fbtrace" not in media.error
 
 

@@ -31,7 +31,7 @@ class EHRDataGuardMixin:
         if _guard_blocks(instance):
             raise PermissionDenied(
                 "Trava de dados de produção ligada: este registro veio do "
-                "prontuário eletrônico e não pode ser excluído por aqui — a "
+                "prontuário eletrônico e não pode ser excluído por aqui: a "
                 "exclusão seria propagada para o EHR. Para liberar, defina "
                 "EHR_DATA_GUARD=False no ambiente."
             )

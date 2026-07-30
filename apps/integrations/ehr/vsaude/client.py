@@ -93,7 +93,7 @@ class VSaudeClient:
             raise EHRAuthError("API key da vSaúde recusada (401/403).")
         if response.status_code == 429:
             raise EHRRateLimitedError(
-                "Muitas requisições à vSaúde no momento — o restante entra na "
+                "Muitas requisições à vSaúde no momento. O restante entra na "
                 "próxima sincronização automática."
             )
         if response.status_code >= 500:

@@ -128,7 +128,7 @@ class MessageViewSet(
             raise ValidationError("Reação inválida.")
         if not message.provider_message_id:
             raise ValidationError(
-                "Esta mensagem ainda não chegou ao WhatsApp — não dá para reagir."
+                "Esta mensagem ainda não chegou ao WhatsApp. Não dá para reagir."
             )
 
         reagir(message, request.user, emoji)

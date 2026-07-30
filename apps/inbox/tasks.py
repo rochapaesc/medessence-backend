@@ -120,13 +120,13 @@ def _motivo_humano(exc: Exception) -> str:
     )
 
     if isinstance(exc, WhatsAppAuthError):
-        return "Canal do WhatsApp desconectado — avise o suporte para reconectar."
+        return "Canal do WhatsApp desconectado. Avise o suporte para reconectar."
     if isinstance(exc, WhatsAppNotConfiguredError):
         return "Canal do WhatsApp sem credenciais configuradas."
     if isinstance(exc, WhatsAppRateLimitedError):
-        return "Limite de downloads do WhatsApp atingido — tente daqui a pouco."
+        return "Limite de downloads do WhatsApp atingido. Tente daqui a pouco."
     if isinstance(exc, WhatsAppUnavailableError):
-        return "O WhatsApp não respondeu agora — tente de novo."
+        return "O WhatsApp não respondeu agora. Tente de novo."
     return "Não foi possível baixar o arquivo."
 
 

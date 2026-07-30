@@ -90,6 +90,6 @@ class AppointmentWriteSerializer(ModelSerializer):
             and attrs["patient"].pk != self.instance.patient_id
         ):
             raise ValidationError(
-                {"patient": "Não é possível trocar o paciente - cancele e crie outra consulta."}
+                {"patient": "Não é possível trocar o paciente. Cancele e crie outra consulta."}
             )
         return attrs
