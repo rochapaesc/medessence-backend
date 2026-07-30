@@ -1,6 +1,7 @@
 from apps.core.api.permissions.roles import (
     IsClinicManager,
     IsClinicMember,
+    IsPartnerArea,
     IsDoctor,
     IsPlatformAdmin,
     RolePermission,
@@ -9,6 +10,7 @@ from apps.core.api.permissions.roles import (
 __all__ = [
     "IsClinicManager",
     "IsClinicMember",
+    "IsPartnerArea",
     "IsDoctor",
     "IsPlatformAdmin",
     "RolePermission",

@@ -605,11 +605,12 @@ def _insurance_plan_from_embed(clinic, ehr_appointment):
 MEDICAL_RECORDS_SWEEP_LIMIT = 200  # varredura de fundo: prioriza os mais quentes
 
 
-def pull_medical_records(clinic, patient=None) -> SyncRun:
+def pull_medical_records(clinic, patient=None, patients=None) -> SyncRun:
     """
-    Linha do tempo clínica: sob demanda (`patient`) ao abrir a ficha, ou
-    varredura priorizando pacientes com consulta recente/futura (limite por
-    execução - a fila anda a cada rodada).
+    Linha do tempo clínica: sob demanda (`patient`) ao abrir a ficha,
+    `patients` para um lote dirigido (a conferência da tela Parceiros,
+    RF-PAR-4), ou varredura priorizando pacientes com consulta recente/futura
+    (limite por execução - a fila anda a cada rodada).
     """
     provider = get_ehr_provider(clinic)
 
@@ -617,6 +618,8 @@ def pull_medical_records(clinic, patient=None) -> SyncRun:
         stats = {"patients": 0, "fetched": 0, "created": 0, "updated": 0}
         if patient is not None:
             targets = [patient]
+        elif patients is not None:
+            targets = [p for p in patients if p.external_id]
         else:
             cutoff = timezone.now() - timedelta(days=90)
             targets = list(

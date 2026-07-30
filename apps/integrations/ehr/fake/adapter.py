@@ -392,6 +392,12 @@ class FakeAdapter:
                     return final
         return name
 
+    def export_document(self, document_external_id: str) -> tuple[bytes, str]:
+        # PDF de mentira, mas PDF: o front abre num blob e um corpo qualquer
+        # quebraria o visualizador do navegador.
+        corpo = f"%PDF-1.4\n% documento {document_external_id}\n%%EOF".encode()
+        return corpo, "application/pdf"
+
     def delete_file(self, file_external_id: str) -> None:
         for itens in self._ARQUIVOS.values():
             for pasta, lista in itens.items():

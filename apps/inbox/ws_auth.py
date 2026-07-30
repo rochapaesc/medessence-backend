@@ -42,6 +42,8 @@ class JWTClinicMiddleware:
         except (TokenError, KeyError, User.DoesNotExist):
             return None
 
+        from apps.accounts.choices import MembershipRole
+
         return (
             Membership.objects.select_related("clinic")
             .filter(
@@ -50,5 +52,8 @@ class JWTClinicMiddleware:
                 is_active=True,
                 clinic__deleted_at__isnull=True,
             )
+            # O parceiro (RF-PAR-6) não tem Inbox: sem esta exclusão o papel
+            # externo assinaria os eventos de TODA conversa da clínica.
+            .exclude(role=MembershipRole.PARTNER)
             .first()
         )

@@ -319,6 +319,13 @@ class EHRProvider(Protocol):
         """Remove o arquivo do prontuário."""
         ...
 
+    def export_document(self, document_external_id: str) -> tuple[bytes, str]:
+        """
+        O PDF de um documento clínico (receita/pedido), como `(bytes, mime)`.
+        RF-PAR-3: é o que a ação de abrir entrega, depois de auditar.
+        """
+        ...
+
     # ------------------- escrita (write-through, §10.2) ------------------- #
     # `data` chega no NOSSO formato normalizado (chaves dos models); o
     # adapter desnormaliza. Erros de rede/limite levantam as exceções de

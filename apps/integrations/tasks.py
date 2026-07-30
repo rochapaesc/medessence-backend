@@ -113,13 +113,45 @@ def schedule_appointment_syncs():
 
 @shared_task(queue="sync")
 def schedule_daily_syncs():
-    """Beat (diário, madrugada): catálogos + varredura completa de pacientes."""
+    """Beat (diário, madrugada): catálogos + varredura completa de pacientes
+    + prontuário dos "quentes" (RF-PAR-4 - a função existia sem agendamento,
+    e o espelho só crescia quando alguém abria uma ficha)."""
     for clinic_id in _integrated_clinic_ids():
         sync_clinic.delay(clinic_id, "catalogs")
         sync_clinic.delay(clinic_id, "patients")
+        sync_clinic.delay(clinic_id, "medical_records")
 
 
 def _integrated_clinic_ids():
     from apps.tenants.models import Clinic
 
     return Clinic.objects.exclude(ehr_provider="").values_list("pk", flat=True)
+
+
+@shared_task(queue="sync")
+def sync_partner_records(clinic_id: int, patient_ids: list[int]):
+    """
+    Conferência dirigida da tela Parceiros (RF-PAR-4): puxa o prontuário dos
+    pacientes com consulta no período aberto. Dirigida porque a varredura
+    padrão prioriza por recência global, e a tela precisa exatamente dos
+    pacientes DO PERÍODO que ela mostra.
+    """
+    from apps.integrations.services import pull_medical_records
+    from apps.patients.models import Patient
+    from apps.tenants.models import Clinic
+
+    clinic = Clinic.objects.filter(pk=clinic_id).first()
+    if clinic is None or not clinic.ehr_provider:
+        return {}
+    alvo = list(Patient.objects.filter(clinic=clinic, pk__in=patient_ids))
+    if not alvo:
+        return {}
+    lock = _acquire_lock("partner-records", clinic_id)
+    if lock is False:
+        return {"skipped": "locked"}
+    try:
+        return pull_medical_records(clinic, patients=alvo).stats
+    finally:
+        if lock:
+            with suppress(Exception):
+                lock.release()

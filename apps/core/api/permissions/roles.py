@@ -21,7 +21,17 @@ class IsClinicMember(BasePermission):
     """
 
     def has_permission(self, request, view):
-        resolve_active_membership(request)
+        membership = resolve_active_membership(request)
+
+        from apps.accounts.choices import MembershipRole
+
+        if membership.role == MembershipRole.PARTNER:
+            # A cerca do parceiro (RF-PAR-6), fail-closed: view nova nasce
+            # FECHADA para ele a menos que declare `partner_allowed = True`.
+            # É o que impede o papel externo de enxergar pacientes, agenda e
+            # Inbox só por ter um Membership válido.
+            self.message = "O papel Parceiro acessa apenas a área de Parceiros."
+            return bool(getattr(view, "partner_allowed", False))
         return True
 
 
@@ -60,3 +70,15 @@ class IsDoctor(RolePermission):
         from apps.accounts.choices import MembershipRole
 
         return _roles(MembershipRole.MANAGER, MembershipRole.DOCTOR)
+
+
+class IsPartnerArea(RolePermission):
+    """Área de Parceiros (RF-PAR-6): o gestor e o papel parceiro."""
+
+    message = "Apenas o gestor e o parceiro acessam a área de Parceiros."
+
+    @property
+    def allowed_roles(self):
+        from apps.accounts.choices import MembershipRole
+
+        return _roles(MembershipRole.MANAGER, MembershipRole.PARTNER)

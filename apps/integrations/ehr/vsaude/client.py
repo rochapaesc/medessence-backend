@@ -74,6 +74,27 @@ class VSaudeClient:
             "POST", path, timeout=UPLOAD_TIMEOUT, data=data, files=files
         )
 
+    def get_binary(self, path: str, params: dict | None = None) -> tuple[bytes, str]:
+        """
+        GET que devolve BYTES (o Export de documento, RF-PAR-3). Fora do
+        `_request` porque lá a resposta passa pelo envelope JSON da ABP - e
+        aqui o corpo é o próprio arquivo.
+        """
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        try:
+            response = self.session.get(url, params=params or {}, timeout=DEFAULT_TIMEOUT)
+        except requests.RequestException as exc:
+            raise EHRUnavailableError(f"vSaúde inacessível: {exc}") from exc
+        if response.status_code in (401, 403):
+            raise EHRAuthError("API key da vSaúde recusada (401/403).")
+        if response.status_code != 200:
+            raise EHRError(f"vSaúde retornou {response.status_code} ao exportar o documento.")
+        content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip()
+        if "json" in content_type:
+            # Envelope de erro no lugar do arquivo (ex.: id inexistente).
+            raise EHRError("A vSaúde devolveu um erro em vez do documento.")
+        return response.content, content_type or "application/octet-stream"
+
     def put(self, path: str, body: dict | None = None):
         """PUT (updates full-object, ex.: PatientService/Update)."""
         return self._request("PUT", path, json=body or {})

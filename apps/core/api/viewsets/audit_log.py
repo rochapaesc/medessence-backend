@@ -236,8 +236,10 @@ class MyAccessLogViewSet(AuditLabelsMixin, ClinicScopedListViewSet):
     model = AuditLog
     filterset_class = MyAccessLogFilterset
     serializer_class = MyAccessLogSerializer
-    # Qualquer papel: detectar uso indevido da própria conta interessa aos três.
+    # Qualquer papel: detectar uso indevido da própria conta interessa a todos
+    # - inclusive ao parceiro (RF-PAR-6), que só vê o PRÓPRIO rastro aqui.
     permission_classes = [IsClinicMember]
+    partner_allowed = True
     ordering_fields = ["timestamp"]
     # O serializer não mostra quem agiu - não há papel a resolver.
     audit_prefetch_roles = False

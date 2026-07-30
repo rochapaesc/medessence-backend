@@ -1,4 +1,9 @@
 from django.urls import include, path
+
+from apps.patients.api.viewsets.partners import (
+    PartnerDocumentOpenView,
+    PartnersSummaryView,
+)
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
 from apps.accounts.api.views import MeMembershipsView, MeView
@@ -28,6 +33,14 @@ urlpatterns = [
     path("", include("apps.inbox.api.routers")),
     # Sincronização manual com o EHR (complementa o beat)
     path("sync/ehr/", EHRSyncView.as_view(), name="ehr-sync"),
+
+    # Área de Parceiros (RF-PAR): a ÚNICA superfície que o papel partner vê.
+    path("partners/summary/", PartnersSummaryView.as_view(), name="partners-summary"),
+    path(
+        "partners/documents/<int:pk>/open/",
+        PartnerDocumentOpenView.as_view(),
+        name="partners-document-open",
+    ),
     # Central de notificações (o sino da topbar)
     path("notifications/", NotificationsView.as_view(), name="notifications"),
     path(

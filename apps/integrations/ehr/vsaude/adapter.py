@@ -782,6 +782,13 @@ class VSaudeAdapter:
         # O servidor devolve o nome COM a extensão que ele preservou.
         return result.get("name") or name
 
+    def export_document(self, document_external_id: str) -> tuple[bytes, str]:
+        # Calibrado 30/07/2026: o Export responde na public-api com a API key
+        # e devolve o PDF - o mesmo id que o `document_url` espelhado carrega.
+        return self.client.get_binary(
+            "DocumentsService/Export", {"id": document_external_id}
+        )
+
     def delete_file(self, file_external_id: str) -> None:
         # ⚠️ É DELETE, não POST: com POST a vSaúde devolve 405 e a exclusão
         # nunca acontecia (achado ao vivo em 30/07/2026 — a captura da rota
