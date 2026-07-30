@@ -196,6 +196,18 @@ class Patient(TenantScopedModel):
             "Um retorno agendado mantém o paciente ativo, sem viés de reativação."
         ),
     )
+    clinical_synced_at = DateTimeField(
+        verbose_name="Prontuário conferido em",
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "Quando o prontuário deste paciente foi lido do EHR pela última "
+            "vez. Nulo = NUNCA conferido, que é diferente de 'não tem nada'. "
+            "É o que permite dizer honestamente o quanto de um período já foi "
+            "coberto (RF-PAR-4) e o que a conferência escolhe primeiro."
+        ),
+    )
     sync_status = CharField(
         verbose_name="Sincronização",
         max_length=10,

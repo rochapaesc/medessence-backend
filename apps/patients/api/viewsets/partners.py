@@ -34,7 +34,7 @@ from apps.integrations.choices import SyncRunKind
 from apps.integrations.ehr.exceptions import EHRError
 from apps.integrations.ehr.registry import get_ehr_provider
 from apps.integrations.models import SyncRun
-from apps.patients.models import ClinicalEntry, ClinicalEntryKind
+from apps.patients.models import ClinicalEntry, ClinicalEntryKind, Patient
 from apps.scheduling.models import Appointment
 
 #: Tipos que a área enxerga - nota e formulário são assunto da ficha.
@@ -45,8 +45,8 @@ KINDS_PARCEIROS = (ClinicalEntryKind.PRESCRIPTION, ClinicalEntryKind.EXAM)
 #: mostra sem segurar a fila de sync.
 CONFERENCIA_MAXIMA = 60
 
-#: Uma conferência por período de tempo: se a última rodada do espelho acabou
-#: há menos que isto, a tela não dispara outra - só reusa o que tem.
+#: Anti-rajada: se a última rodada mirou exatamente os que ainda faltam e
+#: acabou há menos que isto, não dispara outra.
 CONFERENCIA_INTERVALO = timedelta(minutes=5)
 
 
@@ -112,10 +112,13 @@ class PartnersSummaryView(APIView):
             .select_related("practitioner")
             .order_by("starts_at")
         )
-        consulta_do_paciente = {}
+        # A consulta é indexada por (paciente, DIA), não por paciente.
+        # Indexada só por paciente, a linha do documento do dia 24 mostrava a
+        # consulta do dia 14 - 30 documentos de julho saíam assim.
+        consulta_do_dia = {}
         for consulta in consultas:
-            # A primeira do período: é o horário que a linha mostra no Dia.
-            consulta_do_paciente.setdefault(consulta.patient_id, consulta)
+            chave = (consulta.patient_id, consulta.starts_at.astimezone(tz).date())
+            consulta_do_dia.setdefault(chave, consulta)
 
         pacientes = {}
         receitas = 0
@@ -139,6 +142,7 @@ class PartnersSummaryView(APIView):
                     "id": entrada.pk,
                     "kind": entrada.kind,
                     "at": entrada.date.isoformat(),
+                    "dia": entrada.date.astimezone(tz).date(),
                     "practitioner": (
                         entrada.practitioner.name
                         if entrada.practitioner
@@ -153,7 +157,16 @@ class PartnersSummaryView(APIView):
                 }
             )
         for paciente_id, linha in pacientes.items():
-            consulta = consulta_do_paciente.get(paciente_id)
+            dias = {doc["dia"] for doc in linha["docs"]}
+            # A consulta só aparece quando é INEQUÍVOCA: um dia de documento e
+            # uma consulta naquele dia. Em Semana/Mês com documentos em dias
+            # diferentes não existe "a consulta", e a linha mostra o intervalo
+            # em vez de escolher uma e mentir.
+            consulta = (
+                consulta_do_dia.get((paciente_id, next(iter(dias))))
+                if len(dias) == 1
+                else None
+            )
             if consulta is not None:
                 linha["appointment"] = {
                     "at": consulta.starts_at.isoformat(),
@@ -161,6 +174,9 @@ class PartnersSummaryView(APIView):
                         consulta.practitioner.name if consulta.practitioner else ""
                     ),
                 }
+            linha["days"] = [dia.isoformat() for dia in sorted(dias)]
+            for doc in linha["docs"]:
+                doc.pop("dia", None)
 
         return Response(
             {
@@ -171,7 +187,7 @@ class PartnersSummaryView(APIView):
                     "exams": exames,
                     "patients": len(pacientes),
                 },
-                "refreshing": self._conferir_espelho(clinic, consultas),
+                "conference": self._conferir_espelho(clinic, consultas, pacientes),
                 "patients": sorted(
                     pacientes.values(),
                     key=lambda linha: linha["docs"][0]["at"],
@@ -179,41 +195,67 @@ class PartnersSummaryView(APIView):
             }
         )
 
-    def _conferir_espelho(self, clinic, consultas) -> bool:
+    def _conferir_espelho(self, clinic, consultas, pacientes) -> dict:
         """
-        Dispara a conferência dirigida (RF-PAR-4) e diz se há busca em curso.
+        Dispara a conferência dirigida (RF-PAR-4) e devolve o quanto do período
+        já foi coberto.
 
-        A trava é o próprio SyncRun do espelho: rodada em andamento = não
-        dispara outra; rodada recém-terminada = o dado acabou de chegar.
+        ⚠️ Devolve COBERTURA, não um "estou buscando" - o booleano de antes
+        virava falso depois de conferir 60 de 342 pacientes e a tela dizia que
+        havia terminado. Número parcial com cara de final é pior do que número
+        nenhum, ainda mais numa tela de acerto com parceiro.
         """
+        vazio = {"running": False, "checked": 0, "total": 0, "complete": True}
         if not clinic.ehr_provider:
-            return False
-        pacientes_do_periodo = list(
-            dict.fromkeys(consulta.patient_id for consulta in consultas)
-        )[:CONFERENCIA_MAXIMA]
-        if not pacientes_do_periodo:
-            return False
+            return vazio
+
+        # O universo do período: quem tem consulta MAIS quem já aparece com
+        # documento (a renovação sem consulta também precisa ser reconferida).
+        universo = list(
+            dict.fromkeys(
+                [c.patient_id for c in consultas] + list(pacientes.keys())
+            )
+        )
+        if not universo:
+            return vazio
+
+        conferidos = set(
+            Patient.objects.filter(
+                pk__in=universo, clinical_synced_at__isnull=False
+            ).values_list("pk", flat=True)
+        )
+        cobertura = {
+            "checked": len(conferidos),
+            "total": len(universo),
+            "complete": len(conferidos) == len(universo),
+        }
 
         rodadas = SyncRun.objects.filter(
             clinic=clinic, kind=SyncRunKind.MEDICAL_RECORDS
         )
         if rodadas.filter(finished_at__isnull=True).exists():
-            return True
+            return {"running": True, **cobertura}
+
+        faltando = [pk for pk in universo if pk not in conferidos]
+        if not faltando:
+            return {"running": False, **cobertura}
+
         ultima = rodadas.order_by("-started_at").first()
-        if ultima and ultima.finished_at and (
-            dj_timezone.now() - ultima.finished_at < CONFERENCIA_INTERVALO
+        if (
+            ultima
+            and ultima.finished_at
+            and dj_timezone.now() - ultima.finished_at < CONFERENCIA_INTERVALO
+            and set(faltando) <= set(ultima.stats.get("patient_ids") or [])
         ):
-            # A trava só vale para o MESMO público: navegar para outro dia
-            # logo em seguida (o calendário existe para isso) precisa conferir
-            # os pacientes daquele dia, que a rodada recente não cobriu.
-            conferidos = set(ultima.stats.get("patient_ids") or [])
-            if set(pacientes_do_periodo) <= conferidos:
-                return False
+            # A rodada recente já mirou exatamente estes: não redisparar.
+            return {"running": False, **cobertura}
 
         from apps.integrations.tasks import sync_partner_records
 
-        sync_partner_records.delay(clinic.pk, pacientes_do_periodo)
-        return True
+        # Só os que FALTAM, em lotes: abrir de novo avança a fila em vez de
+        # reconferir os mesmos 60 para sempre.
+        sync_partner_records.delay(clinic.pk, faltando[:CONFERENCIA_MAXIMA])
+        return {"running": True, **cobertura}
 
 
 class PartnerDocumentOpenView(APIView):

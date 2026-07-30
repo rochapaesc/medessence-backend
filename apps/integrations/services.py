@@ -667,6 +667,11 @@ def pull_medical_records(clinic, patient=None, patients=None) -> SyncRun:
                 stats["fetched"] += 1
                 stats["created"] += was_created
                 stats["updated"] += not was_created
+            # Carimba mesmo quando o paciente não tem NADA no prontuário:
+            # "conferido e vazio" e "nunca conferido" são coisas diferentes, e
+            # é a diferença entre a tela contar certo e contar pela metade.
+            target.clinical_synced_at = timezone.now()
+            target.save(update_fields=["clinical_synced_at", "updated_at"])
         return stats
 
     return run_sync(clinic, SyncRunKind.MEDICAL_RECORDS, _execute)

@@ -189,7 +189,7 @@ def test_abrir_o_periodo_dispara_a_conferencia_dos_atendidos(
 
     resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
 
-    assert resposta.data["refreshing"] is True
+    assert resposta.data["conference"]["running"] is True
     assert len(sem_conferencia) == 1
     _, pacientes = sem_conferencia[0]
     # TODOS os atendidos do dia entram - inclusive quem ainda não tem
@@ -216,11 +216,12 @@ def test_conferencia_recente_do_MESMO_publico_nao_dispara_de_novo(
             ]
         },
     )
+    Patient.objects.filter(clinic=clinic_a).update(clinical_synced_at=agora)
     api_client.force_authenticate(manager_single_clinic)
 
     resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
 
-    assert resposta.data["refreshing"] is False
+    assert resposta.data["conference"]["running"] is False
     assert sem_conferencia == []
 
 
@@ -245,7 +246,7 @@ def test_trocar_de_dia_confere_o_publico_NOVO_mesmo_com_rodada_recente(
 
     resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
 
-    assert resposta.data["refreshing"] is True
+    assert resposta.data["conference"]["running"] is True
     assert len(sem_conferencia) == 1
 
 
@@ -264,7 +265,7 @@ def test_conferencia_em_andamento_avisa_sem_disparar_outra(
 
     resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
 
-    assert resposta.data["refreshing"] is True
+    assert resposta.data["conference"]["running"] is True
     assert sem_conferencia == []
 
 
@@ -273,7 +274,7 @@ def test_clinica_sem_ehr_nao_confere_nada(
 ):
     api_client.force_authenticate(manager_single_clinic)
     resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
-    assert resposta.data["refreshing"] is False
+    assert resposta.data["conference"]["running"] is False
     assert sem_conferencia == []
 
 
@@ -404,3 +405,127 @@ def test_calendario_tem_a_mesma_cerca_da_area(
 
     api_client.force_authenticate(attendant_a)
     assert api_client.get(CAL, {"year": 2026, "month": 7}).status_code == 403
+
+
+# ---------------- cobertura honesta e a consulta do dia certo ----------------
+
+
+def test_a_linha_mostra_a_consulta_DO_DIA_do_documento(
+    api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
+):
+    """
+    Regressão real: indexada só por paciente, a linha do documento do dia 24
+    exibia a consulta do dia 14 - 30 documentos de julho saíam assim na
+    clínica de verdade.
+    """
+    ana = cenario["ana"]
+    # A Ana ganha uma SEGUNDA consulta, no dia 24, e um documento nesse dia.
+    Appointment.objects.create(
+        clinic=clinic_a,
+        patient=ana,
+        practitioner=cenario["medico"],
+        starts_at=_quando(24, 9),
+        status="completed",
+    )
+    ClinicalEntry.objects.create(
+        clinic=clinic_a,
+        patient=ana,
+        kind=ClinicalEntryKind.PRESCRIPTION,
+        origin=ClinicalOrigin.EHR,
+        date=_quando(24, 13),
+        practitioner=cenario["medico"],
+    )
+    api_client.force_authenticate(manager_single_clinic)
+
+    # Só o dia 24: a consulta mostrada é a do 24, não a do 30.
+    dia24 = api_client.get(URL, {"from": "2026-07-24", "to": "2026-07-24"})
+    linha = dia24.data["patients"][0]
+    assert linha["appointment"]["at"].startswith("2026-07-24")
+
+    # O mês inteiro: a Ana tem documento em DOIS dias, então não existe "a
+    # consulta" - a linha devolve os dias em vez de escolher uma e mentir.
+    mes = api_client.get(URL, {"from": "2026-07-01", "to": "2026-07-31"})
+    ana_mes = next(p for p in mes.data["patients"] if p["id"] == ana.pk)
+    assert ana_mes["appointment"] is None
+    assert ana_mes["days"] == ["2026-07-24", "2026-07-30"]
+
+
+def test_cobertura_diz_quantos_do_periodo_foram_conferidos(
+    api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
+):
+    clinic_a.ehr_provider = "fake"
+    clinic_a.save(update_fields=["ehr_provider"])
+    # Dos 3 do dia, só a Ana já foi conferida.
+    Patient.objects.filter(pk=cenario["ana"].pk).update(
+        clinical_synced_at=timezone.now()
+    )
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
+
+    conferencia = resposta.data["conference"]
+    assert conferencia["checked"] == 1
+    assert conferencia["total"] == 3
+    assert conferencia["complete"] is False, "não pode dizer que terminou"
+
+
+def test_periodo_inteiro_conferido_nao_dispara_nem_avisa(
+    api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
+):
+    clinic_a.ehr_provider = "fake"
+    clinic_a.save(update_fields=["ehr_provider"])
+    Patient.objects.filter(clinic=clinic_a).update(clinical_synced_at=timezone.now())
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
+
+    assert resposta.data["conference"] == {
+        "running": False,
+        "checked": 3,
+        "total": 3,
+        "complete": True,
+    }
+    assert sem_conferencia == []
+
+
+def test_a_conferencia_pega_so_quem_FALTA_e_avanca_a_fila(
+    api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
+):
+    """Antes ela remirava os mesmos 60 para sempre; agora a fila anda."""
+    clinic_a.ehr_provider = "fake"
+    clinic_a.save(update_fields=["ehr_provider"])
+    Patient.objects.filter(pk=cenario["ana"].pk).update(
+        clinical_synced_at=timezone.now()
+    )
+    api_client.force_authenticate(manager_single_clinic)
+
+    api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
+
+    _, pedidos = sem_conferencia[0]
+    assert cenario["ana"].pk not in pedidos, "já conferida, não repete"
+    assert set(pedidos) == {cenario["beto"].pk, cenario["caio"].pk}
+
+
+def test_paciente_com_documento_SEM_consulta_entra_na_conferencia(
+    api_client, manager_single_clinic, clinic_a, cenario, sem_conferencia
+):
+    """A renovação sem consulta é caso de tela; precisa ser reconferível."""
+    clinic_a.ehr_provider = "fake"
+    clinic_a.save(update_fields=["ehr_provider"])
+    solto = Patient.objects.create(
+        clinic=clinic_a, name="Só Renovação", external_id="g-solto"
+    )
+    ClinicalEntry.objects.create(
+        clinic=clinic_a,
+        patient=solto,
+        kind=ClinicalEntryKind.PRESCRIPTION,
+        origin=ClinicalOrigin.EHR,
+        date=_quando(30, 16),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.get(URL, {"from": "2026-07-30", "to": "2026-07-30"})
+
+    assert resposta.data["conference"]["total"] == 4
+    _, pedidos = sem_conferencia[0]
+    assert solto.pk in pedidos
