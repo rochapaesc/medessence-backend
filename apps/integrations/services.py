@@ -605,12 +605,11 @@ def _insurance_plan_from_embed(clinic, ehr_appointment):
 MEDICAL_RECORDS_SWEEP_LIMIT = 200  # varredura de fundo: prioriza os mais quentes
 
 
-def pull_medical_records(clinic, patient=None, patients=None) -> SyncRun:
+def pull_medical_records(clinic, patient=None) -> SyncRun:
     """
-    Linha do tempo clínica: sob demanda (`patient`) ao abrir a ficha,
-    `patients` para um lote dirigido (a conferência da tela Parceiros,
-    RF-PAR-4), ou varredura priorizando pacientes com consulta recente/futura
-    (limite por execução - a fila anda a cada rodada).
+    Linha do tempo clínica: sob demanda (`patient`) ao abrir a ficha, ou
+    varredura priorizando pacientes com consulta recente/futura (limite por
+    execução - a fila anda a cada rodada).
     """
     provider = get_ehr_provider(clinic)
 
@@ -618,12 +617,6 @@ def pull_medical_records(clinic, patient=None, patients=None) -> SyncRun:
         stats = {"patients": 0, "fetched": 0, "created": 0, "updated": 0}
         if patient is not None:
             targets = [patient]
-        elif patients is not None:
-            targets = [p for p in patients if p.external_id]
-            # Quem foi conferido fica no run: é o que deixa a tela Parceiros
-            # saber que um PERÍODO NOVO ainda não foi coberto, sem derrubar a
-            # trava de reentrada dos 5 minutos.
-            stats["patient_ids"] = [p.pk for p in targets]
         else:
             cutoff = timezone.now() - timedelta(days=90)
             targets = list(
@@ -667,11 +660,6 @@ def pull_medical_records(clinic, patient=None, patients=None) -> SyncRun:
                 stats["fetched"] += 1
                 stats["created"] += was_created
                 stats["updated"] += not was_created
-            # Carimba mesmo quando o paciente não tem NADA no prontuário:
-            # "conferido e vazio" e "nunca conferido" são coisas diferentes, e
-            # é a diferença entre a tela contar certo e contar pela metade.
-            target.clinical_synced_at = timezone.now()
-            target.save(update_fields=["clinical_synced_at", "updated_at"])
         return stats
 
     return run_sync(clinic, SyncRunKind.MEDICAL_RECORDS, _execute)

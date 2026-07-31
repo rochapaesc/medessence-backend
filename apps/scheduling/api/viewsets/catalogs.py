@@ -21,6 +21,10 @@ from apps.scheduling.models import (
 class PractitionerViewSet(ClinicScopedReadOnlyViewSet):
     """Catálogo de profissionais - alimenta filtros e o form de agendamento."""
 
+    #: O filtro da área de Parceiros (RF-PAR-1) é por profissional. Nome e
+    #: registro, nada de paciente.
+    partner_allowed = {"list"}
+
     model = Practitioner
     serializer_class = PractitionerSerializer
     ordering_fields = ["name"]

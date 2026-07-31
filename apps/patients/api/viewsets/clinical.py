@@ -10,7 +10,14 @@ from apps.patients.api.serializers.clinical import (
     ClinicalEntryWriteSerializer,
     PrescriptionModelSerializer,
 )
-from apps.patients.models import ClinicalEntry, ClinicalOrigin, Patient, PrescriptionModel
+from apps.patients.models import (
+    ClinicalEntry,
+    ClinicalEntryKind,
+    ClinicalOrigin,
+    Patient,
+    PrescriptionModel,
+)
+from apps.patients.partner_scope import eh_parceiro, pacientes_do_parceiro
 
 
 class ClinicalEntryViewSet(AuditMixin, ClinicScopedModelViewSet):
@@ -19,6 +26,14 @@ class ClinicalEntryViewSet(AuditMixin, ClinicScopedModelViewSet):
     origem local = CRUD da clínica. `?patient=<id>` filtra; `POST /sync/`
     puxa o prontuário do paciente no EHR sob demanda (abrir a ficha).
     """
+
+    #: O parceiro (RF-PAR-6) vê a linha do tempo, e só ela: nada de criar,
+    #: editar ou apagar registro clínico.
+    partner_allowed = {"list", "sync"}
+
+    #: O que o parceiro pode ler. O recorte é do SERVIDOR: esconder nota e
+    #: formulário só na tela deixaria o dado a um query param de distância.
+    KINDS_DO_PARCEIRO = (ClinicalEntryKind.PRESCRIPTION, ClinicalEntryKind.EXAM)
 
     model = ClinicalEntry
     audit_resource = "ClinicalEntry"
@@ -34,7 +49,22 @@ class ClinicalEntryViewSet(AuditMixin, ClinicScopedModelViewSet):
     }
 
     def get_queryset(self):
-        return super().get_queryset().order_by("-date")
+        queryset = super().get_queryset().order_by("-date")
+        if eh_parceiro(self.membership):
+            # Três cercas, e nenhuma é redundante: o TIPO (só o que o médico
+            # emitiu), o ESCOPO (só paciente atendido) e o PACIENTE
+            # OBRIGATÓRIO. Sem a última, `/clinical-entries/` sem filtro
+            # entregava o prontuário da clínica inteira, paginado - eram
+            # 5.142 registros num pedido só.
+            if self.action == "list" and not self.request.query_params.get("patient"):
+                raise ValidationError(
+                    {"patient": "Informe o paciente para ver o prontuário."}
+                )
+            queryset = queryset.filter(
+                kind__in=self.KINDS_DO_PARCEIRO,
+                patient__in=pacientes_do_parceiro(self.clinic),
+            )
+        return queryset
 
     def _block_ehr_mirror(self, instance):
         if instance.origin == ClinicalOrigin.EHR:
@@ -54,7 +84,12 @@ class ClinicalEntryViewSet(AuditMixin, ClinicScopedModelViewSet):
         patient_id = request.data.get("patient")
         if not patient_id:
             raise ValidationError({"patient": "Informe o paciente."})
-        patient = Patient.objects.filter(clinic=self.clinic, pk=patient_id).first()
+        pacientes = Patient.objects.filter(clinic=self.clinic)
+        if eh_parceiro(self.membership):
+            # Mesmo escopo da leitura: senão o parceiro mandava o servidor
+            # buscar no EHR o prontuário de qualquer paciente da clínica.
+            pacientes = pacientes.filter(pk__in=pacientes_do_parceiro(self.clinic))
+        patient = pacientes.filter(pk=patient_id).first()
         if patient is None:
             raise ValidationError({"patient": "Paciente não encontrado."})
         if not self.clinic.ehr_provider:

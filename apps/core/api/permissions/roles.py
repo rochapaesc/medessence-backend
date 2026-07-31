@@ -27,11 +27,21 @@ class IsClinicMember(BasePermission):
 
         if membership.role == MembershipRole.PARTNER:
             # A cerca do parceiro (RF-PAR-6), fail-closed: view nova nasce
-            # FECHADA para ele a menos que declare `partner_allowed = True`.
-            # É o que impede o papel externo de enxergar pacientes, agenda e
-            # Inbox só por ter um Membership válido.
+            # FECHADA para ele a menos que declare `partner_allowed`. É o que
+            # impede o papel externo de enxergar pacientes, agenda e Inbox só
+            # por ter um Membership válido.
+            #
+            # Aceita `True` (a view inteira) ou um CONJUNTO DE ACTIONS. O
+            # conjunto existe porque o parceiro precisa abrir a ficha de UM
+            # paciente sem ganhar a listagem de todos: `{"retrieve"}` libera
+            # exatamente isso.
             self.message = "O papel Parceiro acessa apenas a área de Parceiros."
-            return bool(getattr(view, "partner_allowed", False))
+            liberado = getattr(view, "partner_allowed", False)
+            if liberado is True:
+                return True
+            if isinstance(liberado, (set, frozenset, tuple, list)):
+                return getattr(view, "action", None) in liberado
+            return False
         return True
 
 

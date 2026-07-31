@@ -10,13 +10,14 @@ from apps.core.masking import is_masked
 from apps.core.mixins import AuditMixin, SoftDeleteMixin
 from apps.core.models.audit_log import AuditAction
 from apps.patients.api.filtersets import PatientFilterset
-from apps.patients.api.viewsets.patient_files import PatientFilesMixin
 from apps.patients.api.serializers import (
     PatientDetailSerializer,
     PatientReadSerializer,
     PatientWriteSerializer,
 )
+from apps.patients.api.viewsets.patient_files import PatientFilesMixin
 from apps.patients.models import Patient, PatientTag, Tag
+from apps.patients.partner_scope import eh_parceiro, pacientes_do_parceiro
 
 
 class PatientViewSet(
@@ -30,6 +31,11 @@ class PatientViewSet(
     CRM de pacientes (RF-PAC-1..7), escopado pela clínica ativa.
     Busca server-side (?search=) e filtros por tag/cidade/status/profissional.
     """
+
+    #: O parceiro (RF-PAR-6) abre a ficha de UM paciente pela área dele, mas
+    #: NÃO tem a listagem: `list` daria a carteira inteira a um usuário
+    #: externo. Por action, e não pela view toda.
+    partner_allowed = {"retrieve"}
 
     model = Patient
     audit_resource = "Patient"
@@ -47,7 +53,7 @@ class PatientViewSet(
     }
 
     def get_queryset(self):
-        return (
+        queryset = (
             super()
             .get_queryset()
             .prefetch_related(
@@ -61,6 +67,12 @@ class PatientViewSet(
             )
             .order_by("name")
         )
+        if eh_parceiro(self.membership):
+            # A permissão já limita o parceiro ao `retrieve`; sem ISTO ele
+            # abria a ficha de QUALQUER paciente trocando o id na URL, com
+            # CPF e endereço, mesmo de quem a tela dele nunca mostra.
+            queryset = queryset.filter(pk__in=pacientes_do_parceiro(self.clinic))
+        return queryset
 
     def retrieve(self, request, *args, **kwargs):
         """
