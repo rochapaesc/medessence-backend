@@ -139,16 +139,48 @@ def take_over(conversation, user, *, expected: str | None = None):
 
 @transaction.atomic
 def resolve(conversation, user, *, note: str = ""):
-    """Encerra. Nada é obrigatório (RF-ATD-1.3) - encerrar é o ato mais
-    repetido do dia, e campo obrigatório aí trava a recepção ou gera lixo."""
+    """
+    Encerra. Nada é obrigatório (RF-ATD-1.3) - encerrar é o ato mais
+    repetido do dia, e campo obrigatório aí trava a recepção ou gera lixo.
+
+    ⚠️ **Encerrar SOLTA a caneta E o dono** (corrigido 31/07/2026). Antes o
+    `attended_by` ficava como estava, e a conversa terminava "resolvida e
+    sendo atendida" ao mesmo tempo: 10 das 12 resolvidas do tenant real
+    estavam assim. As consequências apareceram no teste do motor de fluxos:
+    quando o paciente escrevia de novo, a conversa reabria com dono, e por
+    isso NENHUM fluxo automático entrava nela nunca mais.
+
+    Soltar só a caneta e guardar o dono era correção pela metade, porque
+    `reopen` devolvia a caneta a ele e o efeito prático continuava o mesmo.
+    Encerrada segue o invariante que `wake_snoozed` já segue para a adiada
+    vencida: status dormente não guarda responsável. Quem atendeu não se perde
+    porque está nos eventos da conversa (RF-ATD-4), que é onde a pergunta
+    "quem cuidou disto" se responde.
+
+    Adiar é o caso oposto e continua guardando o dono: "eu volto segunda" é um
+    compromisso de quem adiou. Encerrar é "acabou", e mensagem depois do fim é
+    assunto NOVO, que começa na fila como qualquer outro.
+    """
     from apps.inbox.services import create_internal_note
 
     conversation.status = ConversationStatus.RESOLVED
     conversation.resolved_at = timezone.now()
     conversation.snoozed_until = None
     conversation.waiting_since = None
+    conversation.attended_by = AttendedBy.NONE
+    conversation.attended_since = None
+    conversation.assigned_to = None
     conversation.save(
-        update_fields=["status", "resolved_at", "snoozed_until", "waiting_since", "updated_at"]
+        update_fields=[
+            "status",
+            "resolved_at",
+            "snoozed_until",
+            "waiting_since",
+            "attended_by",
+            "attended_since",
+            "assigned_to",
+            "updated_at",
+        ]
     )
     if note.strip():
         create_internal_note(conversation, user, note.strip())
@@ -181,15 +213,29 @@ def reopen(conversation, *, user=None, by_contact: bool = False):
 
     Volta para ABERTA se ainda houver responsável - a conversa não perde o
     dono só porque ficou parada; senão volta para a fila.
+
+    Na prática isso separa os dois estados dormentes (ajustado em 31/07/2026):
+
+      ADIADA guarda o dono, então o paciente que escreve antes da hora cai de
+      volta com quem adiou, que é o sentido de ter adiado.
+
+      ENCERRADA não guarda mais - `resolve` solta o dono junto com a caneta.
+      Mensagem depois do encerramento é assunto novo e entra na fila, ao
+      alcance de quem estiver livre e dos fluxos automáticos.
     """
     if conversation.status not in DORMANT_STATUSES:
         return conversation
 
-    tem_dono = conversation.attended_by == AttendedBy.AGENT and conversation.assigned_to_id
+    tem_dono = bool(conversation.assigned_to_id)
     conversation.status = ConversationStatus.OPEN if tem_dono else ConversationStatus.WAITING
     conversation.snoozed_until = None
     conversation.resolved_at = None
-    if conversation.status == ConversationStatus.WAITING:
+    if tem_dono:
+        # A caneta volta para quem cuidava, que é o sentido de "não perder o
+        # dono": ele reencontra a conversa aberta em nome dele.
+        conversation.attended_by = AttendedBy.AGENT
+        conversation.attended_since = timezone.now()
+    else:
         conversation.waiting_since = timezone.now()
     conversation.save(
         update_fields=[
@@ -197,6 +243,8 @@ def reopen(conversation, *, user=None, by_contact: bool = False):
             "snoozed_until",
             "resolved_at",
             "waiting_since",
+            "attended_by",
+            "attended_since",
             "updated_at",
         ]
     )

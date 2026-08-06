@@ -98,18 +98,46 @@ def test_inbound_reabre_conversa_resolvida(logado, conversation, inbox_a):
     ).exists()
 
 
-def test_reabertura_devolve_para_quem_atendia(conversation, manager_single_clinic):
-    """Conversa não perde o dono só porque ficou parada."""
-    take_over(conversation, manager_single_clinic)
-    resolve(conversation, manager_single_clinic)
-
+def test_reabertura_de_adiada_devolve_para_quem_adiou(conversation, manager_single_clinic):
+    """
+    Conversa ADIADA não perde o dono só porque ficou parada: quem adiou
+    combinou de retomar, e o paciente que escreve antes da hora cai de volta
+    com ele.
+    """
     from apps.inbox.attendance import reopen
+
+    take_over(conversation, manager_single_clinic)
+    snooze(conversation, manager_single_clinic, until=timezone.now() + timedelta(days=2))
 
     reopen(conversation, by_contact=True)
 
     conversation.refresh_from_db()
     assert conversation.status == ConversationStatus.OPEN
     assert conversation.assigned_to_id == manager_single_clinic.pk
+    assert conversation.attended_by == AttendedBy.AGENT
+
+
+def test_encerrar_solta_a_conversa_e_ela_reabre_na_fila(conversation, manager_single_clinic):
+    """
+    Encerrar é "acabou": solta a caneta E o dono. Apontado ao vivo em
+    31/07/2026, quando o atendente continuou responsável por conversas que
+    tinha resolvido, e por isso nenhum fluxo automático voltava a entrar nelas.
+    """
+    from apps.inbox.attendance import reopen
+
+    take_over(conversation, manager_single_clinic)
+    resolve(conversation, manager_single_clinic)
+
+    conversation.refresh_from_db()
+    assert conversation.assigned_to_id is None, "encerrada não guarda responsável"
+    assert conversation.attended_by == AttendedBy.NONE
+
+    reopen(conversation, by_contact=True)
+
+    conversation.refresh_from_db()
+    assert conversation.status == ConversationStatus.WAITING, "assunto novo entra na fila"
+    assert conversation.assigned_to_id is None
+    assert conversation.attended_by == AttendedBy.NONE
 
 
 def test_adiar_exige_futuro_e_guarda_a_hora(logado, conversation):
@@ -553,3 +581,60 @@ def test_idioma_do_template_vem_do_sincronizado_nao_de_constante(conversation):
 
     _Msg.template_name = "inexistente"
     assert _template_language(_Msg()) == "pt_BR"
+
+
+class TestResolverSoltaACaneta:
+    """
+    Encerrar solta a posse (corrigido 31/07/2026).
+
+    Antes a conversa terminava "resolvida e sendo atendida" ao mesmo tempo, e
+    reabria com dono - o que impedia qualquer fluxo automático de entrar nela
+    depois. Dez das doze resolvidas do tenant real estavam nesse estado.
+    """
+
+    def test_resolver_deixa_a_conversa_sem_dono(self, conversation, attendant_a):
+        from apps.inbox.attendance import resolve, take_over
+
+        take_over(conversation, attendant_a)
+        assert conversation.attended_by == AttendedBy.AGENT
+
+        resolve(conversation, attendant_a)
+
+        conversation.refresh_from_db()
+        assert conversation.attended_by == AttendedBy.NONE
+        assert conversation.attended_since is None
+
+    def test_quem_cuidou_fica_na_linha_do_tempo_e_nao_no_dono(self, conversation, attendant_a):
+        """
+        Encerrar solta o dono TAMBÉM (segunda volta da correção, 31/07/2026).
+        Guardar o `assigned_to` mantinha o atendente responsável por assunto
+        encerrado, e `reopen` devolvia a caneta a ele: nada mudava na prática.
+
+        A resposta para "quem cuidou disto" é o evento na thread, que continua
+        nomeando a pessoa (RF-ATD-4).
+        """
+        from apps.inbox.attendance import resolve, take_over
+
+        take_over(conversation, attendant_a)
+        resolve(conversation, attendant_a)
+
+        conversation.refresh_from_db()
+        assert conversation.assigned_to is None
+        evento = Message.objects.get(
+            conversation=conversation, activity_type=ActivityType.RESOLVED
+        )
+        assert evento.sent_by == attendant_a
+
+    def test_conversa_resolvida_aceita_o_robo_depois(self, conversation, attendant_a):
+        """
+        A consequência que motivou a correção: com a caneta presa, o motor de
+        fluxos nunca mais entrava naquela conversa.
+        """
+        from apps.automation.engine import _claim_for_bot
+        from apps.inbox.attendance import resolve, take_over
+
+        take_over(conversation, attendant_a)
+        resolve(conversation, attendant_a)
+        conversation.refresh_from_db()
+
+        assert _claim_for_bot(conversation) is True
