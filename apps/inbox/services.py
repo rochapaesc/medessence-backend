@@ -23,6 +23,7 @@ from apps.inbox.choices import (
     MessageStatus,
     SenderKind,
 )
+from apps.inbox.dispatch import inbound_ingested
 from apps.integrations.whatsapp.base import WhatsAppEventKind
 
 logger = logging.getLogger(__name__)
@@ -439,6 +440,15 @@ def _ingest_message(channel, event, sender_kind) -> bool:
     conversation.refresh_from_db()
     notify_message_new(message)
     notify_conversation_updated(conversation)
+
+    # Avisa quem quiser reagir ao inbound - hoje é o motor de fluxos (F2.6).
+    # É SINAL e não chamada direta de propósito: o inbox não pode passar a
+    # depender do app de automação, ou os dois viram um só. Sai por último,
+    # com a conversa já atualizada e a mídia já enfileirada.
+    if sender_kind == SenderKind.CONTACT:
+        inbound_ingested.send(
+            sender=Message, conversation=conversation, message=message
+        )
     return message is not None
 
 
@@ -795,6 +805,19 @@ def send_message(message) -> None:
             )
         elif message.media_id:
             result = _enviar_anexo(provider, to, message)
+        elif message.content_data.get("buttons"):
+            # Interativo (F2.6): quem monta é o motor de fluxos, e os ids dos
+            # botões voltam no webhook como `interactive_id` - é por eles que
+            # o motor sabe qual caminho o paciente escolheu.
+            result = provider.send_buttons(to, message.body, message.content_data["buttons"])
+        elif message.content_data.get("list"):
+            lista = message.content_data["list"]
+            result = provider.send_list(
+                to,
+                message.body,
+                lista.get("button_label") or "Ver opções",
+                lista.get("sections") or [],
+            )
         else:
             result = provider.send_text(
                 to, message.body, message.reply_to_provider_id or None

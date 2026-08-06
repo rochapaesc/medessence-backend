@@ -44,6 +44,7 @@ LOCAL_APPS = [
     "apps.patients",
     "apps.scheduling",
     "apps.inbox",
+    "apps.automation",
     "apps.integrations",
     "apps.notifications",
 ]
@@ -359,6 +360,10 @@ CELERY_DEFAULT_QUEUE = "default"
 CELERY_WEBHOOKS_QUEUE = "webhooks"
 CELERY_OUTBOUND_QUEUE = "outbound"
 CELERY_MEDIA_QUEUE = "media"
+# Fila da automação (F2.6, §13). Precisa estar DECLARADA aqui: o worker sobe
+# sem `-Q` e consome exatamente as filas desta tupla - task apontada para uma
+# fila de fora dela fica enfileirada para sempre, sem erro nenhum.
+CELERY_AUTOMATION_QUEUE = "automation"
 
 CELERY_QUEUES = (
     Queue(CELERY_DEFAULT_QUEUE, routing_key=CELERY_DEFAULT_QUEUE),
@@ -367,6 +372,7 @@ CELERY_QUEUES = (
     Queue(CELERY_WEBHOOKS_QUEUE, routing_key=CELERY_WEBHOOKS_QUEUE),
     Queue(CELERY_OUTBOUND_QUEUE, routing_key=CELERY_OUTBOUND_QUEUE),
     Queue(CELERY_MEDIA_QUEUE, routing_key=CELERY_MEDIA_QUEUE),
+    Queue(CELERY_AUTOMATION_QUEUE, routing_key=CELERY_AUTOMATION_QUEUE),
 )
 
 CELERY_TASK_DEFAULT_QUEUE = CELERY_DEFAULT_QUEUE
@@ -403,6 +409,13 @@ CELERY_BEAT_SCHEDULE = {
     # pós-commit - retoma operações que ficaram PENDING (EHR fora do ar).
     "push-sync-operations": {
         "task": "apps.integrations.tasks.push_sync_operations",
+        "schedule": crontab(minute="*"),
+    },
+    # Execuções de fluxo (F2.6, RF-FLW-11): espera vencida, silêncio do
+    # paciente e conversa que mudou de dono. Um minuto porque o nó "Aguardar"
+    # é usado para lembrete com hora marcada.
+    "sweep-flow-runs": {
+        "task": "apps.automation.tasks.sweep_flow_runs",
         "schedule": crontab(minute="*"),
     },
 }

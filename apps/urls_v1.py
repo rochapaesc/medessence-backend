@@ -13,6 +13,7 @@ from apps.patients.api.viewsets.partners import (
     PartnersCalendarView,
     PartnersDayView,
 )
+from apps.tenants.api.views import ClinicBusinessHoursView
 
 urlpatterns = [
     # Swagger
@@ -31,6 +32,15 @@ urlpatterns = [
     path("", include("apps.scheduling.api.routers")),
     # Inbox (WhatsApp)
     path("", include("apps.inbox.api.routers")),
+    # Fluxos de atendimento (F2.6)
+    path("", include("apps.automation.api.routers")),
+    # Horário de funcionamento: quem decide se o fluxo atende ou se a conversa
+    # vai para a recepção (RF-FLW-5.1)
+    path(
+        "clinic/business-hours/",
+        ClinicBusinessHoursView.as_view(),
+        name="clinic-business-hours",
+    ),
     # Sincronização manual com o EHR (complementa o beat)
     path("sync/ehr/", EHRSyncView.as_view(), name="ehr-sync"),
 
