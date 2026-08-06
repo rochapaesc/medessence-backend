@@ -26,6 +26,15 @@ class Command(BaseCommand):
         parser.add_argument("--from", dest="wa_id", default="5585999990001", help="Número (wa_id).")
         parser.add_argument("--name", default="Contato Fake", help="Nome no WhatsApp.")
         parser.add_argument("--body", default="Olá! Mensagem de teste.", help="Texto da mensagem.")
+        parser.add_argument(
+            "--reply-id",
+            dest="reply_id",
+            default="",
+            help=(
+                "Id do botão/item tocado (F2.6). Manda um `interactive.button_reply` "
+                "em vez de texto - é como se exercita um fluxo de ponta a ponta."
+            ),
+        )
 
     def handle(self, *args, **options):
         clinic = Clinic.objects.filter(slug=options["clinic_slug"]).first()
@@ -36,7 +45,10 @@ class Command(BaseCommand):
             raise CommandError(f"Clínica '{clinic.slug}' sem canal - rode `seed --only inbox`.")
 
         payload = build_inbound_payload(
-            wa_id=options["wa_id"], body=options["body"], name=options["name"]
+            wa_id=options["wa_id"],
+            body=options["body"],
+            name=options["name"],
+            reply_id=options["reply_id"],
         )
         # Mesmo caminho do webhook real: grava o log cru e roda a task
         # (síncrona aqui) - que faz parse + ingestão e marca `processed_at`.

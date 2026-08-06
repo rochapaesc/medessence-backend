@@ -11,6 +11,7 @@ já falava este formato quando o transporte era o proxy.
 import httpx
 from pywa import WhatsApp
 from pywa import errors as pywa_errors
+from pywa import types as pywa_types
 from pywa.types.templates import TemplateLanguage
 
 from apps.integrations.whatsapp.base import (
@@ -85,9 +86,7 @@ class MetaAdapter:
 
     def send_text(self, to: str, body: str, reply_to: str | None = None) -> SendResult:
         try:
-            sent = self._wa.send_message(
-                to=to, text=body, reply_to_message_id=reply_to or None
-            )
+            sent = self._wa.send_message(to=to, text=body, reply_to_message_id=reply_to or None)
         except pywa_errors.WhatsAppError as exc:
             raise _translate(exc) from exc
         except httpx.TransportError as exc:
@@ -126,6 +125,59 @@ class MetaAdapter:
             raise _rede(exc) from exc
         return SendResult(provider_message_id=sent.id, raw={"id": sent.id})
 
+    def send_buttons(self, to: str, body: str, buttons: list[dict]) -> SendResult:
+        """
+        Botões de resposta rápida (F2.6).
+
+        `callback_data` do PyWa é o que volta em `interactive.button_reply.id`
+        no webhook - é o identificador estável pelo qual o motor de fluxos
+        resolve a aresta. O TÍTULO não serve: o gestor reescreve "Marcar
+        consulta" para "Agendar" e todas as ligações do fluxo se perderiam.
+        """
+        try:
+            sent = self._wa.send_message(
+                to=to,
+                text=body,
+                buttons=[
+                    pywa_types.Button(title=b["title"], callback_data=b["id"]) for b in buttons
+                ],
+            )
+        except pywa_errors.WhatsAppError as exc:
+            raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
+        return SendResult(provider_message_id=sent.id, raw={"id": sent.id})
+
+    def send_list(self, to: str, body: str, button_label: str, sections: list[dict]) -> SendResult:
+        """Lista suspensa (F2.6). Mesmo raciocínio do `callback_data` acima."""
+        try:
+            sent = self._wa.send_message(
+                to=to,
+                text=body,
+                buttons=pywa_types.SectionList(
+                    button_title=button_label,
+                    sections=[
+                        pywa_types.Section(
+                            title=s.get("title") or "",
+                            rows=[
+                                pywa_types.SectionRow(
+                                    title=r["title"],
+                                    callback_data=r["id"],
+                                    description=r.get("description") or "",
+                                )
+                                for r in s.get("rows") or []
+                            ],
+                        )
+                        for s in sections
+                    ],
+                ),
+            )
+        except pywa_errors.WhatsAppError as exc:
+            raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
+        return SendResult(provider_message_id=sent.id, raw={"id": sent.id})
+
     def send_media(
         self,
         to: str,
@@ -150,28 +202,42 @@ class MetaAdapter:
         reply = reply_to or None
         senders = {
             "image": lambda: self._wa.send_image(
-                to=to, image=url_or_id, caption=caption,
-                mime_type=mime_type, reply_to_message_id=reply,
+                to=to,
+                image=url_or_id,
+                caption=caption,
+                mime_type=mime_type,
+                reply_to_message_id=reply,
             ),
             "video": lambda: self._wa.send_video(
-                to=to, video=url_or_id, caption=caption,
-                mime_type=mime_type, reply_to_message_id=reply,
+                to=to,
+                video=url_or_id,
+                caption=caption,
+                mime_type=mime_type,
+                reply_to_message_id=reply,
             ),
             # `is_voice` é o que faz o balão chegar como NOTA DE VOZ no celular
             # do paciente — com onda e play — em vez de anexo de áudio.
             "audio": lambda: self._wa.send_audio(
-                to=to, audio=url_or_id, is_voice=is_voice,
-                mime_type=mime_type, reply_to_message_id=reply,
+                to=to,
+                audio=url_or_id,
+                is_voice=is_voice,
+                mime_type=mime_type,
+                reply_to_message_id=reply,
             ),
             "sticker": lambda: self._wa.send_sticker(
-                to=to, sticker=url_or_id, mime_type=mime_type,
+                to=to,
+                sticker=url_or_id,
+                mime_type=mime_type,
                 reply_to_message_id=reply,
             ),
             "document": lambda: self._wa.send_document(
-                to=to, document=url_or_id, caption=caption,
+                to=to,
+                document=url_or_id,
+                caption=caption,
                 # Sem o nome, o paciente recebe "3f8a...bin" e não sabe se
                 # abre o laudo ou o preparo.
-                filename=filename, mime_type=mime_type,
+                filename=filename,
+                mime_type=mime_type,
                 reply_to_message_id=reply,
             ),
         }
@@ -191,9 +257,7 @@ class MetaAdapter:
         """
         try:
             if emoji:
-                sent = self._wa.send_reaction(
-                    to=to, emoji=emoji, message_id=provider_message_id
-                )
+                sent = self._wa.send_reaction(to=to, emoji=emoji, message_id=provider_message_id)
             else:
                 sent = self._wa.remove_reaction(to=to, message_id=provider_message_id)
         except pywa_errors.WhatsAppError as exc:
@@ -238,9 +302,7 @@ class MetaAdapter:
         """
         try:
             # `phone_id` é keyword-only no PyWa (assinatura com `*`).
-            numero = self._wa.get_business_phone_number(
-                phone_id=self.channel.phone_number_id
-            )
+            numero = self._wa.get_business_phone_number(phone_id=self.channel.phone_number_id)
         except pywa_errors.WhatsAppError as exc:
             raise _translate(exc) from exc
         except httpx.TransportError as exc:
@@ -265,9 +327,7 @@ class MetaAdapter:
         pagination: dict | None = {"limit": TEMPLATES_PAGE_SIZE}
         while pagination is not None:
             try:
-                page = self._wa.api.get_templates(
-                    waba_id=self.waba_id, pagination=pagination
-                )
+                page = self._wa.api.get_templates(waba_id=self.waba_id, pagination=pagination)
             except pywa_errors.WhatsAppError as exc:
                 raise _translate(exc) from exc
             except httpx.TransportError as exc:
@@ -285,9 +345,7 @@ class MetaAdapter:
             after = page.get("paging", {}).get("cursors", {}).get("after")
             has_next = bool(page.get("paging", {}).get("next"))
             pagination = (
-                {"limit": TEMPLATES_PAGE_SIZE, "after": after}
-                if has_next and after
-                else None
+                {"limit": TEMPLATES_PAGE_SIZE, "after": after} if has_next and after else None
             )
         return templates
 

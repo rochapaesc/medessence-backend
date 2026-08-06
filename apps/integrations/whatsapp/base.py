@@ -109,6 +109,24 @@ class WhatsAppProvider(Protocol):
         """Anexo. `url_or_id` aceita caminho local, URL pública ou media id."""
         ...
 
+    def send_buttons(self, to: str, body: str, buttons: list[dict]) -> SendResult:
+        """
+        Até 3 botões de resposta rápida (F2.6). `buttons` é
+        `[{"id": "agendar", "title": "Marcar consulta"}]`.
+
+        O `id` é o que volta no webhook como `content_data["interactive_id"]`,
+        e é por ele que o motor de fluxos sabe QUAL caminho o paciente
+        escolheu - o título muda quando o gestor reescreve o botão, o id não.
+        """
+        ...
+
+    def send_list(self, to: str, body: str, button_label: str, sections: list[dict]) -> SendResult:
+        """
+        Lista de até 10 itens no total (F2.6). `sections` é
+        `[{"title": "Especialidades", "rows": [{"id": "cardio", "title": "Cardiologia"}]}]`.
+        """
+        ...
+
     def send_reaction(self, to: str, provider_message_id: str, emoji: str) -> SendResult:
         """Cola (ou tira, com `emoji` vazio) o selo numa mensagem da conversa."""
         ...
