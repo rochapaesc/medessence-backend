@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -18,6 +20,8 @@ from apps.patients.models import (
     PrescriptionModel,
 )
 from apps.patients.partner_scope import eh_parceiro, pacientes_do_parceiro
+
+logger = logging.getLogger(__name__)
 
 
 class ClinicalEntryViewSet(AuditMixin, ClinicScopedModelViewSet):
@@ -97,9 +101,29 @@ class ClinicalEntryViewSet(AuditMixin, ClinicScopedModelViewSet):
         if not patient.external_id:
             return Response({"detail": "Paciente ainda não vinculado ao EHR.", "synced": False})
 
+        from apps.integrations.ehr.exceptions import EHRError
         from apps.integrations.services import pull_medical_records
 
-        run = pull_medical_records(self.clinic, patient=patient)
+        try:
+            run = pull_medical_records(self.clinic, patient=patient)
+        except EHRError as exc:
+            # ⚠️ Prontuário fora do ar não é erro DA CLÍNICA (11/08/2026). Sem
+            # este tratamento o `EHRAuthError` subia até o Django e abrir a aba
+            # Clínico devolvia 500 na cara de quem estava usando - foi o que a
+            # chave recusada da vSaúde produziu por dias. Vale para toda queda
+            # do EHR, e não só para a chave: a tela precisa dizer que o
+            # prontuário está indisponível, e o que já está espelhado continua
+            # legível.
+            logger.warning("Sync clínico falhou (clínica %s): %s", self.clinic.pk, exc)
+            return Response(
+                {
+                    "detail": "O prontuário está indisponível agora. "
+                    "O que já foi espelhado continua na tela.",
+                    "code": "ehr_unavailable",
+                    "synced": False,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response(
             {"synced": True, "stats": run.stats},
             status=status.HTTP_200_OK,

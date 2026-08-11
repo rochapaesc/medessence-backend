@@ -149,6 +149,34 @@ def test_sync_action_puxa_prontuario(ehr_client, ehr_clinic):
     assert ClinicalEntry.objects.filter(patient=patient).count() == 5
 
 
+def test_prontuario_fora_do_ar_vira_recado_e_nao_500(ehr_client, ehr_clinic):
+    """
+    ⚠️ Achado ao vivo em 11/08/2026, com a chave da vSaúde recusada: o
+    `EHRAuthError` subia até o Django e abrir a aba Clínico devolvia **500 na
+    cara de quem estava usando**.
+
+    Vale para toda queda do EHR, e não só para a chave expirada: prontuário
+    indisponível não é erro da clínica, e a tela precisa poder dizer isso.
+    """
+    from unittest.mock import patch
+
+    from apps.integrations.ehr.exceptions import EHRAuthError
+
+    patient = Patient.objects.create(
+        clinic=ehr_clinic, name="Paciente Sem EHR", external_id="fake-pat-clin-9"
+    )
+    with patch(
+        "apps.integrations.services.pull_medical_records",
+        side_effect=EHRAuthError("API key da vSaúde recusada (401/403)."),
+    ):
+        response = ehr_client.post(f"{ENTRIES_URL}sync/", {"patient": patient.pk}, format="json")
+
+    assert response.status_code == 503, "500 é defeito nosso; 503 é o prontuário fora do ar"
+    assert response.data["code"] == "ehr_unavailable"
+    assert response.data["synced"] is False
+    assert "indisponível" in response.data["detail"]
+
+
 def test_pull_catalogs_traz_modelos_de_prescricao(ehr_clinic):
     run = pull_catalogs(ehr_clinic)
     assert run.stats["prescription_models"]["fetched"] == 2
