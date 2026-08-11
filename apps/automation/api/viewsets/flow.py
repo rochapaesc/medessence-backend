@@ -1,6 +1,7 @@
 from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.status import HTTP_400_BAD_REQUEST
 
@@ -8,7 +9,7 @@ from apps.automation.api.serializers import FlowRunSerializer, FlowSerializer, F
 from apps.automation.choices import FlowRunStatus, FlowStatus
 from apps.automation.graph import validate_graph
 from apps.automation.models import Flow, FlowRun
-from apps.core.api.permissions import IsClinicManager
+from apps.core.api.permissions import IsClinicManager, IsClinicMember
 from apps.core.api.viewsets import ClinicScopedModelViewSet, ClinicScopedReadOnlyViewSet
 from apps.core.mixins import AuditMixin
 
@@ -26,6 +27,13 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
     audit_resource = "Flow"
     serializer_class = FlowSerializer
     permission_classes = [IsClinicManager]
+    # Montar fluxo é do gestor; DISPARAR um é de quem atende (RF-FLW-22.2).
+    # O parceiro segue barrado: sem `partner_allowed`, o `IsClinicMember`
+    # fecha a view para ele.
+    action_permission_classes = {
+        "available": [IsClinicMember],
+        "start": [IsClinicMember],
+    }
     ordering_fields = ["priority", "name"]
 
     def get_queryset(self):
@@ -93,6 +101,103 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
     def versions(self, request, pk=None):
         flow = self.get_object()
         return Response(FlowVersionSerializer(flow.versions.order_by("-number"), many=True).data)
+
+    # ------------------------------------------------------------------ #
+    # Disparo à mão (RF-FLW-22)
+    #
+    # As duas ações abaixo são do ATENDENTE, não do gestor: quem devolve a
+    # conversa para o robô é quem está com ela na mão. Moram aqui, e não no
+    # viewset de conversa, porque o Inbox não conhece a automação - a seta
+    # aponta num sentido só (RF-FLW-21), e invertê-la por uma ação de tela
+    # juntaria os dois apps.
+    # ------------------------------------------------------------------ #
+
+    @action(detail=False, methods=["get"], url_path="available")
+    def available(self, request):
+        """
+        Os fluxos que dá para disparar à mão (RF-FLW-22.4/22.6).
+
+        Entra qualquer fluxo ativo COM versão publicada, seja qual for o
+        gatilho: o gatilho diz quando o fluxo começa sozinho, e à mão é outra
+        porta. Rascunho fica de fora, porque disparar um fluxo pela metade é
+        pior do que não ter nenhum.
+
+        `clinic_open` vem junto para a tela poder avisar que um fluxo de fora
+        do horário nunca começaria sozinho agora. É aviso, não trava
+        (RF-FLW-22.5).
+        """
+        from apps.automation.engine import _clinic_is_open
+
+        fluxos = (
+            Flow.objects.filter(
+                clinic=self.clinic, deleted_at__isnull=True, status=FlowStatus.ACTIVE
+            )
+            .exclude(current_version__isnull=True)
+            .select_related("current_version")
+            .order_by("priority", "name")
+        )
+        return Response(
+            {
+                "clinic_open": _clinic_is_open(self.clinic),
+                "results": [
+                    {
+                        "id": f.pk,
+                        "name": f.name,
+                        "trigger": f.trigger,
+                        "trigger_config": f.trigger_config or {},
+                        "only_outside_hours": f.only_outside_hours,
+                        "steps": len((f.current_version.graph or {}).get("nodes") or []),
+                    }
+                    for f in fluxos
+                ],
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="start")
+    def start(self, request, pk=None):
+        """
+        Passa uma conversa para este fluxo (RF-FLW-22).
+
+        O fluxo começa do INÍCIO e a conversa deixa de ser de quem mandou. A
+        execução que ficou pausada quando o atendente assumiu não é retomada:
+        depois de dez minutos de conversa humana, o robô voltar perguntando o
+        que já foi respondido é pior do que recomeçar (RF-FLW-22.1).
+        """
+        from apps.automation.engine import start_run
+        from apps.inbox.api.serializers import ConversationSerializer
+        from apps.inbox.models import Conversation
+        from apps.inbox.realtime import notify_conversation_updated
+
+        flow = self.get_object()
+        if flow.status != FlowStatus.ACTIVE or not flow.current_version:
+            raise ValidationError({"flow": "Este fluxo não está publicado."})
+
+        conversa_id = request.data.get("conversation")
+        if not conversa_id:
+            raise ValidationError({"conversation": "Informe a conversa."})
+        conversation = Conversation.objects.filter(
+            clinic=self.clinic, pk=conversa_id, deleted_at__isnull=True
+        ).first()
+        if conversation is None:
+            raise ValidationError({"conversation": "Conversa não encontrada nesta clínica."})
+
+        run = start_run(flow, conversation, by_user=request.user)
+        if run is None:
+            # Não deu para tomar a caneta: ou ela não está com quem mandou, ou
+            # o contato já tem execução ativa. O corpo é o MESMO do erro de
+            # posse do Inbox, achatado, porque a tela já sabe traduzir este.
+            conversation.refresh_from_db()
+            raise PermissionDenied(
+                {
+                    "detail": "Esta conversa não está com você.",
+                    "code": "conversation_busy",
+                    "attended_by": conversation.attended_by,
+                    "holder": getattr(conversation.assigned_to, "pk", None),
+                }
+            )
+
+        notify_conversation_updated(conversation)
+        return Response(ConversationSerializer(conversation, context={"request": request}).data)
 
 
 class FlowRunViewSet(ClinicScopedReadOnlyViewSet):

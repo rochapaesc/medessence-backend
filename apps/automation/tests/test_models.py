@@ -147,10 +147,24 @@ class TestPoliticaDeFallback:
         Não pode ser `default=dict`: fluxo sem política nenhuma abandonaria a
         conversa em silêncio, que é o que o Inbox existe para impedir.
         """
+        from apps.automation.models.flow import (
+            GOODBYE_REPROMPT,
+            GOODBYE_TIMEOUT,
+            MAX_BOT_MESSAGES,
+        )
+
         assert flow_a.fallback == {
             "max_reprompts": 2,
-            "on_timeout_hours": 24,
+            # ⚠️ 20, e não 24: o timeout conta do último avanço da EXECUÇÃO e a
+            # janela da Meta conta da última fala do PACIENTE. Com 24 a
+            # despedida caía fora da janela e só sairia como template pago
+            # (RF-FLW-11.3).
+            "on_timeout_hours": 20,
             "on_exhaust": "handoff",
+            "goodbye_reprompt": GOODBYE_REPROMPT,
+            "goodbye_timeout": GOODBYE_TIMEOUT,
+            # Trava de laço com outro robô (RF-FLW-23.1).
+            "max_bot_messages": MAX_BOT_MESSAGES,
         }
 
     def test_a_politica_nao_e_compartilhada_entre_fluxos(self, clinic_a):

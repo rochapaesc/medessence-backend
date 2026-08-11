@@ -312,7 +312,11 @@ class TestSeedDeDemonstracao:
         conversa.refresh_from_db()
         run = FlowRun.objects.get(conversation=conversa)
         falas = list(
-            Message.objects.filter(conversation=conversa, sender_kind=SenderKind.BOT)
+            # `is_internal=False`: desde o RF-FLW-22.8 a nota do handoff também
+            # é do robô, e ela NÃO é uma fala - não sai para o paciente.
+            Message.objects.filter(
+                conversation=conversa, sender_kind=SenderKind.BOT, is_internal=False
+            )
             .exclude(kind="activity")
             .values_list("body", flat=True)
         )

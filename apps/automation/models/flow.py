@@ -17,18 +17,45 @@ from django.utils import timezone
 from apps.automation.choices import FlowRunStatus, FlowStatus, FlowTrigger
 from apps.core.models import BaseModel, TenantScopedModel
 
+# Fala de despedida do handoff automático (RF-FLW-11.1). Dois textos porque
+# são dois motivos: "não entendi" e "você sumiu" pedem frases diferentes, e uma
+# só mentiria em um dos casos.
+GOODBYE_REPROMPT = "Desculpe, não consegui entender. Vou chamar alguém da recepção para te ajudar."
+GOODBYE_TIMEOUT = (
+    "Como não tive retorno, vou deixar a sua conversa com a recepção. É só escrever quando puder."
+)
+
+# Teto de falas do robô numa execução (RF-FLW-23.1). O fluxo real da clínica
+# tem 25 nós e gasta 8 a 10 falas numa conversa completa, uns 20 com todos os
+# reprompts. Trinta é folga e ainda corta um laço cedo: o risco do ping-pong
+# com outro robô não é o custo por mensagem (a Meta cobra por conversa de 24h)
+# e sim a Meta bloquear o número da clínica por spam.
+MAX_BOT_MESSAGES = 30
+
 
 def default_fallback():
     """
     Política de fallback de um fluxo novo (RF-FLW-11).
 
-    Os três números respondem a três perguntas diferentes: quantas vezes
-    repetir a pergunta quando a resposta não casa com saída nenhuma, quanto
-    tempo esperar antes de desistir do silêncio, e o que fazer no fim dos
-    dois. `handoff` é o único fim aceitável - abandonar a conversa em
-    silêncio é o comportamento que o Inbox existe para impedir.
+    Os números respondem a perguntas diferentes: quantas vezes repetir quando
+    a resposta não casa com saída nenhuma, quanto tempo esperar antes de
+    desistir do silêncio, e o que fazer no fim dos dois. `handoff` é o único
+    fim aceitável - abandonar a conversa em silêncio é o comportamento que o
+    Inbox existe para impedir.
+
+    ⚠️ **20 horas, e não 24** (RF-FLW-11.3). Os dois relógios são diferentes:
+    a janela da Meta conta 24h desde a última fala do PACIENTE e este timeout
+    conta desde o último avanço da EXECUÇÃO, que é sempre igual ou posterior.
+    Com 24 a despedida caía fora da janela e só sairia como template pago.
     """
-    return {"max_reprompts": 2, "on_timeout_hours": 24, "on_exhaust": "handoff"}
+    return {
+        "max_reprompts": 2,
+        "on_timeout_hours": 20,
+        "on_exhaust": "handoff",
+        "goodbye_reprompt": GOODBYE_REPROMPT,
+        "goodbye_timeout": GOODBYE_TIMEOUT,
+        "max_bot_messages": MAX_BOT_MESSAGES,
+    }
 
 
 def empty_graph():

@@ -8,12 +8,16 @@ nova - e é por isso que o `only_outside_hours` existe.
 """
 
 import logging
+from datetime import timedelta
 
 from apps.automation.choices import FlowStatus, FlowTrigger
 from apps.automation.models import Flow
 from apps.inbox.choices import SenderKind
 
 logger = logging.getLogger(__name__)
+
+# Quantas execuções o MESMO contato pode começar numa hora (RF-FLW-23.2).
+MAX_RUNS_POR_HORA = 3
 
 
 def _matches_keyword(texto: str, config: dict) -> bool:
@@ -57,6 +61,41 @@ def _is_first_inbound(conversation) -> bool:
     )
 
 
+def _repicou_demais(conversation) -> bool:
+    """
+    Trava do redisparo em série (RF-FLW-23.2).
+
+    Ao entregar, a conversa volta para a fila com posse `none` - e aí a mesma
+    palavra-chave dispara um fluxo NOVO. A trava do banco (RF-FLW-6) só impede
+    duas execuções ATIVAS ao mesmo tempo, não uma fila infinita em sequência,
+    que é o que um robô do outro lado produziria.
+
+    Três por hora deixa passar o paciente que errou e tentou de novo.
+    """
+    from django.utils import timezone
+
+    from apps.automation.models import FlowRun
+
+    if conversation.contact_id is None:
+        return False
+    desde = timezone.now() - timedelta(hours=1)
+    quantas = FlowRun.objects.filter(
+        clinic=conversation.clinic,
+        contact_id=conversation.contact_id,
+        created_at__gte=desde,
+        deleted_at__isnull=True,
+    ).count()
+    if quantas < MAX_RUNS_POR_HORA:
+        return False
+    logger.warning(
+        "Contato %s já teve %s execuções na última hora: fluxo não dispara "
+        "(a conversa fica para a recepção)",
+        conversation.contact_id,
+        quantas,
+    )
+    return True
+
+
 def pick_flow(conversation, message) -> Flow | None:
     """
     Qual fluxo atende esta mensagem, ou None.
@@ -85,6 +124,12 @@ def pick_flow(conversation, message) -> Flow | None:
     # consulta" dispararia um fluxo cuja palavra é "consulta". Quem continua
     # execução em andamento é o `on_inbound`, que roda antes deste.
     if (message.content_data or {}).get("interactive_id"):
+        return None
+
+    # A trava do redisparo em série vem DEPOIS do descarte do botão e ANTES de
+    # escolher o fluxo: contar execução para decidir e depois não usar o
+    # resultado seria uma query à toa em toda mensagem de menu (RF-FLW-23.2).
+    if _repicou_demais(conversation):
         return None
 
     aberta = _clinic_is_open(conversation.clinic)

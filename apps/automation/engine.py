@@ -121,6 +121,60 @@ def _claim_for_bot(conversation) -> bool:
     return bool(trocou)
 
 
+def _claim_for_bot_from_agent(conversation, user) -> bool:
+    """
+    O atendente entrega a conversa ao robô (RF-FLW-22).
+
+    Diferente do `_claim_for_bot`, aqui a caneta NÃO está livre: ela está na
+    mão de quem está mandando. Por isso o UPDATE se condiciona à posse dele,
+    como o `take_over` faz no sentido contrário - quem perdeu a conversa entre
+    abrir a lista de fluxos e confirmar não a arranca de quem assumiu.
+
+    ⚠️ O dono sai junto (RF-FLW-22.3). Zerar só o `attended_by` deixaria a
+    conversa contando na carga de quem acabou de sair dela, e ela voltaria
+    para o mesmo atendente se o fluxo entregasse de volta - que é o oposto de
+    devolver.
+    """
+    from apps.inbox.models import Conversation
+
+    trocou = Conversation.objects.filter(
+        pk=conversation.pk,
+        attended_by=AttendedBy.AGENT,
+        assigned_to=user,
+    ).update(
+        attended_by=AttendedBy.BOT,
+        assigned_to=None,
+        attended_since=timezone.now(),
+        status=ConversationStatus.OPEN,
+        waiting_since=None,
+        updated_at=timezone.now(),
+    )
+    if trocou:
+        conversation.refresh_from_db()
+    return bool(trocou)
+
+
+def _give_pen_back(conversation, user) -> None:
+    """
+    Desfaz o `_claim_for_bot_from_agent`: a conversa volta para quem a tinha.
+
+    Só serve ao disparo à mão que não chegou a começar. Sem isto, o atendente
+    entrega a conversa, o começo falha e ela cai na fila - ele perde a
+    conversa como efeito colateral de um erro.
+    """
+    from apps.inbox.models import Conversation
+
+    Conversation.objects.filter(pk=conversation.pk, attended_by=AttendedBy.BOT).update(
+        attended_by=AttendedBy.AGENT,
+        assigned_to=user,
+        attended_since=timezone.now(),
+        status=ConversationStatus.OPEN,
+        waiting_since=None,
+        updated_at=timezone.now(),
+    )
+    conversation.refresh_from_db()
+
+
 def _release_to_queue(conversation, *, activity: str | None = None, data: dict | None = None):
     """
     Devolve a conversa para a fila humana: sem dono e Aguardando.
@@ -387,14 +441,93 @@ def _apply_label(node, conversation):
         conversation.labels.add(label)
 
 
+def _estourou_o_teto_de_falas(run) -> bool:
+    """
+    Trava de laço com outro robô (RF-FLW-23.1).
+
+    O ping-pong perigoso é o outro lado respondendo sempre algo VÁLIDO: aí o
+    `reprompt_count` nunca sobe, o `MAX_STEPS_PER_ADVANCE` não pega (cada volta
+    é um avanço novo) e a varredura não pega (a execução está avançando). Nada
+    cortava, e o preço é a Meta bloquear o número da clínica por spam.
+
+    Conta pelos eventos `sent` que a execução já grava (RF-FLW-12), então não
+    precisa de campo novo nem de contador que possa dessincronizar.
+    """
+    from apps.automation.models.flow import MAX_BOT_MESSAGES
+
+    teto = int((run.flow.fallback or {}).get("max_bot_messages") or MAX_BOT_MESSAGES)
+    if teto <= 0:
+        return False
+    ditas = FlowRunEvent.objects.filter(run=run, event_type=FlowRunEventType.SENT).count()
+    if ditas < teto:
+        return False
+    logger.warning(
+        "Fluxo %s: execução %s bateu o teto de %s falas e foi entregue ao humano",
+        run.flow_id,
+        run.pk,
+        teto,
+    )
+    return True
+
+
+def _despedir(run, conversation, reason: str) -> None:
+    """
+    O robô se despede antes de entregar (RF-FLW-11.1).
+
+    Só no handoff AUTOMÁTICO: o nó "Transferir para humano" desenhado no fluxo
+    já tem a fala que quem montou escreveu antes dele. Quem saía calado era
+    justamente o caminho que o paciente não escolheu - errar três respostas ou
+    parar de responder.
+
+    ⚠️ Só sai com a JANELA ABERTA (RF-FLW-11.3.1). Fluxo disparado à mão pode
+    começar com a janela já fechada, e aí não há texto livre possível; tentar
+    enviar deixaria a mensagem `failed` na thread, que é pior do que o
+    silêncio.
+    """
+    politica = run.flow.fallback or {}
+    chave = "goodbye_reprompt" if reason == "reprompt_esgotado" else "goodbye_timeout"
+    texto = (politica.get(chave) or "").strip()
+    if not texto:
+        return
+    conversation.refresh_from_db()
+    if not conversation.window_open:
+        logger.info("Fluxo %s: janela fechada, despedida não sai", run.flow_id)
+        return
+    _send(run, conversation, body=interpolate(texto, run.vars or {}))
+
+
 def _finish(run, conversation, *, status: str, reason: str, note: str = ""):
     """Encerra a execução e SEMPRE devolve a conversa para a fila humana."""
     from apps.inbox.choices import ActivityType
+
+    # A despedida é produzida ANTES de soltar a caneta: o `_send` confere que
+    # o robô ainda tem a posse, e o `_release_to_queue` logo abaixo a tira.
+    # Ela sai no `_despachar` do fim, junto com o que já estava na fila.
+    if reason in ("reprompt_esgotado", "inatividade"):
+        try:
+            _despedir(run, conversation, reason)
+        except _PosseTrocadaError:
+            # Alguém assumiu no meio: quem entrega agora é a pessoa, e a
+            # despedida do robô por cima seria ruído na conversa dela.
+            pass
 
     run.status = status
     run.ended_at = timezone.now()
     run.end_reason = reason
     run.save(update_fields=["status", "ended_at", "end_reason", "updated_at"])
+
+    # A nota do nó vira NOTA INTERNA de verdade (RF-FLW-22.8), e não só um
+    # pedaço do evento. Ela é o que o fluxo apurou - nome, tipo de atendimento,
+    # forma de pagamento - e quem pega a conversa precisa ler isso como texto,
+    # com as quebras de linha, não espremido numa linha de evento cinza.
+    #
+    # ⚠️ Nota interna NUNCA sai para o paciente: nasce `is_internal=True`, sem
+    # `provider_message_id`, e NÃO entra na fila do `_despachar` - só o `_send`
+    # enfileira, e ela não passa por ele.
+    if note.strip():
+        from apps.inbox.services import create_internal_note
+
+        create_internal_note(conversation, None, note.strip(), sender_kind=SenderKind.BOT)
 
     _release_to_queue(
         conversation,
@@ -423,6 +556,17 @@ def advance(run, *, from_outcome: str | None = None) -> None:
         return
 
     conversation = run.conversation
+    if _estourou_o_teto_de_falas(run):
+        # RF-FLW-23.1: laço de ping-pong com outro robô. Entrega ao humano,
+        # como qualquer outro fim, em vez de seguir falando.
+        _finish(
+            run,
+            conversation,
+            status=FlowRunStatus.HANDED_OFF,
+            reason="teto_de_falas",
+        )
+        return
+
     graph = FlowGraph(run.version.graph)
     node_id = run.current_node
 
@@ -483,13 +627,16 @@ def advance(run, *, from_outcome: str | None = None) -> None:
 # --------------------------------------------------------------------- #
 
 
-def start_run(flow, conversation) -> FlowRun | None:
+def start_run(flow, conversation, *, by_user=None) -> FlowRun | None:
     """
     Começa uma execução para o contato desta conversa.
 
     Devolve None quando não deu para começar: já havia execução ativa (a
     trava do banco recusa a segunda - RF-FLW-6) ou a conversa não estava
     livre. Nos dois casos é no-op de propósito, não erro.
+
+    `by_user` é o disparo À MÃO (RF-FLW-22): a conversa vem da mão de um
+    atendente em vez de estar livre, e a tomada se condiciona à posse dele.
     """
     version = flow.current_version
     if not version:
@@ -499,7 +646,12 @@ def start_run(flow, conversation) -> FlowRun | None:
     if not entry:
         return None
 
-    if not _claim_for_bot(conversation):
+    tomou = (
+        _claim_for_bot_from_agent(conversation, by_user)
+        if by_user is not None
+        else _claim_for_bot(conversation)
+    )
+    if not tomou:
         return None
 
     try:
@@ -515,13 +667,31 @@ def start_run(flow, conversation) -> FlowRun | None:
     except IntegrityError:
         # A trava do banco (RF-FLW-6): outra entrega do mesmo webhook chegou
         # primeiro. Devolve a caneta, porque quem começou de verdade foi ela.
-        _release_to_queue(conversation)
+        #
+        # ⚠️ No disparo à mão a caneta volta para QUEM MANDOU, e não para a
+        # fila: a conversa era dele um instante antes, e mandá-la para a fila
+        # o faria PERDER a conversa por causa de uma corrida que ele não
+        # causou - ele levaria a recusa e a conversa junto.
+        if by_user is not None:
+            _give_pen_back(conversation, by_user)
+        else:
+            _release_to_queue(conversation)
         return None
 
     from apps.inbox.attendance import log_activity
     from apps.inbox.choices import ActivityType
 
-    log_activity(conversation, ActivityType.BOT_STARTED, data={"flow": flow.name})
+    # O mesmo tipo de evento nos dois caminhos, com `manual` dizendo qual foi.
+    # A frase é montada no front (a regra do `log_activity`), e ela muda: o
+    # automático diz que a IA assumiu, o manual diz QUEM passou e para qual
+    # fluxo - sem o nome do fluxo, quem lê a conversa depois não sabe o que
+    # o robô foi fazer ali.
+    log_activity(
+        conversation,
+        ActivityType.BOT_STARTED,
+        user=by_user,
+        data={"flow": flow.name, "flow_id": flow.pk, "manual": by_user is not None},
+    )
     advance(run)
     return run
 
@@ -622,11 +792,7 @@ def on_inbound(conversation, message) -> bool:
 
 
 def _ids_das_opcoes(node, chave_das_opcoes: str) -> set[str]:
-    return {
-        str(o.get("id"))
-        for o in (node.config.get(chave_das_opcoes) or [])
-        if o.get("id")
-    }
+    return {str(o.get("id")) for o in (node.config.get(chave_das_opcoes) or []) if o.get("id")}
 
 
 def _guardar_escolha(run, node, escolha: str, texto: str, chave_das_opcoes: str) -> None:

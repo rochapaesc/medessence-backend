@@ -512,12 +512,16 @@ def _apply_status(channel, event) -> bool:
 # --------------------------------------------------------------------- #
 
 
-def create_internal_note(conversation, user, body: str):
+def create_internal_note(conversation, user, body: str, *, sender_kind: str = SenderKind.AGENT):
     """
     Nota da equipe (RF-ATD-3): existe na thread e NUNCA sai para o paciente.
 
     Nasce sem `provider_message_id` e com `is_internal=True`; quem impede o
     envio é a guarda em `send_message` — aqui só se cria o registro.
+
+    `sender_kind` existe por causa do fluxo (RF-FLW-22.8): o robô também anota,
+    e creditar a nota dele a um atendente faria a recepção procurar quem
+    escreveu. Nesse caso `user` é nulo e quem assina é o BOT.
     """
     from apps.inbox.models import Message
 
@@ -525,7 +529,7 @@ def create_internal_note(conversation, user, body: str):
         clinic=conversation.clinic,
         conversation=conversation,
         kind=MessageKind.TEXT,
-        sender_kind=SenderKind.AGENT,
+        sender_kind=sender_kind,
         sent_by=user,
         body=body,
         is_internal=True,
