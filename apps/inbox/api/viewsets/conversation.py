@@ -1,4 +1,4 @@
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -68,12 +68,19 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
         A ordenação continua do SERVIDOR porque a fila é paginada: ordenar no
         cliente ordenaria só a página carregada.
+
+        ⚠️ `nulls_last` NÃO é detalhe de SQL (11/08/2026). No PostgreSQL,
+        `DESC` traz NULL PRIMEIRO, então toda conversa que ainda não tem
+        mensagem nenhuma subia ao TOPO da fila, acima da que acabou de chegar.
+        Pior: o cliente reordena com NULL por último ao aplicar uma mudança
+        local, então a lista trocava de ordem sozinha assim que alguém
+        resolvia qualquer conversa. Os dois lados agora ordenam igual.
         """
         return (
             super()
             .get_queryset()
             .prefetch_related("labels")
-            .order_by("-last_message_at")
+            .order_by(F("last_message_at").desc(nulls_last=True))
         )
 
     @action(detail=True, methods=["post"], url_path="read")

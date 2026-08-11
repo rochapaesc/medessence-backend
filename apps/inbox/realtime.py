@@ -237,6 +237,18 @@ def notify_conversation_updated(conversation) -> None:
             "status": conversation.status,
             "attended_by": conversation.attended_by,
             "priority": conversation.priority,
+            # ⚠️ A janela de 24h TEM de vir aqui (11/08/2026). Ela é derivada
+            # de `last_inbound_at`, então a mensagem do paciente ABRE a janela
+            # no mesmo instante em que dispara este evento. Sem o campo, a
+            # tela mantinha o valor velho e continuava mostrando o selo de
+            # janela fechada com o paciente acabando de escrever - o composer
+            # pedia template para uma conversa que aceitava texto livre.
+            "window_open": conversation.window_open,
+            "last_inbound_at": (
+                conversation.last_inbound_at.isoformat()
+                if conversation.last_inbound_at
+                else None
+            ),
             # Junto com o status: quando a conversa VOLTA para a fila (devolvida,
             # acordada do adiamento), o "aguardando há X" da tela de todo mundo
             # precisa do relógio novo - sem ele, mostraria o da fila anterior.
