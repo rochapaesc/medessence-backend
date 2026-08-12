@@ -15,6 +15,7 @@ from apps.inbox.choices.message import (
     ReactionActor,
     SenderKind,
 )
+from apps.inbox.choices.reactivation import VariableSource
 from apps.inbox.choices.webhook import WebhookSource
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "MessageStatus",
     "ReactionActor",
     "SenderKind",
+    "VariableSource",
     "WebhookSource",
     "WhatsAppProviderKind",
 ]

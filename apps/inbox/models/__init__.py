@@ -5,6 +5,7 @@ from apps.inbox.models.media import MediaAsset
 from apps.inbox.models.message import Message
 from apps.inbox.models.quick_reply import QuickReply
 from apps.inbox.models.reaction import MessageReaction
+from apps.inbox.models.reactivation import ReactivationMessage
 from apps.inbox.models.team import Team
 from apps.inbox.models.template import WhatsAppTemplate
 from apps.inbox.models.webhook_event import WebhookEvent
@@ -17,6 +18,7 @@ __all__ = [
     "Message",
     "MessageReaction",
     "QuickReply",
+    "ReactivationMessage",
     "Team",
     "WebhookEvent",
     "WhatsAppTemplate",

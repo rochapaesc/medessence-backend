@@ -2,6 +2,7 @@ from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
 from apps.accounts.api.views import MeMembershipsView, MeView
+from apps.inbox.api.views_reactivation import ReactivationMessageView
 from apps.integrations.api.views import EHRSyncView
 from apps.notifications.api.views import (
     NotificationsCountersView,
@@ -40,6 +41,13 @@ urlpatterns = [
         "clinic/business-hours/",
         ClinicBusinessHoursView.as_view(),
         name="clinic-business-hours",
+    ),
+    # Mensagem de resgate: qual template sai e o que cada variável recebe
+    # (RF-REA-2.2/2.3). O disparo em si segue bloqueado (RF-REA-2).
+    path(
+        "reactivation-message/",
+        ReactivationMessageView.as_view(),
+        name="reactivation-message",
     ),
     # Sincronização manual com o EHR (complementa o beat)
     path("sync/ehr/", EHRSyncView.as_view(), name="ehr-sync"),
