@@ -27,6 +27,26 @@ from apps.patients.choices import Gender, PatientSource, PatientStatus
 # (Practitioner.active_window_days) na visão da carteira.
 DEFAULT_ACTIVE_WINDOW_DAYS = 90
 
+# RF-REA-1.2: faixas por tempo desde a última consulta, em dias.
+#
+# Cobrem a base INTEIRA (decisão de 11/08/2026, quando a tela deixou de partir
+# só da fila de resgate): sem `0_3` e `never`, a soma das faixas não fecharia
+# com o total e a tela mostraria um "Todos" maior que a soma do que está
+# embaixo dele, sem explicar a diferença.
+#
+# `12_plus` é ABERTA em cima de propósito: o espelho da agenda alcança setembro
+# de 2023, então uma faixa "mais de 2 anos" teria UM paciente na clínica real,
+# e faixa com um item dentro parece defeito, não recorte.
+ABSENCE_RANGES = {
+    "0_3": (0, 90),
+    "3_6": (90, 180),
+    "6_12": (180, 365),
+    "12_plus": (365, None),
+    #: Sem consulta nenhuma no espelho. Não é intervalo de dias, e por isso
+    #: `by_absence` o trata à parte.
+    "never": None,
+}
+
 
 def active_cutoff(window_days: int = DEFAULT_ACTIVE_WINDOW_DAYS, now=None):
     return (now or timezone.now()) - timedelta(days=window_days)
@@ -80,6 +100,97 @@ class PatientQuerySet(SoftDeleteQuerySet):
             ),
         )
 
+    def to_reactivate(
+        self,
+        window_days: int = DEFAULT_ACTIVE_WINDOW_DAYS,
+        practitioner=None,
+    ):
+        """
+        A FILA DE RESGATE (RF-REA-1.1): inativo que JÁ compareceu alguma vez.
+
+        Quem nunca teve consulta espelhada é cadastro sem histórico, e disparo
+        pago para ele é prospecção, não resgate - na clínica real são 2.762 dos
+        4.653 inativos, mais da metade.
+
+        ⚠️ Este método é a definição ÚNICA do recorte, e o contador e a
+        listagem saem os dois daqui. Era exatamente o defeito da tela de
+        Reativação: `status_counters` separava os dois grupos e a listagem só
+        sabia filtrar `status=inactive`, então o número do topo nunca poderia
+        corresponder à lista embaixo dele.
+        """
+        inactive = self.by_status(PatientStatus.INACTIVE, window_days, practitioner)
+        has_history = (
+            Q(pract_last__isnull=False)
+            if practitioner is not None
+            else Q(last_appointment_at__isnull=False)
+        )
+        return inactive.filter(has_history)
+
+    def com_ultimo_profissional(self):
+        """
+        Anota o profissional da última consulta de cada paciente.
+
+        Só é encadeado onde a tela precisa (a fila de resgate), e não no
+        queryset padrão: é uma subquery por linha, e as outras listagens de
+        paciente pagariam por um dado que não mostram.
+
+        ⚠️ O `Patient` guarda `last_appointment_at` denormalizado mas NÃO
+        guarda com quem foi. Denormalizar o nome junto seria mais barato de
+        ler e mais caro de manter: mudou o nome do profissional, todas as
+        linhas ficariam com o nome velho até alguém reprocessar.
+        """
+        from django.db.models import OuterRef, Subquery
+
+        ultima = (
+            self.model.appointments.rel.related_model.objects.filter(
+                patient=OuterRef("pk"),
+                deleted_at__isnull=True,
+            )
+            .exclude(status__in=["canceled", "no_show"])
+            .order_by("-starts_at")
+        )
+        return self.annotate(
+            last_practitioner_name=Subquery(
+                ultima.values("practitioner__name")[:1]
+            ),
+        )
+
+    def by_absence(self, faixa: str, practitioner=None, now=None):
+        """
+        Faixa por tempo desde a última consulta (RF-REA-1.2).
+
+        Faixa desconhecida não filtra nada. Pela API isso não acontece (o
+        `ChoiceFilter` recusa com 400 antes de chegar aqui); a guarda existe
+        para quem chama o queryset direto, onde devolver a lista inteira é
+        menos surpreendente do que estourar.
+
+        ⚠️ Com `practitioner` o corte é na anotação `pract_last`, que nasce no
+        `by_status`. Este método NÃO assume que ela já existe: o django-filter
+        aplica os filtros na ordem em que declara os campos, e depender dessa
+        ordem para `?absence=` vir depois de `?segment=` seria um erro que só
+        aparece quando alguém trocar duas linhas de lugar.
+        """
+        if faixa not in ABSENCE_RANGES:
+            return self
+        now = now or timezone.now()
+
+        queryset = self
+        campo = "last_appointment_at"
+        if practitioner is not None:
+            campo = "pract_last"
+            if campo not in self.query.annotations:
+                queryset = self._annotate_practitioner(practitioner, now)
+
+        # "Nunca consultou" não é intervalo: é a ausência do dado.
+        if faixa == "never":
+            return queryset.filter(**{f"{campo}__isnull": True})
+
+        desde, ate = ABSENCE_RANGES[faixa]
+        filtro = Q(**{f"{campo}__lt": now - timedelta(days=desde)})
+        if ate is not None:
+            filtro &= Q(**{f"{campo}__gte": now - timedelta(days=ate)})
+        return queryset.filter(filtro)
+
     def status_counters(
         self,
         window_days: int = DEFAULT_ACTIVE_WINDOW_DAYS,
@@ -91,19 +202,15 @@ class PatientQuerySet(SoftDeleteQuerySet):
         histórico), removendo o viés no número de reativação. Por isso
         `active + inactive = total`, mas `to_reactivate ≤ inactive`.
         """
-        inactive_qs = self.by_status(PatientStatus.INACTIVE, window_days, practitioner)
-        has_history = (
-            Q(pract_last__isnull=False)
-            if practitioner is not None
-            else Q(last_appointment_at__isnull=False)
-        )
         return {
             "total": self.count(),
             PatientStatus.ACTIVE.value: self.by_status(
                 PatientStatus.ACTIVE, window_days, practitioner
             ).count(),
-            PatientStatus.INACTIVE.value: inactive_qs.count(),
-            "to_reactivate": inactive_qs.filter(has_history).count(),
+            PatientStatus.INACTIVE.value: self.by_status(
+                PatientStatus.INACTIVE, window_days, practitioner
+            ).count(),
+            "to_reactivate": self.to_reactivate(window_days, practitioner).count(),
         }
 
 

@@ -27,6 +27,18 @@ class PatientReadSerializer(ModelSerializer):
     def get_cpf(self, obj):
         return mask_cpf(obj.cpf)
 
+    last_practitioner = SerializerMethodField()
+
+    def get_last_practitioner(self, obj):
+        """
+        Com quem foi a última consulta (RF-REA-1, a linha da fila de resgate).
+
+        Sai da anotação que o segmento de resgate acrescenta, e vem VAZIO nas
+        outras listagens - elas não pagam a subquery. `null` aqui significa
+        "não foi pedido", não "não tem profissional".
+        """
+        return getattr(obj, "last_practitioner_name", None)
+
     class Meta:
         model = Patient
         fields = [
@@ -38,6 +50,7 @@ class PatientReadSerializer(ModelSerializer):
             "state",
             "status",
             "last_appointment_at",
+            "last_practitioner",
             "tags",
             "source",
             "sync_status",

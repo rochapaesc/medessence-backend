@@ -181,6 +181,300 @@ class PatientViewSet(
 
         return Response(queryset.status_counters(window_days, practitioner))
 
+    @action(detail=False, methods=["get"], url_path="reactivation-summary")
+    def reactivation_summary(self, request):
+        """
+        Contagens da fila de resgate, facetadas (RF-REA-1.4).
+
+        Cada dimensão conta IGNORANDO o próprio filtro e respeitando os
+        outros: escolher duas etiquetas muda os números das faixas, e escolher
+        uma faixa muda os números das etiquetas. `total` é o recorte completo,
+        com tudo aplicado - é o número que a faixa de contagem exibe.
+
+        ⚠️ O recorte sai do MESMO filterset que serve a listagem, de
+        propósito. Recalcular o segmento aqui à mão é como o contador e a
+        lista divergiram na tela antiga: dois lugares definindo "quem está na
+        fila" acabam definindo coisas diferentes.
+        """
+        from apps.patients.choices import Gender
+        from apps.patients.models.patient import ABSENCE_RANGES
+
+        def recorte(**overrides):
+            params = request.query_params.copy()
+            # ⚠️ NÃO força mais o segmento de resgate. A tela passou a
+            # partir da base inteira (11/08/2026) e recorta pelos filtros
+            # da coluna; quem quiser só a fila manda `?segment=` como
+            # qualquer outro filtro.
+            for chave, valor in overrides.items():
+                if valor is None:
+                    params.pop(chave, None)
+                else:
+                    params[chave] = valor
+            return PatientFilterset(
+                params, queryset=self.get_queryset(), request=request
+            ).qs
+
+        sem_faixa = recorte(absence=None)
+        sem_etiqueta = recorte(tag=None)
+
+        # "all" é o chip Todos: conceitualmente a ausência de faixa, e o front
+        # não deveria ter que somar as outras três para desenhá-lo (somar no
+        # cliente é como o número do topo passa a divergir da lista).
+        por_faixa = [{"key": "all", "count": sem_faixa.count()}] + [
+            {"key": faixa, "count": sem_faixa.by_absence(faixa).count()}
+            for faixa in ABSENCE_RANGES
+        ]
+        por_etiqueta = [
+            {
+                "id": linha["patient_tags__tag_id"],
+                "name": linha["patient_tags__tag__name"],
+                "count": linha["count"],
+            }
+            for linha in (
+                # ⚠️ `patient_tags__isnull=False` é obrigatório junto do
+                # `deleted_at__isnull=True`: sozinho, o segundo passa também
+                # para quem NÃO tem etiqueta nenhuma, porque o LEFT JOIN
+                # produz NULL e `NULL IS NULL` é verdadeiro. Sem isto, o menu
+                # de etiquetas ganha uma linha sem nome contando os sem tag.
+                sem_etiqueta.filter(
+                    patient_tags__isnull=False,
+                    patient_tags__deleted_at__isnull=True,
+                )
+                .order_by()  # limpa ordenação p/ agregação
+                .values("patient_tags__tag_id", "patient_tags__tag__name")
+                .annotate(count=Count("id", distinct=True))
+                .order_by("-count", "patient_tags__tag__name")
+            )
+        ]
+
+        # O gênero são três valores fechados, então não precisa de catálogo
+        # com busca: vem inteiro aqui, com zero onde não houver ninguém.
+        sem_genero = recorte(gender=None)
+        contagem_genero = {
+            linha["gender"]: linha["n"]
+            for linha in (
+                sem_genero.order_by()
+                .values("gender")
+                .annotate(n=Count("id", distinct=True))
+            )
+        }
+        por_genero = [
+            {
+                "key": opcao,
+                "label": rotulo,
+                "count": contagem_genero.get(opcao, 0),
+            }
+            for opcao, rotulo in Gender.choices
+        ]
+
+        # Ativo e inativo, com a mesma regra de faceta: ignoram o próprio
+        # filtro. São dois valores calculados (e não uma coluna), então saem do
+        # `by_status` do queryset em vez de um GROUP BY.
+        from apps.patients.choices import PatientStatus
+
+        sem_status = recorte(status=None)
+        janela = self.clinic.active_window_days
+        por_status = [
+            {
+                "key": opcao.value,
+                "label": rotulo,
+                "count": sem_status.by_status(opcao, janela).count(),
+            }
+            for opcao, rotulo in [
+                (PatientStatus.ACTIVE, "Ativo"),
+                (PatientStatus.INACTIVE, "Inativo"),
+            ]
+        ]
+
+        # Profissional: quem já atendeu cada paciente. Sai por GROUP BY na
+        # agenda, e não pelo `last_practitioner`, porque o filtro é "já
+        # consultou com" e não "a última consulta foi com".
+        from apps.scheduling.models import Practitioner
+
+        sem_profissional = recorte(practitioner=None)
+        contagem_prof = {
+            linha["appointments__practitioner_id"]: linha["n"]
+            for linha in (
+                sem_profissional.filter(
+                    appointments__isnull=False,
+                    appointments__deleted_at__isnull=True,
+                )
+                .order_by()
+                .values("appointments__practitioner_id")
+                .annotate(n=Count("id", distinct=True))
+            )
+        }
+        por_profissional = [
+            {
+                "id": profissional.pk,
+                "name": profissional.name,
+                "count": contagem_prof.get(profissional.pk, 0),
+            }
+            for profissional in Practitioner.objects.filter(
+                clinic=self.clinic, deleted_at__isnull=True
+            ).order_by("name")
+        ]
+        por_profissional.sort(key=lambda item: (-item["count"], item["name"]))
+
+        return Response(
+            {
+                "total": recorte().count(),
+                "by_absence": por_faixa,
+                "by_tag": por_etiqueta,
+                "by_gender": por_genero,
+                "by_status": por_status,
+                "by_practitioner": por_profissional,
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="rescue-tags")
+    def rescue_tags(self, request):
+        """
+        O CATÁLOGO de etiquetas da fila, com a contagem do recorte ativo.
+
+        ⚠️ Catálogo e contagem são coisas DIFERENTES, e confundi-las foi o
+        defeito da primeira versão desta tela: a lista vinha facetada, então
+        aplicar a faixa "3 a 6 meses" fazia 20 das 57 etiquetas sumirem e
+        ficarem inalcançáveis - inclusive `COLONIA DO PIAUI`, que a recepção
+        precisava justamente para ligar. Aqui a LISTA é sempre a da fila
+        inteira; o que muda com o recorte é o NÚMERO ao lado, que pode ser 0.
+
+        `?search=` filtra no servidor, como o resto do sistema. `?absence=`
+        governa só a contagem. As etiquetas já escolhidas NÃO entram na conta,
+        pela mesma regra de faceta do `reactivation-summary`: uma dimensão não
+        conta a si mesma, senão marcar OEIRAS zeraria todas as outras.
+        """
+        from apps.patients.api.filtersets import PatientFilterset
+        from apps.patients.choices import Gender
+        from apps.patients.models.patient import ABSENCE_RANGES
+
+        def recorte(**overrides):
+            params = request.query_params.copy()
+            # ⚠️ NÃO força mais o segmento de resgate. A tela passou a
+            # partir da base inteira (11/08/2026) e recorta pelos filtros
+            # da coluna; quem quiser só a fila manda `?segment=` como
+            # qualquer outro filtro.
+            params.pop("tag", None)  # faceta: a dimensão não conta a si mesma
+            # ⚠️ Aqui `search` é o nome da ETIQUETA, e no filterset é o nome do
+            # PACIENTE. Deixá-lo passar fazia a fila filtrar por gente chamada
+            # "colonia", esvaziar, e o catálogo voltar vazio para toda busca.
+            params.pop("search", None)
+            for chave, valor in overrides.items():
+                if valor is None:
+                    params.pop(chave, None)
+                else:
+                    params[chave] = valor
+            return PatientFilterset(
+                params, queryset=self.get_queryset(), request=request
+            ).qs
+
+        fila_inteira = recorte(absence=None)
+        no_recorte = recorte()
+
+        busca = (request.query_params.get("search") or "").strip()
+        catalogo = (
+            Tag.objects.filter(
+                clinic=self.clinic,
+                deleted_at__isnull=True,
+                # Na Tag o reverso chama `assignments`; `patient_tags` é o
+                # nome do lado do Patient.
+                assignments__deleted_at__isnull=True,
+                assignments__patient__in=fila_inteira,
+            )
+            .distinct()
+            .order_by("name")
+        )
+        if busca:
+            catalogo = catalogo.filter(name__icontains=busca)
+
+        # Uma query para as contagens, e o que não aparecer nela vale zero.
+        contagens = {
+            linha["patient_tags__tag_id"]: linha["n"]
+            for linha in (
+                no_recorte.filter(
+                    patient_tags__isnull=False,
+                    patient_tags__deleted_at__isnull=True,
+                )
+                .order_by()
+                .values("patient_tags__tag_id")
+                .annotate(n=Count("id", distinct=True))
+            )
+        }
+
+        itens = [
+            {"id": tag.pk, "name": tag.name, "count": contagens.get(tag.pk, 0)}
+            for tag in catalogo
+        ]
+        # Quem tem gente no recorte primeiro; o resto em ordem alfabética,
+        # visível e escolhível.
+        itens.sort(key=lambda item: (-item["count"], item["name"]))
+
+        return Response(
+            {
+                "count": len(itens),
+                "absence": request.query_params.get("absence") or "all",
+                "results": itens,
+            }
+        )
+
+    @action(detail=False, methods=["get"], url_path="rescue-cities")
+    def rescue_cities(self, request):
+        """
+        O catálogo de cidades da fila, com a contagem do recorte (RF-REA-1.8).
+
+        Mesma regra do `rescue-tags`: a LISTA é a da fila inteira e o NÚMERO é
+        do recorte, podendo ser zero. `?search=` busca no servidor.
+
+        ⚠️ O texto vai CRU, sem normalizar caixa nem acento. `São Raimundo
+        Nonato` e `SAO RAIMUNDO NONATO PIAUI` aparecem como duas entradas
+        porque é assim que estão no cadastro. Juntar por regra automática
+        mutila nome de verdade - a tentativa aqui virou `São João do`, comendo
+        o "Piauí" que é parte do nome da cidade.
+        """
+        from apps.patients.api.filtersets import PatientFilterset
+
+        def recorte(**overrides):
+            params = request.query_params.copy()
+            # ⚠️ NÃO força mais o segmento de resgate. A tela passou a
+            # partir da base inteira (11/08/2026) e recorta pelos filtros
+            # da coluna; quem quiser só a fila manda `?segment=` como
+            # qualquer outro filtro.
+            params.pop("city", None)  # faceta: a dimensão não conta a si mesma
+            params.pop("search", None)  # aqui `search` é o nome da CIDADE
+            for chave, valor in overrides.items():
+                if valor is None:
+                    params.pop(chave, None)
+                else:
+                    params[chave] = valor
+            return PatientFilterset(
+                params, queryset=self.get_queryset(), request=request
+            ).qs
+
+        busca = (request.query_params.get("search") or "").strip()
+
+        def contar(queryset):
+            return {
+                linha["city"]: linha["n"]
+                for linha in (
+                    queryset.exclude(city="")
+                    .order_by()
+                    .values("city")
+                    .annotate(n=Count("id", distinct=True))
+                )
+            }
+
+        na_fila = contar(recorte(absence=None))
+        no_recorte = contar(recorte())
+
+        itens = [
+            {"name": cidade, "count": no_recorte.get(cidade, 0)}
+            for cidade in na_fila
+            if not busca or busca.lower() in cidade.lower()
+        ]
+        itens.sort(key=lambda item: (-item["count"], item["name"]))
+
+        return Response({"count": len(itens), "results": itens})
+
     @action(detail=False, methods=["get"], url_path="distribution")
     def distribution(self, request):
         """
