@@ -23,6 +23,7 @@ from apps.inbox.reactivation import (
     valor_da_variavel,
     variaveis_do_template,
 )
+from apps.inbox.template_vars import modelo_do_link, rotulo_da_variavel
 from apps.patients.models import Patient
 
 
@@ -67,6 +68,20 @@ class ReactivationMessageView(APIView):
                     "category": template.category,
                     "body": corpo_do_template(template),
                     "variables": variaveis_do_template(template),
+                    # ⚠️ Os MESMOS três campos do serializer do Inbox. A
+                    # campanha é o terceiro lugar que manda template, e sem
+                    # eles a tela desenha só os `{{n}}` do corpo: o link do
+                    # botão e a mídia do cabeçalho ficam sem onde preencher, e
+                    # o disparo inteiro é recusado pela Meta.
+                    "variable_labels": {
+                        chave: rotulo_da_variavel(template, chave)
+                        for chave in variaveis_do_template(template)
+                    },
+                    "variable_url_templates": {
+                        chave: url
+                        for chave in variaveis_do_template(template)
+                        if (url := modelo_do_link(template, chave))
+                    },
                 }
                 for template in WhatsAppTemplate.objects.filter(
                     clinic=clinic, status="APPROVED"

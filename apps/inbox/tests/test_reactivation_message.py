@@ -245,3 +245,58 @@ def test_atendente_nao_escolhe_a_mensagem(api_client, attendant_a, template):
         ).status_code
         == 403
     )
+
+
+def test_a_campanha_recebe_os_MESMOS_campos_do_inbox(
+    api_client, manager_single_clinic, clinic_a
+):
+    """
+    ⚠️ A campanha é o TERCEIRO lugar que manda template, e ficou de fora
+    quando o Inbox e o nó de fluxo ganharam os rótulos (12/08/2026). Sem eles
+    a tela desenha só os `{{n}}` do corpo: o link do botão fica sem campo, a
+    pessoa salva achando que preencheu tudo, e a Meta recusa o disparo INTEIRO
+    - para a base toda de uma vez, e não para uma conversa só.
+    """
+    WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="com_botao",
+        language="pt_BR",
+        category="MARKETING",
+        status="APPROVED",
+        components=[
+            {"type": "BODY", "text": "Olá, {{1}}!"},
+            {
+                "type": "BUTTONS",
+                "buttons": [
+                    {
+                        "type": "URL",
+                        "text": "Agendar",
+                        "url": "https://clinica.com.br/agenda/{{1}}",
+                    }
+                ],
+            },
+        ],
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    achado = next(
+        t
+        for t in api_client.get(URL).data["available_templates"]
+        if t["name"] == "com_botao"
+    )
+
+    assert achado["variables"] == ["1", "button:0:1"]
+    assert achado["variable_labels"]["button:0:1"] == 'final do link do botão "Agendar"'
+    # O modelo do link vai junto para a tela mostrar o endereço se formando:
+    # o campo quer o FINAL da URL, não a URL inteira.
+    assert achado["variable_url_templates"] == {
+        "button:0:1": "https://clinica.com.br/agenda/{{1}}"
+    }
+
+
+def test_template_sem_botao_nao_leva_modelo_de_link(
+    api_client, manager_single_clinic, template
+):
+    api_client.force_authenticate(manager_single_clinic)
+    achado = api_client.get(URL).data["available_templates"][0]
+    assert achado["variable_url_templates"] == {}
+    assert achado["variable_labels"] == {"1": "{{1}}", "2": "{{2}}", "3": "{{3}}"}
