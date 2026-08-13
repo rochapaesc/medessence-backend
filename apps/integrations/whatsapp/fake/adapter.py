@@ -12,6 +12,7 @@ from apps.integrations.whatsapp.base import (
     DownloadedMedia,
     SendResult,
     Template,
+    TemplateCriado,
     WhatsAppEvent,
 )
 from apps.integrations.whatsapp.events import parse_meta_webhook
@@ -76,6 +77,8 @@ def build_inbound_payload(
 class FakeWhatsAppAdapter:
     def __init__(self, channel):
         self.channel = channel
+        #: O que o teste conferiu que foi mandado para a Meta.
+        self.criados: list[dict] = []
 
     def send_text(self, to: str, body: str, reply_to: str | None = None) -> SendResult:
         return SendResult(provider_message_id=fake_wamid(), raw={"fake": True, "to": to})
@@ -146,6 +149,15 @@ class FakeWhatsAppAdapter:
             Template(name="confirmacao_consulta", category="UTILITY", status="APPROVED"),
             Template(name="lembrete_retorno", category="MARKETING", status="APPROVED"),
         ]
+
+    def create_template(self, payload: dict) -> TemplateCriado:
+        """
+        Aceita e devolve PENDING, como a Meta faz: aprovação é revisão humana
+        e leva de minutos a horas. Um fake que devolvesse APPROVED na hora
+        esconderia justamente a espera que a tela precisa saber mostrar.
+        """
+        self.criados.append(payload)
+        return TemplateCriado(id=f"fake-tpl-{len(self.criados)}", status="PENDING")
 
     def parse_webhook(self, payload: dict) -> list[WhatsAppEvent]:
         return parse_meta_webhook(payload)

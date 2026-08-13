@@ -18,6 +18,7 @@ from apps.integrations.whatsapp.base import (
     DownloadedMedia,
     SendResult,
     Template,
+    TemplateCriado,
     WhatsAppEvent,
 )
 from apps.integrations.whatsapp.events import parse_meta_webhook
@@ -348,6 +349,38 @@ class MetaAdapter:
                 {"limit": TEMPLATES_PAGE_SIZE, "after": after} if has_next and after else None
             )
         return templates
+
+    def create_template(self, payload: dict) -> TemplateCriado:
+        """
+        Manda o template para a revisão da Meta (RF-INB-3.2).
+
+        Camada CRUA do PyWa pelo mesmo motivo do `list_templates`: os tipos
+        dele embutem referência ao client, e o que temos em mãos já é o JSON
+        no formato Graph, montado e validado por `template_builder`.
+        """
+        if not self.waba_id:
+            raise WhatsAppNotConfiguredError(
+                "Canal Meta sem waba_id - não dá para criar template."
+            )
+        try:
+            resposta = self._wa.api.create_template(
+                waba_id=self.waba_id, template=payload
+            )
+        except pywa_errors.WhatsAppError as exc:
+            raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
+
+        criado = resposta.get("id")
+        if not criado:
+            # Ela respondeu 200 e não deu id: sem ele não dá para editar nem
+            # apagar esta variante depois, então isso é falha e não sucesso.
+            raise WhatsAppError("A Meta aceitou o template mas não devolveu o id.")
+        return TemplateCriado(
+            id=str(criado),
+            status=resposta.get("status") or "PENDING",
+            category=resposta.get("category") or "",
+        )
 
     # ----------------------------- webhook ------------------------------- #
 

@@ -1,7 +1,11 @@
 import re
 
 from rest_framework.serializers import (
+    CharField,
+    DictField,
+    ListField,
     ModelSerializer,
+    Serializer,
     SerializerMethodField,
     ValidationError,
 )
@@ -71,7 +75,14 @@ class WhatsAppTemplateSerializer(ModelSerializer):
             "variables",
             "variable_labels",
             "variable_url_templates",
+            # Criado por aqui, e não só sincronizado: é o que permite editar e
+            # apagar esta variante depois.
+            "meta_template_id",
+            # Por que a Meta recusou. A tela mostra para a clínica corrigir em
+            # cima do que escreveu, em vez de recomeçar.
+            "rejection_reason",
         ]
+        read_only_fields = ["meta_template_id", "rejection_reason"]
 
     def get_variables(self, obj) -> list[str]:
         from apps.inbox.template_vars import variaveis_do_template
@@ -93,3 +104,95 @@ class WhatsAppTemplateSerializer(ModelSerializer):
             chave: modelo_do_link(obj, chave) for chave in variaveis_do_template(obj)
         }
         return {chave: url for chave, url in modelos.items() if url}
+
+
+class WhatsAppTemplateCreateSerializer(Serializer):
+    """
+    Criar template e mandar para a revisão da Meta (RF-INB-3.2).
+
+    ⚠️ A validação de VERDADE mora em `template_builder`, e não aqui: ela é a
+    mesma para a tela, para o import e para qualquer caminho futuro, e as
+    regras da Meta não cabem em `max_length` de campo. O que este serializer
+    faz é o formato (tipos e obrigatórios) e a conversa com a Meta.
+    """
+
+    name = CharField(max_length=120)
+    category = CharField(max_length=30)
+    language = CharField(max_length=10, default="pt_BR")
+    body = CharField()
+    footer = CharField(required=False, allow_blank=True)
+    header_format = CharField(required=False, allow_blank=True)
+    header_text = CharField(required=False, allow_blank=True)
+    buttons = ListField(child=DictField(), required=False)
+    #: `{"body": ["Ivanita", "Oeiras"], "header": ["hoje"]}` — o que o revisor
+    #: HUMANO da Meta lê para aprovar.
+    examples = DictField(required=False)
+
+    def to_representation(self, instance):
+        """
+        Devolve o template como ele é LIDO, e não os campos de entrada.
+
+        Quem cria recebe a mesma coisa que o GET devolve - inclusive o status
+        e o motivo da recusa, que é o que a tela precisa mostrar em seguida. E
+        sem isto o `AuditMixin` estoura ao serializar a instância com os
+        campos do formulário (`body`, `footer`), que não existem no modelo.
+        """
+        return WhatsAppTemplateSerializer(instance, context=self.context).data
+
+    def validate(self, attrs):
+        from apps.inbox.template_builder import TemplateInvalido, validar
+
+        try:
+            validar(dict(attrs))
+        except TemplateInvalido as exc:
+            # Mensagem de campo, em português, ANTES de gastar uma chamada à
+            # Meta - que responderia 400 genérico com motivo opaco.
+            raise ValidationError(str(exc)) from exc
+        return attrs
+
+    def create(self, validated_data):
+        from apps.inbox.models import Channel, WhatsAppTemplate
+        from apps.inbox.template_builder import montar_para_a_meta, status_normalizado
+        from apps.integrations.whatsapp.exceptions import WhatsAppError
+        from apps.integrations.whatsapp.registry import get_whatsapp_provider
+
+        clinic = self.context["clinic"]
+        if WhatsAppTemplate.objects.filter(
+            clinic=clinic,
+            name=validated_data["name"],
+            language=validated_data["language"],
+        ).exists():
+            raise ValidationError(
+                f'Já existe um template chamado "{validated_data["name"]}" '
+                "neste idioma."
+            )
+
+        channel = Channel.objects.filter(clinic=clinic).first()
+        if channel is None:
+            raise ValidationError(
+                "Esta clínica não tem canal de WhatsApp configurado."
+            )
+
+        payload = montar_para_a_meta(dict(validated_data))
+        comum = {
+            "clinic": clinic,
+            "name": payload["name"],
+            "language": payload["language"],
+            "category": payload["category"],
+            "components": payload["components"],
+        }
+        try:
+            criado = get_whatsapp_provider(channel).create_template(payload)
+        except WhatsAppError as exc:
+            # ⚠️ Template recusado NÃO some. Fica como rascunho local com o
+            # motivo, para a clínica corrigir em cima do que escreveu em vez
+            # de recomeçar do zero (RF-INB-3.2.5).
+            return WhatsAppTemplate.objects.create(
+                **comum, status="REJECTED", rejection_reason=str(exc)
+            )
+
+        return WhatsAppTemplate.objects.create(
+            **comum,
+            status=status_normalizado(criado.status),
+            meta_template_id=criado.id,
+        )

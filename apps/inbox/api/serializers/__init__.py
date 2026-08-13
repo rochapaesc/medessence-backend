@@ -14,6 +14,7 @@ from apps.inbox.api.serializers.message import (
 )
 from apps.inbox.api.serializers.quick_reply import (
     QuickReplySerializer,
+    WhatsAppTemplateCreateSerializer,
     WhatsAppTemplateSerializer,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "MessageEditSerializer",
     "MessageSerializer",
     "QuickReplySerializer",
+    "WhatsAppTemplateCreateSerializer",
     "WhatsAppTemplateSerializer",
 ]

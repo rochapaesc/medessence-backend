@@ -80,6 +80,20 @@ class Template:
     components: list = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class TemplateCriado:
+    """
+    O que a Meta devolve ao aceitar um template para revisão.
+
+    ⚠️ `id` é o que permite EDITAR e APAGAR uma variante de idioma sozinha
+    depois: sem ele, apagar pelo nome remove todas as variantes de uma vez.
+    """
+
+    id: str
+    status: str = "PENDING"
+    category: str = ""
+
+
 @runtime_checkable
 class WhatsAppProvider(Protocol):
     """Interface da F2 - um adapter por provedor (resolvido por canal)."""
@@ -145,6 +159,16 @@ class WhatsAppProvider(Protocol):
 
     def list_templates(self) -> list[Template]:
         """Cache de templates aprovados (beat 6h)."""
+        ...
+
+    def create_template(self, payload: dict) -> TemplateCriado:
+        """
+        Manda um template para a revisão da Meta (RF-INB-3.2).
+
+        O `payload` já vem montado e validado por `template_builder`: aqui só
+        se fala com a Meta, para o erro dela chegar traduzido em vez de
+        estourar como exceção do PyWa no meio da view.
+        """
         ...
 
     def parse_webhook(self, payload: dict) -> list[WhatsAppEvent]:

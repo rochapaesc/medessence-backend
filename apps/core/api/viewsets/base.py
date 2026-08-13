@@ -86,6 +86,20 @@ class BaseReadOnlyModelViewSet(BaseGenericViewSet, RetrieveModelMixin, ListModel
     pass
 
 
+class BaseCreateListViewSet(
+    BaseGenericViewSet,
+    CreateModelMixin,
+    ListModelMixin,
+    RetrieveModelMixin,
+):
+    """
+    Criação e leitura, sem update nem delete.
+
+    Para recurso que existe fora daqui e cuja edição e exclusão têm regra
+    própria - o caso do template do WhatsApp, que vive na conta da Meta.
+    """
+
+
 class BaseCreateDestroyViewSet(
     BaseGenericViewSet,
     CreateModelMixin,

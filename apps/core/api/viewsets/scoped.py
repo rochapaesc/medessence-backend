@@ -13,6 +13,7 @@ O contrato:
 from apps.core.api.permissions import IsClinicMember
 from apps.core.api.viewsets.base import (
     BaseCreateDestroyViewSet,
+    BaseCreateListViewSet,
     BaseGenericViewSet,
     BaseModelViewSet,
     BaseReadOnlyModelViewSet,
@@ -93,9 +94,14 @@ class ClinicScopedCreateDestroyViewSet(ClinicScopedMixin, BaseCreateDestroyViewS
     """Criação/leitura/exclusão (sem update) escopado pela clínica ativa."""
 
 
+class ClinicScopedCreateListViewSet(ClinicScopedMixin, BaseCreateListViewSet):
+    """Criação e leitura (sem update nem delete) escopada pela clínica ativa."""
+
+
 __all__ = [
     "BaseGenericViewSet",
     "ClinicScopedCreateDestroyViewSet",
+    "ClinicScopedCreateListViewSet",
     "ClinicScopedListViewSet",
     "ClinicScopedMixin",
     "ClinicScopedModelViewSet",

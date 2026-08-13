@@ -1,6 +1,7 @@
 from apps.core.api.viewsets.audit_log import AuditLogViewSet, MyAccessLogViewSet
 from apps.core.api.viewsets.base import (
     BaseCreateDestroyViewSet,
+    BaseCreateListViewSet,
     BaseGenericViewSet,
     BaseModelViewSet,
     BaseReadOnlyModelViewSet,
@@ -9,6 +10,7 @@ from apps.core.api.viewsets.base import (
 )
 from apps.core.api.viewsets.scoped import (
     ClinicScopedCreateDestroyViewSet,
+    ClinicScopedCreateListViewSet,
     ClinicScopedListViewSet,
     ClinicScopedMixin,
     ClinicScopedModelViewSet,
@@ -18,11 +20,13 @@ from apps.core.api.viewsets.scoped import (
 __all__ = [
     "AuditLogViewSet",
     "BaseCreateDestroyViewSet",
+    "BaseCreateListViewSet",
     "BaseGenericViewSet",
     "BaseModelViewSet",
     "BaseReadOnlyModelViewSet",
     "CachedMixin",
     "ClinicScopedCreateDestroyViewSet",
+    "ClinicScopedCreateListViewSet",
     "ClinicScopedListViewSet",
     "ClinicScopedMixin",
     "ClinicScopedModelViewSet",
