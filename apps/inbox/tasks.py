@@ -309,31 +309,70 @@ def refresh_wa_templates():
         refresh_channel_templates.delay(channel_id)
 
 
+def sincronizar_templates_da_clinica(clinic) -> int:
+    """
+    Traz da Meta o estado atual dos templates de uma clínica, AGORA.
+
+    ⚠️ Deixa o erro subir, ao contrário do beat: aqui alguém está olhando a
+    tela e esperando ver o status mudar. Engolir a falha mostraria a mesma
+    lista de antes, e a pessoa concluiria que a Meta ainda não respondeu.
+    """
+    from apps.inbox.models import Channel
+
+    channel = Channel.objects.filter(clinic=clinic).first()
+    if channel is None:
+        return 0
+    return _upsert_templates(channel)
+
+
+def _upsert_templates(channel) -> int:
+    """O upsert em si, usado pelo beat e pelo botão de atualizar."""
+    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.template_builder import status_normalizado
+    from apps.integrations.whatsapp.registry import get_whatsapp_provider
+
+    provider = get_whatsapp_provider(channel)
+    count = 0
+    for template in provider.list_templates():
+        WhatsAppTemplate.objects.update_or_create(
+            clinic=channel.clinic,
+            name=template.name,
+            language=template.language,
+            defaults={
+                "category": template.category,
+                # ⚠️ NORMALIZADO, como no webhook e na criação. Este é o
+                # caminho mais usado (o beat de 6h e o botão Atualizar), e era
+                # o único que gravava o status CRU: um `PENDING_REVIEW` - que a
+                # Meta devolve onde a documentação dela diz `PENDING` - entrava
+                # no banco e a tela mostrava o termo em inglês, com o template
+                # fora de "em revisão" e o botão de editar decidido por acaso.
+                "status": status_normalizado(template.status),
+                "components": template.components,
+                # ⚠️ Sem o id, template sincronizado não pode ser editado
+                # nem apagado pela tela: a Meta precisa dele para achar a
+                # variante certa. Ele vem no `get_templates` e era jogado
+                # fora.
+                "meta_template_id": template.meta_id,
+            },
+        )
+        count += 1
+    return count
+
+
 @shared_task(queue="sync")
 def refresh_channel_templates(channel_id: int):
     """Upsert dos templates aprovados de UM canal (M9)."""
-    from apps.inbox.models import Channel, WhatsAppTemplate
-    from apps.integrations.whatsapp.registry import get_whatsapp_provider
+    from apps.inbox.models import Channel
 
     channel = Channel.objects.filter(pk=channel_id).first()
     if channel is None:
         return "skipped: canal ausente"
 
-    provider = get_whatsapp_provider(channel)
     count = 0
+    # O beat ENGOLE indisponibilidade: ele roda sozinho de 6 em 6 horas e
+    # tenta de novo. Quem chama pela tela precisa do erro.
     with suppress(WhatsAppUnavailableError, WhatsAppRateLimitedError):
-        for template in provider.list_templates():
-            WhatsAppTemplate.objects.update_or_create(
-                clinic=channel.clinic,
-                name=template.name,
-                language=template.language,
-                defaults={
-                    "category": template.category,
-                    "status": template.status,
-                    "components": template.components,
-                },
-            )
-            count += 1
+        count = _upsert_templates(channel)
     return {"channel_id": channel_id, "templates": count}
 
 

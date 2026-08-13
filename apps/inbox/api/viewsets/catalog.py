@@ -1,5 +1,7 @@
 from django.db.models import Case, IntegerField, Q, Value, When
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 
 from apps.core.api.permissions import IsClinicManager, IsClinicMember
 from apps.core.api.viewsets import (
@@ -82,11 +84,15 @@ class WhatsAppTemplateViewSet(AuditMixin, ClinicScopedModelViewSet):
     ordering_fields = ["name"]
 
     def get_permissions(self):
-        classes = (
-            [IsClinicMember]
-            if self.request.method in ("GET", "HEAD", "OPTIONS")
-            else [IsClinicManager]
-        )
+        # Sincronizar é LEITURA: traz da Meta o que já existe lá e não muda
+        # nada na conta. A recepção precisa dela para ver se o template que
+        # ela quer usar já foi aprovado.
+        somente_leitura = self.request.method in (
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        ) or self.action == "sincronizar"
+        classes = [IsClinicMember] if somente_leitura else [IsClinicManager]
         return [c() for c in classes]
 
     def get_serializer_class(self):
@@ -132,3 +138,26 @@ class WhatsAppTemplateViewSet(AuditMixin, ClinicScopedModelViewSet):
 
     def get_queryset(self):
         return super().get_queryset().order_by("name")
+
+    @action(detail=False, methods=["post"], url_path="sincronizar")
+    def sincronizar(self, request):
+        """
+        Busca na Meta o estado atual dos templates da clínica (RF-INB-3.2.9).
+
+        ⚠️ A aprovação é revisão HUMANA e o veredito não vem por evento: o
+        beat só passa de 6 em 6 horas, então um template aprovado em dois
+        minutos podia ficar "em revisão" na tela por horas - e recarregar a
+        página não adiantava, porque ela lê o nosso banco e não a Meta.
+
+        Síncrono de propósito: quem clicou está esperando ver o status mudar.
+        Enfileirar devolveria "ok" sem nada ter mudado na tela.
+        """
+        from apps.inbox.tasks import sincronizar_templates_da_clinica
+        from apps.integrations.whatsapp.exceptions import WhatsAppError
+
+        try:
+            quantos = sincronizar_templates_da_clinica(self.clinic)
+        except WhatsAppError as exc:
+            raise ValidationError(f"Não deu para falar com a Meta: {exc}") from exc
+        return Response({"templates": quantos})
+
