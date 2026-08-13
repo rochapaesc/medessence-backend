@@ -83,8 +83,19 @@ def test_nota_da_equipe_NAO_e_assinada(logado, inbox_a):
 
 def test_template_NAO_e_assinado(logado, inbox_a):
     """O conteúdo é o aprovado pela Meta — mexer nele reprova o envio."""
+    from apps.inbox.models import WhatsAppTemplate
+
     inbox_a["conversation"].last_inbound_at = timezone.now() - timedelta(hours=40)
     inbox_a["conversation"].save(update_fields=["last_inbound_at"])
+    # Sem variáveis: com elas o envio é recusado na criação (RF-INB-3.1), e
+    # este teste é sobre a assinatura, não sobre o preenchimento.
+    WhatsAppTemplate.objects.create(
+        clinic=inbox_a["conversation"].clinic,
+        name="confirmacao_consulta",
+        language="pt_BR",
+        status="APPROVED",
+        components=[{"type": "BODY", "text": "Sua consulta está confirmada."}],
+    )
 
     resposta = logado.post(
         MESSAGES,

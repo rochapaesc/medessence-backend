@@ -1,4 +1,5 @@
 from rest_framework.serializers import (
+    DictField,
     ListSerializer,
     ModelSerializer,
     PrimaryKeyRelatedField,
@@ -196,6 +197,14 @@ class MessageCreateSerializer(ModelSerializer):
     media = PrimaryKeyRelatedField(
         queryset=MediaAsset.objects.all(), required=False, allow_null=True
     )
+    #: O MAPA das variáveis, no mesmo formato dos outros dois lugares:
+    #: `{"1": {"source": "patient_first_name"}}`.
+    #:
+    #: ⚠️ A tela manda a FONTE, não o valor. Quem resolve é o servidor, com o
+    #: contexto da conversa, pelo mesmo caminho da campanha e do nó de fluxo -
+    #: resolver no cliente é como a mensagem enviada começa a divergir da
+    #: prévia que o atendente conferiu antes de clicar em enviar.
+    template_variables = DictField(required=False, write_only=True)
 
     class Meta:
         model = Message
@@ -207,6 +216,7 @@ class MessageCreateSerializer(ModelSerializer):
             "caption",
             "media",
             "template_name",
+            "template_variables",
             "reply_to_provider_id",
             "is_internal",
         ]
@@ -230,6 +240,7 @@ class MessageCreateSerializer(ModelSerializer):
         if media is not None:
             attrs["kind"] = kind = self._validar_anexo(media)
             attrs["template_name"] = ""
+            self._validar_legenda(attrs, kind)
         elif kind in media_rules.ENVIAVEIS:
             raise ValidationError("Anexe um arquivo antes de enviar.")
 
@@ -248,7 +259,101 @@ class MessageCreateSerializer(ModelSerializer):
                 )
         if is_template:
             attrs["kind"] = MessageKind.TEMPLATE
+        if attrs.get("kind") == MessageKind.TEMPLATE:
+            self._validar_template(attrs, conversation)
         return attrs
+
+    def _validar_template(self, attrs, conversation) -> None:
+        """
+        Template com variável precisa dos valores, e recusa AQUI (RF-INB-3.1).
+
+        ⚠️ Até 12/08/2026 o envio ia sem parâmetro nenhum, e a Meta recusava
+        por contagem (132000) todo template que tem variável - quatro dos
+        cinco aprovados nesta clínica. O atendente via uma falha genérica de
+        envio DEPOIS, sem nada dizendo que o problema era o template.
+
+        Barrar na criação é o que põe o erro na frente de quem pode agir, e
+        com o número de variáveis que faltam.
+        """
+        from apps.inbox.models import WhatsAppTemplate
+        from apps.inbox.template_vars import (
+            Contexto,
+            montar,
+            parametros,
+            rotulo_da_variavel,
+            variaveis_do_template,
+        )
+
+        nome = attrs.get("template_name") or ""
+        template = WhatsAppTemplate.objects.filter(
+            clinic=conversation.clinic, name=nome
+        ).first()
+        if template is None:
+            raise ValidationError(
+                f'O template "{nome}" não está aprovado nesta conta.'
+            )
+
+        pedidas = variaveis_do_template(template)
+        mapa = attrs.pop("template_variables", None) or {}
+        if not pedidas:
+            return
+
+        contexto = Contexto.da_conversa(conversation)
+        resolvidos = parametros(template, mapa, contexto)
+        vazias = [c for c in pedidas if not (resolvidos.get(c) or "").strip()]
+        # ⚠️ Dois erros diferentes, e dizer "não foi preenchida" para os dois
+        # manda a pessoa procurar na tela um campo que ela VÊ preenchido.
+        # 1.061 dos 5.185 pacientes da clínica real não têm cidade: quem
+        # escolheu "cidade do paciente" preencheu, e o que falta é o cadastro.
+        sem_fonte = [c for c in vazias if not (mapa.get(c) or {}).get("source")]
+        sem_dado = [c for c in vazias if c not in sem_fonte]
+        if sem_fonte:
+            quantas = len(pedidas)
+            quais = ", ".join(rotulo_da_variavel(template, c) for c in sem_fonte)
+            raise ValidationError(
+                f'O template "{nome}" pede {quantas} '
+                f"{'variável' if quantas == 1 else 'variáveis'}, e "
+                f"{quais} não {'foi preenchida' if len(sem_fonte) == 1 else 'foram preenchidas'}."
+            )
+        if sem_dado:
+            quais = ", ".join(rotulo_da_variavel(template, c) for c in sem_dado)
+            raise ValidationError(
+                f"O cadastro desta pessoa não tem o dado de {quais}. "
+                "Escolha outro campo ou complete o cadastro."
+            )
+        attrs["content_data"] = {
+            **(attrs.get("content_data") or {}),
+            "template_params": resolvidos,
+        }
+        # ⚠️ O corpo MONTADO, e não o template cru. A thread mostrava
+        # "🏫{{1}} {{2}} | {{3}}" para a equipe, que é o texto de programador
+        # que o RF-FLW-* proíbe justamente por isso.
+        attrs["body"] = montar(template, mapa, contexto)
+
+    def _validar_legenda(self, attrs, kind) -> None:
+        """
+        A legenda cabe no que a Meta aceita.
+
+        ⚠️ Passar de 1.024 faz a Meta recusar a mensagem INTEIRA depois do
+        upload: a recepção perde o arquivo e o texto de uma vez, e o erro não
+        diz que o problema é o tamanho da legenda. Barrar aqui devolve o texto
+        para quem escreveu, com o arquivo ainda anexado na tela.
+
+        Áudio e figurinha não levam legenda nenhuma: a Meta ignora, e o texto
+        sumiria sem aviso.
+        """
+        legenda = attrs.get("caption") or ""
+        if not legenda.strip():
+            return
+        if kind in media_rules.SEM_LEGENDA:
+            raise ValidationError(
+                "Áudio e figurinha não levam legenda. Mande o texto em outra mensagem."
+            )
+        if len(legenda) > media_rules.TETO_DA_LEGENDA:
+            raise ValidationError(
+                f"A legenda tem {len(legenda)} caracteres e o WhatsApp aceita "
+                f"no máximo {media_rules.TETO_DA_LEGENDA}."
+            )
 
     def _validar_anexo(self, media) -> str:
         """

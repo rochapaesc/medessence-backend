@@ -480,6 +480,52 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         conversation.save(update_fields=["patient", "updated_at"])
         return Response(self.get_serializer(conversation).data)
 
+    @action(detail=True, methods=["get"], url_path="template-context")
+    def template_context(self, request, pk=None):
+        """
+        As fontes de variável desta conversa, JÁ resolvidas (RF-INB-3.1).
+
+        A tela monta a prévia com isto, sem uma ida ao servidor por tecla, e o
+        valor vem resolvido daqui para os dois lados produzirem a mesma frase:
+        se o front capitalizasse por conta própria, a prévia sairia diferente
+        da mensagem enviada.
+
+        ⚠️ Fonte sem dado vem com `value` vazio e `available: false`, em vez de
+        sumir da lista. **17 das 25 conversas da clínica real não têm paciente
+        vinculado**, e ali as fontes de paciente não resolvem nada - a tela
+        precisa mostrar que elas existem e por que não servem, senão o
+        atendente escolhe uma e a mensagem sai com buraco no meio da frase.
+        """
+        from apps.inbox.choices import VariableSource
+        from apps.inbox.template_vars import Contexto, valor_da_variavel
+
+        conversation = self.get_object()
+        contexto = Contexto.da_conversa(conversation)
+        fontes = []
+        for fonte in VariableSource.para_contexto("inbox"):
+            if fonte == VariableSource.FIXED:
+                fontes.append(
+                    {
+                        "key": fonte.value,
+                        "label": fonte.label,
+                        "value": "",
+                        "available": True,
+                        "needs_text": True,
+                    }
+                )
+                continue
+            valor = valor_da_variavel({"source": fonte.value}, contexto)
+            fontes.append(
+                {
+                    "key": fonte.value,
+                    "label": fonte.label,
+                    "value": valor,
+                    "available": bool(valor),
+                    "needs_text": False,
+                }
+            )
+        return Response({"sources": fontes, "has_patient": conversation.patient_id is not None})
+
     @action(detail=True, methods=["get"], url_path="contact-panel")
     def contact_panel(self, request, pk=None):
         """

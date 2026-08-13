@@ -545,6 +545,33 @@ def create_internal_note(conversation, user, body: str, *, sender_kind: str = Se
     return note
 
 
+def _componentes_do_template(message) -> list | None:
+    """
+    Os parâmetros de `{{1}}`, `{{2}}` ... no formato que a Meta espera.
+
+    Vêm de `content_data["template_params"]`, uma lista NA ORDEM das variáveis
+    - a Meta casa por posição, não por nome.
+
+    ⚠️ Sem isto, o envio ia sem parâmetro nenhum e a Meta recusava por
+    contagem (132000) todo template que tem variável, que é o caso de quatro
+    dos cinco aprovados nesta clínica. O erro chegava ao atendente como falha
+    genérica de envio, sem dizer que o problema era o template.
+
+    Lista vazia devolve `None`: template sem variável não pode levar um
+    `components` vazio, que a Meta também recusa.
+    """
+    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.template_vars import componentes_para_a_meta
+
+    resolvidos = (message.content_data or {}).get("template_params") or {}
+    if not isinstance(resolvidos, dict) or not resolvidos:
+        return None
+    template = WhatsAppTemplate.objects.filter(
+        clinic_id=message.clinic_id, name=message.template_name
+    ).first()
+    return componentes_para_a_meta(template, resolvidos)
+
+
 def _template_language(message) -> str:
     """
     O idioma vem do template SINCRONIZADO, não de constante. Achado ao vivo no
@@ -805,7 +832,10 @@ def send_message(message) -> None:
     try:
         if message.kind == MessageKind.TEMPLATE and message.template_name:
             result = provider.send_template(
-                to, message.template_name, _template_language(message)
+                to,
+                message.template_name,
+                _template_language(message),
+                _componentes_do_template(message),
             )
         elif message.media_id:
             result = _enviar_anexo(provider, to, message)
