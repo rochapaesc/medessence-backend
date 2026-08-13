@@ -32,6 +32,14 @@ class WhatsAppTemplate(TenantScopedModel):
         verbose_name="Id na Meta", max_length=64, blank=True, db_index=True
     )
 
+    #: A nota que a Meta dá ao template pelo comportamento de quem recebe:
+    #: `GREEN`, `YELLOW` ou `RED`. Vazia enquanto ela não avalia.
+    #:
+    #: ⚠️ Vermelho é o passo ANTES de ela pausar o template sozinha - e
+    #: template pausado para de enviar no meio de um fluxo, sem ninguém ter
+    #: mexido em nada. Chega pelo webhook `message_template_quality_update`.
+    quality_score = CharField(verbose_name="Qualidade", max_length=10, blank=True)
+
     #: Por que a Meta recusou, quando recusou.
     #:
     #: Template recusado NÃO some: fica como rascunho local com o motivo, para

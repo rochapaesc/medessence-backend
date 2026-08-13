@@ -38,6 +38,11 @@ def process_whatsapp_webhook(webhook_event_id: int, channel_id: int):
     try:
         provider = get_whatsapp_provider(channel)
         stats = ingest_events(channel, provider.parse_webhook(event.payload))
+        # O ciclo de vida do template vem no MESMO webhook das mensagens, em
+        # `changes[].field`, e era ignorado (RF-INB-3.2.10).
+        de_template = _aplicar_mudancas_de_template(channel, event.payload)
+        if de_template:
+            stats = {**(stats if isinstance(stats, dict) else {}), "templates": de_template}
         event.processed_at = timezone.now()
         event.error = ""
         event.save(update_fields=["processed_at", "error"])
@@ -47,6 +52,30 @@ def process_whatsapp_webhook(webhook_event_id: int, channel_id: int):
         event.save(update_fields=["error"])
         logger.exception("Falha ao processar webhook %s", webhook_event_id)
         raise
+
+
+def _aplicar_mudancas_de_template(channel, payload: dict) -> list[str]:
+    """
+    O veredito da Meta sobre os templates, que chega junto das mensagens.
+
+    ⚠️ Cada mudança é aplicada por conta própria e NUNCA derruba o lote: o
+    webhook traz mensagens de paciente no mesmo payload, e a Meta reentrega
+    tudo em laço quando a resposta não é 200. Perder conversa por causa de um
+    campo de template que ela inventou seria o pior negócio possível.
+    """
+    from apps.inbox.template_webhook import aplicar, e_de_template
+
+    feitos: list[str] = []
+    for entry in payload.get("entry", []) or []:
+        for change in entry.get("changes", []) or []:
+            field = change.get("field") or ""
+            if not e_de_template(field):
+                continue
+            try:
+                feitos.append(aplicar(channel.clinic, field, change.get("value") or {}))
+            except Exception:
+                logger.exception("Falha ao aplicar %s do webhook de template", field)
+    return feitos
 
 
 @shared_task(queue="media")
