@@ -249,3 +249,56 @@ def test_timeout_de_rede_vira_transitorio_e_nao_vaza_cru(adapter):
 
     with pytest.raises(WhatsAppUnavailableError):
         adapter.send_text("5511999998888", "oi")
+
+
+def test_apagar_o_que_a_meta_JA_NAO_TEM_e_sucesso(adapter):
+    """
+    ⚠️ 404 é no-op, e não erro: o objetivo era o template sumir de lá, e ele
+    sumiu. Estourando, o registro daqui ficava impossível de apagar pela tela
+    PARA SEMPRE - e o caso é comum nesta conta, porque o WABA é compartilhado
+    com outro produto e alguém pode apagar o template pelo painel da Meta.
+
+    É o tratamento do `meta-api` do wacrm ("Treat a 404 as a no-op ... we
+    still want the local row removed").
+    """
+    import httpx
+
+    class _JaFoi:
+        def __init__(self):
+            self.api = SimpleNamespace(delete_template=self._delete)
+
+        def _delete(self, **kwargs):
+            raise pywa_errors.WhatsAppError(
+                raw={},
+                code=100,
+                message="Object does not exist",
+                raw_response=httpx.Response(404, request=httpx.Request("DELETE", "https://x")),
+            )
+
+    adapter._wa = _JaFoi()
+    adapter.delete_template("sumido", "tpl-1")
+
+
+def test_apagar_com_a_meta_RECUSANDO_estoura(adapter):
+    """
+    ⚠️ Só o 404 é engolido. Um erro qualquer virando sucesso deixaria o
+    template VIVO na conta da clínica e apagado aqui: órfão, com o nome
+    ocupado e sem nada por aqui que aponte para ele.
+    """
+    import httpx
+
+    class _Recusa:
+        def __init__(self):
+            self.api = SimpleNamespace(delete_template=self._delete)
+
+        def _delete(self, **kwargs):
+            raise pywa_errors.WhatsAppError(
+                raw={},
+                code=100,
+                message="Template is in use",
+                raw_response=httpx.Response(400, request=httpx.Request("DELETE", "https://x")),
+            )
+
+    adapter._wa = _Recusa()
+    with pytest.raises(WhatsAppError):
+        adapter.delete_template("em_uso", "tpl-2")

@@ -46,6 +46,38 @@ def _rede(exc: Exception) -> WhatsAppUnavailableError:
     return WhatsAppUnavailableError(f"Falha de rede com a Meta: {exc}")
 
 
+def _motivo(exc: pywa_errors.WhatsAppError) -> str:
+    """
+    O que a Meta diz, do jeito que dá para mostrar na tela.
+
+    ⚠️ `str(exc)` do PyWa é o repr INTEIRO da exceção - com `fbtrace_id`,
+    `raw_response`, `subcode`, `is_transient`. Isso vazou para a tela em
+    13/08/2026, num balão de erro que a clínica não tem como ler.
+
+    A Meta manda dois campos feitos para o usuário final: `user_title`, que
+    vem TRADUZIDO ("O formato do corpo da mensagem está incorreto"), e
+    `user_msg`, que explica em inglês. Usamos o título, e o detalhe fica no
+    log - a regra em si vira validação nossa, em português, antes do envio.
+    """
+    titulo = (getattr(exc, "user_title", "") or "").strip()
+    if titulo:
+        return titulo.rstrip(".") + "."
+    return (getattr(exc, "message", "") or "").strip() or str(exc)
+
+
+def _sumiu_da_meta(exc: pywa_errors.WhatsAppError) -> bool:
+    """
+    O objeto já não está lá.
+
+    ⚠️ Só o 404, e nada mais largo. Engolir um erro genérico faria a exclusão
+    "dar certo" aqui com o template VIVO na conta da clínica - órfão, com o
+    nome ocupado e sem nada por aqui que aponte para ele, que é justamente o
+    que a ordem de apagar na Meta primeiro existe para evitar.
+    """
+    resposta = getattr(exc, "raw_response", None)
+    return getattr(resposta, "status_code", None) == 404
+
+
 def _translate(exc: pywa_errors.WhatsAppError) -> WhatsAppError:
     """
     pywa.errors → nossas exceções: o resto do sistema (retry das tasks,
@@ -53,14 +85,14 @@ def _translate(exc: pywa_errors.WhatsAppError) -> WhatsAppError:
     específicas descendem das genéricas.
     """
     if isinstance(exc, pywa_errors.AuthorizationError):
-        return WhatsAppAuthError(str(exc))
+        return WhatsAppAuthError(_motivo(exc))
     if isinstance(exc, pywa_errors.ThrottlingError):
-        return WhatsAppRateLimitedError(str(exc))
+        return WhatsAppRateLimitedError(_motivo(exc))
     if isinstance(exc, pywa_errors.ServiceUnavailable):
-        return WhatsAppUnavailableError(str(exc))
+        return WhatsAppUnavailableError(_motivo(exc))
     # Erros de negócio (janela fechada, número fora da allowed list, template
     # rejeitado...): sem retry - a mensagem vira FAILED com o motivo.
-    return WhatsAppError(str(exc))
+    return WhatsAppError(_motivo(exc))
 
 
 class MetaAdapter:
@@ -341,6 +373,7 @@ class MetaAdapter:
                         category=item.get("category", ""),
                         status=item.get("status", ""),
                         components=item.get("components", []),
+                        meta_id=str(item.get("id") or ""),
                     )
                 )
             after = page.get("paging", {}).get("cursors", {}).get("after")
@@ -409,6 +442,14 @@ class MetaAdapter:
 
         ⚠️ O `template_id` não é opcional por conveniência: SEM ele a Meta
         apaga todas as variantes de idioma com aquele nome de uma vez.
+
+        ⚠️ Template que já não existe lá NÃO é erro: o objetivo era que ele
+        sumisse, e ele sumiu. Sem isto o registro daqui ficava impossível de
+        apagar pela tela, para sempre - e o caso é comum nesta conta, porque o
+        WABA é compartilhado com outro produto e alguém pode ter apagado o
+        template pelo painel da Meta. É o mesmo tratamento do `meta-api` do
+        wacrm ("Treat a 404 as a no-op ... we still want the local row
+        removed").
         """
         if not self.waba_id:
             raise WhatsAppNotConfiguredError(
@@ -421,6 +462,8 @@ class MetaAdapter:
                 template_id=meta_template_id or None,
             )
         except pywa_errors.WhatsAppError as exc:
+            if _sumiu_da_meta(exc):
+                return
             raise _translate(exc) from exc
         except httpx.TransportError as exc:
             raise _rede(exc) from exc

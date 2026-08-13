@@ -78,6 +78,12 @@ class Template:
     category: str = ""
     status: str = ""
     components: list = field(default_factory=list)
+    #: O id desta variante na Meta.
+    #:
+    #: ⚠️ Vem no `get_templates` e era DESCARTADO. Sem ele, template
+    #: sincronizado não pode ser editado nem apagado por aqui - o que deixava
+    #: a clínica sem mexer justamente nos templates que ela já tem.
+    meta_id: str = ""
 
 
 @dataclass(frozen=True)

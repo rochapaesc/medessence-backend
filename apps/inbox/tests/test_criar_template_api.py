@@ -223,32 +223,212 @@ def test_editar_reescreve_na_meta_e_volta_para_revisao(
 
 
 @pytest.mark.django_db
-def test_template_em_revisao_nao_se_edita(
-    api_client, manager_single_clinic, inbox_a, na_meta
+@pytest.mark.parametrize(
+    "status,esperado",
+    [
+        ("PENDING", "em revisão"),
+        # ⚠️ Estes dois caíam no `else` e a Meta os escrevia CRUS na tela, em
+        # inglês, para quem só queria corrigir um texto.
+        ("IN_APPEAL", "em recurso"),
+        ("PENDING_DELETION", "sendo apagado"),
+    ],
+)
+def test_template_que_a_meta_ainda_resolve_nao_se_edita(
+    api_client, manager_single_clinic, inbox_a, na_meta, status, esperado
 ):
-    na_meta.status = "PENDING"
+    na_meta.status = status
     na_meta.save(update_fields=["status"])
     api_client.force_authenticate(manager_single_clinic)
     resposta = api_client.put(_url(na_meta), _corpo(examples={"body": ["a", "b"]}), format="json")
 
     assert resposta.status_code == 400
-    assert "em revisão" in str(resposta.data)
+    frase = str(resposta.data)
+    assert esperado in frase
+    assert status not in frase, "o status cru da Meta não vai para a tela"
 
 
 @pytest.mark.django_db
-def test_template_que_nunca_foi_para_a_meta_se_CRIA_e_nao_se_edita(
-    api_client, manager_single_clinic, inbox_a, clinic_a
+def test_sem_o_id_guardado_ele_e_DESCOBERTO_pelo_nome(
+    api_client, manager_single_clinic, inbox_a, clinic_a, monkeypatch
 ):
-    local = WhatsAppTemplate.objects.create(
-        clinic=clinic_a, name="rascunho", language="pt_BR", status="REJECTED"
+    """
+    ⚠️ Todo template anterior a 13/08/2026 está sem `meta_template_id`: a
+    sincronização recebia o id e o descartava. Recusar a edição por causa
+    disso travava a clínica justamente nos templates que ela JÁ tem — que são
+    todos, até ela criar o primeiro por aqui.
+    """
+    from apps.integrations.whatsapp.base import Template
+
+    sem_id = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="ja_existia",
+        language="pt_BR",
+        category="MARKETING",
+        status="APPROVED",
+    )
+    editados = []
+
+    class _Espiao:
+        def list_templates(self):
+            return [
+                # Mesmo nome em OUTRO idioma vem antes de propósito: casar só
+                # pelo nome editaria a variante errada.
+                Template(name="ja_existia", language="en_US", meta_id="ERRADO"),
+                Template(name="ja_existia", language="pt_BR", meta_id="CERTO"),
+            ]
+
+        def update_template(self, meta_template_id, payload):
+            editados.append(meta_template_id)
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Espiao(),
     )
     api_client.force_authenticate(manager_single_clinic)
     resposta = api_client.put(
-        _url(local), _corpo(name="rascunho", examples={"body": ["a", "b"]}), format="json"
+        _url(sem_id),
+        _corpo(name="ja_existia", body="Olá, {{1}}!", examples={"body": ["Ana"]}),
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    assert editados == ["CERTO"]
+    sem_id.refresh_from_db()
+    # E o id fica guardado, para a próxima edição não precisar procurar.
+    assert sem_id.meta_template_id == "CERTO"
+
+
+@pytest.mark.django_db
+def test_recusado_na_CRIACAO_e_reenviado_como_criacao(
+    api_client, manager_single_clinic, inbox_a, clinic_a, monkeypatch
+):
+    """
+    ⚠️ O beco sem saída de 13/08/2026: a Meta recusou o template na criação,
+    ele ficou salvo como REJECTED e SEM id, a clínica corrigiu o texto, clicou
+    em "editar e reenviar" — e o sistema respondeu que o template não existe
+    na Meta. Nunca existiu MESMO: reenviar aqui é CRIAR, não editar. O nome
+    continua livre na conta, justamente porque a criação falhou.
+    """
+    from apps.integrations.whatsapp.base import TemplateCriado
+
+    recusado = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="teste",
+        language="pt_BR",
+        category="MARKETING",
+        status="REJECTED",
+        rejection_reason="O formato do corpo da mensagem está incorreto.",
+        components=[{"type": "BODY", "text": "{{1}}"}],
+    )
+    criados = []
+
+    class _Aceita:
+        def list_templates(self):
+            return []
+
+        def create_template(self, payload):
+            criados.append(payload)
+            return TemplateCriado(id="tpl-novo", status="PENDING")
+
+        def update_template(self, meta_template_id, payload):
+            raise AssertionError("não devia EDITAR o que não existe lá")
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Aceita(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(
+        _url(recusado),
+        _corpo(name="teste", body="Olá, {{1}}!", examples={"body": ["Ana"]}),
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    recusado.refresh_from_db()
+    assert recusado.status == "PENDING"
+    assert recusado.meta_template_id == "tpl-novo"
+    # O motivo antigo deixa de valer: ele era do texto que acabou de mudar.
+    assert recusado.rejection_reason == ""
+    assert criados[0]["components"][0]["text"] == "Olá, {{1}}!"
+
+
+@pytest.mark.django_db
+def test_recusado_DE_NOVO_guarda_o_motivo_novo(
+    api_client, manager_single_clinic, inbox_a, clinic_a, monkeypatch
+):
+    """Mesma regra do create: o texto fica salvo para corrigir mais uma vez."""
+    from apps.integrations.whatsapp.exceptions import WhatsAppError
+
+    recusado = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="teste",
+        language="pt_BR",
+        category="MARKETING",
+        status="REJECTED",
+        rejection_reason="motivo velho",
+    )
+
+    class _RecusaDeNovo:
+        def list_templates(self):
+            return []
+
+        def create_template(self, payload):
+            raise WhatsAppError("O nome do template já está em uso.")
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _RecusaDeNovo(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(
+        _url(recusado),
+        _corpo(name="teste", body="Olá, {{1}}!", examples={"body": ["Ana"]}),
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    recusado.refresh_from_db()
+    assert recusado.status == "REJECTED"
+    assert recusado.rejection_reason == "O nome do template já está em uso."
+    assert recusado.components, "o texto corrigido continua salvo"
+
+
+@pytest.mark.django_db
+def test_meta_FORA_DO_AR_nao_cria_por_engano(
+    api_client, manager_single_clinic, inbox_a, clinic_a, monkeypatch
+):
+    """
+    ⚠️ Sem conseguir listar, não dá para saber se o template existe lá. Criar
+    no escuro duplicaria o nome quando a Meta voltasse - e nome duplicado ela
+    recusa, deixando a clínica presa.
+    """
+    from apps.integrations.whatsapp.exceptions import WhatsAppError
+
+    sem_id = WhatsAppTemplate.objects.create(
+        clinic=clinic_a, name="teste", language="pt_BR", status="APPROVED"
+    )
+
+    class _Fora:
+        def list_templates(self):
+            raise WhatsAppError("Canal do WhatsApp desconectado.")
+
+        def create_template(self, payload):
+            raise AssertionError("não devia criar sem saber se já existe")
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Fora(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(
+        _url(sem_id),
+        _corpo(name="teste", body="Olá, {{1}}!", examples={"body": ["Ana"]}),
+        format="json",
     )
 
     assert resposta.status_code == 400
-    assert "Crie um novo" in str(resposta.data)
+    assert "desconectado" in str(resposta.data)
 
 
 @pytest.mark.django_db
@@ -369,3 +549,171 @@ def test_atendente_nao_edita_nem_apaga(api_client, attendant_a, inbox_a, na_meta
         api_client.put(_url(na_meta), _corpo(examples={"body": ["a", "b"]}), format="json").status_code
         == 403
     )
+
+
+@pytest.mark.django_db
+def test_sincronizacao_GUARDA_o_id_da_meta(clinic_a, inbox_a, monkeypatch):
+    """
+    ⚠️ O id vem no `get_templates` e era descartado. Sem ele, o template
+    sincronizado não pode ser editado nem apagado pela tela - o que deixava a
+    clínica sem mexer justamente nos templates que ela JÁ tem, que são todos
+    os que existem antes de ela criar o primeiro por aqui.
+    """
+    from apps.integrations.whatsapp.base import Template
+    from apps.inbox.tasks import refresh_channel_templates
+
+    class _Provedor:
+        def list_templates(self):
+            return [
+                Template(
+                    name="ja_existia",
+                    language="pt_BR",
+                    category="UTILITY",
+                    status="APPROVED",
+                    components=[{"type": "BODY", "text": "Oi"}],
+                    meta_id="1234567890",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Provedor(),
+    )
+    refresh_channel_templates(inbox_a["channel"].pk)
+
+    template = WhatsAppTemplate.objects.get(clinic=clinic_a, name="ja_existia")
+    assert template.meta_template_id == "1234567890"
+
+
+@pytest.mark.django_db
+def test_sincronizacao_NORMALIZA_o_status(clinic_a, inbox_a, monkeypatch):
+    """
+    ⚠️ A Meta devolve `PENDING_REVIEW` onde a documentação dela diz `PENDING`,
+    e a sincronização era o ÚNICO caminho que gravava o status cru - o webhook
+    e a criação já normalizavam. Cru, o termo em inglês ia parar na tela, o
+    template ficava fora de "em revisão" e o botão de editar era decidido por
+    acaso.
+
+    O que ela inventar de novo vira `PENDING`: a linha continua visível, em
+    vez de sumir da lista de quem acabou de criar.
+    """
+    from apps.integrations.whatsapp.base import Template
+    from apps.inbox.tasks import refresh_channel_templates
+
+    class _Provedor:
+        def list_templates(self):
+            return [
+                Template(
+                    name=nome,
+                    language="pt_BR",
+                    category="UTILITY",
+                    status=status,
+                    components=[{"type": "BODY", "text": "Oi"}],
+                    meta_id=f"id-{nome}",
+                )
+                for nome, status in [
+                    ("em_revisao", "PENDING_REVIEW"),
+                    ("coisa_nova", "ALGO_QUE_A_META_INVENTOU"),
+                    ("aprovado", "approved"),
+                ]
+            ]
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Provedor(),
+    )
+    refresh_channel_templates(inbox_a["channel"].pk)
+
+    guardado = {
+        t.name: t.status
+        for t in WhatsAppTemplate.objects.filter(clinic=clinic_a)
+    }
+    assert guardado["em_revisao"] == "PENDING"
+    assert guardado["coisa_nova"] == "PENDING"
+    assert guardado["aprovado"] == "APPROVED"
+
+
+# ------------------------- atualizar agora ------------------------- #
+
+
+@pytest.mark.django_db
+def test_sincronizar_traz_o_estado_atual_da_meta(
+    api_client, manager_single_clinic, inbox_a, clinic_a, monkeypatch
+):
+    """
+    ⚠️ A aprovação é revisão HUMANA e o veredito não chega por evento: o beat
+    passa de 6 em 6 horas, então um template aprovado em dois minutos ficava
+    "em revisão" na tela por horas — e recarregar a página não adiantava,
+    porque ela lê o nosso banco e não a Meta.
+    """
+    from apps.integrations.whatsapp.base import Template
+
+    esperando = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="teste_01",
+        language="pt_BR",
+        category="UTILITY",
+        status="PENDING",
+        meta_template_id="tpl-1",
+    )
+
+    class _JaAprovou:
+        def list_templates(self):
+            return [
+                Template(
+                    name="teste_01",
+                    language="pt_BR",
+                    category="UTILITY",
+                    status="APPROVED",
+                    components=[{"type": "BODY", "text": "Olá, {{1}}!"}],
+                    meta_id="tpl-1",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _JaAprovou(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.post(f"{URL}sincronizar/")
+
+    assert resposta.status_code == 200
+    esperando.refresh_from_db()
+    assert esperando.status == "APPROVED"
+
+
+@pytest.mark.django_db
+def test_sincronizar_com_a_meta_fora_DIZ_o_motivo(
+    api_client, manager_single_clinic, inbox_a, monkeypatch
+):
+    """
+    ⚠️ Diferente do beat, que engole e tenta de novo: aqui alguém está olhando
+    a tela. Engolir mostraria a mesma lista e a pessoa concluiria que a Meta
+    ainda não respondeu.
+    """
+    from apps.integrations.whatsapp.exceptions import WhatsAppError
+
+    class _Fora:
+        def list_templates(self):
+            raise WhatsAppError("Canal do WhatsApp desconectado.")
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Fora(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.post(f"{URL}sincronizar/")
+
+    assert resposta.status_code == 400
+    assert "desconectado" in str(resposta.data)
+
+
+@pytest.mark.django_db
+def test_atendente_pode_atualizar_a_lista(api_client, attendant_a, inbox_a, monkeypatch):
+    """Ler o estado atual não muda nada na conta da Meta: é leitura."""
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: type("P", (), {"list_templates": lambda self: []})(),
+    )
+    api_client.force_authenticate(attendant_a)
+    assert api_client.post(f"{URL}sincronizar/").status_code == 200

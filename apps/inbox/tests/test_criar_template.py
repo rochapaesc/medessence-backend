@@ -75,6 +75,33 @@ class TestOCorpo:
         with pytest.raises(TemplateInvalido, match="começar em"):
             validar(_valido(body="Olá {{2}}", examples={"body": ["a"]}))
 
+    def test_com_cabecalho_a_mensagem_EXPLICA_a_numeracao_separada(self):
+        """
+        ⚠️ A Meta numera cada componente por si: o `{{1}}` do cabeçalho e o
+        `{{1}}` do corpo são campos diferentes. Quem usa `{{1}}` no título
+        segue do `{{2}}` no corpo por conta própria — e sem esta frase fica
+        procurando erro onde não há.
+        """
+        with pytest.raises(TemplateInvalido, match="separada da do cabeçalho"):
+            validar(
+                _valido(
+                    header_format="TEXT",
+                    header_text="Teste de Sistema - {{1}}",
+                    body="Olá {{2}}! Código: {{3}}",
+                    examples={"body": ["Willian", "123"], "header": ["234"]},
+                )
+            )
+
+    def test_numerado_do_1_nos_DOIS_componentes_passa(self):
+        validar(
+            _valido(
+                header_format="TEXT",
+                header_text="Teste de Sistema - {{1}}",
+                body="Olá {{1}}! Código: {{2}}",
+                examples={"body": ["Willian", "123"], "header": ["234"]},
+            )
+        )
+
 
 class TestORodape:
     def test_acima_de_60_nao_passa(self):
@@ -303,3 +330,68 @@ class TestOStatus:
     def test_os_conhecidos_passam_como_estao(self):
         for status in ("APPROVED", "REJECTED", "PAUSED"):
             assert status_normalizado(status.lower()) == status
+
+
+class TestOsCasosQueSOAMETADIZ:
+    """
+    ⚠️ Três regras que NÃO estão na documentação de limites: só aparecem no
+    `user_msg` de uma recusa. Descobertas ao vivo em 13/08/2026 com um
+    template cujo corpo era `{{1}}` — a Meta respondeu `subcode=2388047`, e o
+    custo de descobrir assim é o nome já ocupado na conta.
+    """
+
+    def test_corpo_SO_com_variavel_nao_passa(self):
+        with pytest.raises(TemplateInvalido, match="só campos variáveis"):
+            validar(_valido(body="{{1}}", examples={"body": ["Ana"]}))
+
+    def test_variavel_com_texto_em_volta_passa(self):
+        validar(_valido(body="Olá, {{1}}!", examples={"body": ["Ana"]}))
+
+    def test_mais_de_duas_linhas_em_branco_seguidas_nao_passa(self):
+        with pytest.raises(TemplateInvalido, match="linhas em branco"):
+            validar(
+                _valido(body="Olá {{1}}\n\n\n\nTchau", examples={"body": ["Ana"]})
+            )
+
+    def test_duas_linhas_em_branco_passam(self):
+        validar(_valido(body="Olá {{1}}\n\nTchau", examples={"body": ["Ana"]}))
+
+    def test_mais_de_dez_emojis_nao_passa(self):
+        with pytest.raises(TemplateInvalido, match="11 emojis"):
+            validar(
+                _valido(body="Oi {{1}} " + "😀" * 11, examples={"body": ["Ana"]})
+            )
+
+
+class TestOErroDaMetaNaTela:
+    """
+    ⚠️ `str(exc)` do PyWa é o repr INTEIRO da exceção. Ele vazou para a tela em
+    13/08/2026 num balão que dizia "WhatsAppError(code=100, message='Invalid
+    parameter', details=None, fbtrace_id='AAmtmv...', raw_response=<Response
+    [400 Bad Request]>, subcode=2388047, ...)" — a clínica não tem como ler
+    isso, e o que ela precisa (`user_title`) vem TRADUZIDO pela própria Meta.
+    """
+
+    def _erro(self, **kwargs):
+        from pywa import errors as pywa_errors
+
+        return pywa_errors.WhatsAppError(
+            raw={}, code=100, message="Invalid parameter", **kwargs
+        )
+
+    def test_usa_o_titulo_traduzido_que_a_meta_manda(self):
+        from apps.integrations.whatsapp.meta.adapter import _motivo
+
+        exc = self._erro(
+            user_title="O formato do corpo da mensagem está incorreto",
+            user_msg="The message body can't have more than...",
+        )
+        assert _motivo(exc) == "O formato do corpo da mensagem está incorreto."
+
+    def test_sem_titulo_cai_na_mensagem_e_nunca_no_repr(self):
+        from apps.integrations.whatsapp.meta.adapter import _motivo
+
+        motivo = _motivo(self._erro())
+        assert motivo == "Invalid parameter"
+        assert "fbtrace_id" not in motivo
+        assert "raw_response" not in motivo

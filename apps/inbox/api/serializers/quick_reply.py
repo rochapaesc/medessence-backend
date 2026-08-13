@@ -81,8 +81,16 @@ class WhatsAppTemplateSerializer(ModelSerializer):
             # Por que a Meta recusou. A tela mostra para a clínica corrigir em
             # cima do que escreveu, em vez de recomeçar.
             "rejection_reason",
+            # ⚠️ Vermelho é o passo ANTES de a Meta pausar o template sozinha,
+            # e template pausado para de enviar no meio de um fluxo. A tela
+            # avisa enquanto ainda dá para agir.
+            "quality_score",
         ]
-        read_only_fields = ["meta_template_id", "rejection_reason"]
+        read_only_fields = [
+            "meta_template_id",
+            "rejection_reason",
+            "quality_score",
+        ]
 
     def get_variables(self, obj) -> list[str]:
         from apps.inbox.template_vars import variaveis_do_template
@@ -198,9 +206,39 @@ class WhatsAppTemplateCreateSerializer(Serializer):
         )
 
 
-#: Editar só faz sentido nestes: PENDING está em revisão (a Meta recusa a
-#: edição), e o que nunca foi para lá se CRIA, não se edita.
+#: Editar só faz sentido nestes: PENDING está em revisão e a Meta recusa a
+#: edição enquanto ela não termina.
 EDITAVEIS = {"APPROVED", "REJECTED", "PAUSED"}
+
+#: Os que NÃO se edita, em português. A mensagem de erro vai para a tela, e
+#: `PENDING_DELETION` não diz nada para quem atende no balcão.
+STATUS_LEGIVEL = {
+    "PENDING": "em revisão",
+    "DISABLED": "desativado",
+    "IN_APPEAL": "em recurso",
+    "PENDING_DELETION": "sendo apagado",
+}
+
+
+def _id_na_meta(provider, template) -> str:
+    """
+    Descobre o id da variante na Meta quando não o temos guardado.
+
+    ⚠️ Todo template anterior a 13/08/2026 está assim: a sincronização recebia
+    o `id` no `get_templates` e o DESCARTAVA. Sem isto, a clínica não
+    conseguiria editar justamente os templates que ela já tem.
+
+    Casa por nome E idioma: o mesmo nome existe uma vez por língua, e pegar o
+    primeiro editaria a variante errada.
+
+    Vazio significa "a Meta não tem este template" - e quem chama trata isso
+    criando, não falhando. Erro de comunicação PROPAGA de propósito: sem saber
+    se ele existe lá, criar duplicaria o nome quando a Meta voltasse.
+    """
+    for achado in provider.list_templates():
+        if achado.name == template.name and achado.language == template.language:
+            return achado.meta_id
+    return ""
 
 
 class WhatsAppTemplateEditSerializer(WhatsAppTemplateCreateSerializer):
@@ -215,21 +253,52 @@ class WhatsAppTemplateEditSerializer(WhatsAppTemplateCreateSerializer):
 
     def validate(self, attrs):
         template = self.instance
-        if not template.meta_template_id:
-            raise ValidationError(
-                "Este template nunca chegou a ser enviado para a Meta. "
-                "Crie um novo em vez de editar este."
-            )
         if template.status not in EDITAVEIS:
+            # ⚠️ Sem o status CRU na frase. `IN_APPEAL` e `PENDING_DELETION`
+            # apareciam em inglês para quem só quer corrigir um texto, e a
+            # palavra "revisão" nem descrevia os dois.
             raise ValidationError(
-                f"Template em revisão ({template.status}) não pode ser editado. "
-                "Espere o resultado da Meta."
+                f"A Meta ainda está resolvendo este template ({STATUS_LEGIVEL.get(template.status, 'aguardando')}) "
+                "e não aceita edição enquanto isso. Espere o resultado dela."
             )
         if attrs.get("name") != template.name:
             raise ValidationError("O nome de um template não pode mudar depois de criado.")
         if attrs.get("language") != template.language:
             raise ValidationError("O idioma de um template não pode mudar depois de criado.")
         return super().validate(attrs)
+
+    def _reenviar(self, instance, provider, payload):
+        """
+        Manda para a Meta um template que nunca chegou a existir lá.
+
+        Mesma regra do `create`: se ela recusar de novo, o texto continua
+        salvo com o motivo NOVO, para a clínica corrigir mais uma vez em vez
+        de recomeçar.
+        """
+        from apps.inbox.template_builder import status_normalizado
+        from apps.integrations.whatsapp.exceptions import WhatsAppError
+
+        instance.category = payload["category"]
+        instance.components = payload["components"]
+        try:
+            criado = provider.create_template(payload)
+        except WhatsAppError as exc:
+            instance.status = "REJECTED"
+            instance.rejection_reason = str(exc)
+        else:
+            instance.status = status_normalizado(criado.status)
+            instance.meta_template_id = criado.id
+            instance.rejection_reason = ""
+        instance.save(
+            update_fields=[
+                "meta_template_id",
+                "category",
+                "components",
+                "status",
+                "rejection_reason",
+            ]
+        )
+        return instance
 
     def update(self, instance, validated_data):
         from apps.inbox.models import Channel
@@ -241,11 +310,30 @@ class WhatsAppTemplateEditSerializer(WhatsAppTemplateCreateSerializer):
         if channel is None:
             raise ValidationError("Esta clínica não tem canal de WhatsApp configurado.")
 
+        provider = get_whatsapp_provider(channel)
         payload = montar_para_a_meta(dict(validated_data))
+
+        meta_id = instance.meta_template_id
+        if not meta_id:
+            try:
+                meta_id = _id_na_meta(provider, instance)
+            except WhatsAppError as exc:
+                # Sem saber se ele existe lá, criar duplicaria o nome.
+                raise ValidationError(
+                    f"Não deu para falar com a Meta: {exc}"
+                ) from exc
+
+        if not meta_id:
+            # ⚠️ Template que a Meta RECUSOU na criação nunca chegou a existir
+            # lá: "reenviar" é CRIAR de novo, e não editar. Recusar aqui era um
+            # beco sem saída - a clínica corrigia o texto, o botão dizia
+            # "editar e reenviar", e o sistema respondia que o template não
+            # existe na Meta. O nome continua livre na conta, justamente
+            # porque a criação falhou.
+            return self._reenviar(instance, provider, payload)
+
         try:
-            get_whatsapp_provider(channel).update_template(
-                instance.meta_template_id, payload
-            )
+            provider.update_template(meta_id, payload)
         except WhatsAppError as exc:
             # ⚠️ O que está no ar na Meta continua o de ANTES: guardar a versão
             # nova aqui faria a tela mostrar um texto que o paciente não vai
@@ -254,6 +342,7 @@ class WhatsAppTemplateEditSerializer(WhatsAppTemplateCreateSerializer):
             instance.save(update_fields=["rejection_reason"])
             raise ValidationError(str(exc)) from exc
 
+        instance.meta_template_id = meta_id
         instance.category = payload["category"]
         instance.components = payload["components"]
         # Toda edição volta para a fila de revisão da Meta, e o motivo da
@@ -261,6 +350,12 @@ class WhatsAppTemplateEditSerializer(WhatsAppTemplateCreateSerializer):
         instance.status = "PENDING"
         instance.rejection_reason = ""
         instance.save(
-            update_fields=["category", "components", "status", "rejection_reason"]
+            update_fields=[
+                "meta_template_id",
+                "category",
+                "components",
+                "status",
+                "rejection_reason",
+            ]
         )
         return instance

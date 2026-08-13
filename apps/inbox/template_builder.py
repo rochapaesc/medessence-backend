@@ -57,18 +57,29 @@ def variaveis(texto: str) -> list[int]:
     return sorted(n for n in achadas if n >= 1)
 
 
-def _exigir_contiguas(numeros: list[int], onde: str) -> None:
+def _exigir_contiguas(numeros: list[int], onde: str, tem_cabecalho=False) -> None:
     """
     ⚠️ A Meta exige `{{1}}, {{2}}, {{3}}` sem buraco. E o buraco não é
     preciosismo dela: no envio os parâmetros casam por POSIÇÃO, então um
     `{{2}}` que não existe faria o valor do `{{3}}` chegar no lugar dele.
+
+    ⚠️ Ela também numera CADA COMPONENTE separadamente: o `{{1}}` do
+    cabeçalho e o `{{1}}` do corpo são variáveis diferentes. Quem usa `{{1}}`
+    no título numera o corpo a partir do `{{2}}` por conta própria, e sem esta
+    explicação fica procurando erro onde não há.
     """
     for i, numero in enumerate(numeros):
         if numero != i + 1:
             achadas = ", ".join(f"{{{{{n}}}}}" for n in numeros)
+            extra = (
+                " A contagem do texto é separada da do cabeçalho: mesmo com "
+                "{{1}} lá em cima, aqui começa no {{1}} de novo."
+                if tem_cabecalho
+                else ""
+            )
             raise TemplateInvalido(
                 f"As variáveis {onde} precisam começar em {{{{1}}}} e seguir "
-                f"sem pular número. Encontrei {achadas}."
+                f"sem pular número. Encontrei {achadas}.{extra}"
             )
 
 
@@ -83,7 +94,27 @@ def validar_nome(nome: str) -> None:
         )
 
 
-def validar_corpo(corpo: str) -> list[int]:
+#: Quantos emojis a Meta aceita no corpo.
+MAX_EMOJIS = 10
+
+#: Faixas Unicode de emoji, o suficiente para contar o que a Meta conta.
+_EMOJI = re.compile(
+    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F2FF"
+    "\U00002190-\U000021FF\U00002B00-\U00002BFF]"
+)
+
+#: Três ou mais quebras seguidas. A Meta aceita no máximo DUAS.
+_QUEBRAS_DEMAIS = re.compile(r"\n{3,}")
+
+
+def validar_corpo(corpo: str, tem_cabecalho: bool = False) -> list[int]:
+    """
+    ⚠️ As três últimas regras vieram de uma recusa ao vivo em 13/08/2026, com
+    um template cujo corpo era só `{{1}}`. A Meta respondeu
+    `subcode=2388047`, e o `user_msg` dizia o que ela não aceita: mais de duas
+    quebras de linha seguidas, corpo SÓ com parâmetros, ou mais de 10 emojis.
+    Nenhuma delas está na documentação de limites - só no erro.
+    """
     corpo = corpo or ""
     if not corpo.strip():
         raise TemplateInvalido("O template precisa de um texto.")
@@ -92,7 +123,30 @@ def validar_corpo(corpo: str) -> list[int]:
             f"O texto tem {len(corpo)} caracteres e o limite é {TETO_DO_CORPO}."
         )
     numeros = variaveis(corpo)
-    _exigir_contiguas(numeros, "do texto")
+    _exigir_contiguas(numeros, "do texto", tem_cabecalho)
+
+    # Corpo só de parâmetros: sobra nada quando se tiram os `{{n}}`.
+    if numeros and not _VARIAVEL.sub("", corpo).strip():
+        raise TemplateInvalido(
+            "O texto não pode ser só campos variáveis. Escreva a mensagem em "
+            "volta deles, como \"Olá, {{1}}! Sentimos sua falta.\"."
+        )
+    if _QUEBRAS_DEMAIS.search(corpo):
+        raise TemplateInvalido(
+            "O texto tem mais de duas linhas em branco seguidas, e o WhatsApp "
+            "não aceita. Junte os parágrafos."
+        )
+    achados = len(_EMOJI.findall(corpo))
+    if achados > MAX_EMOJIS:
+        raise TemplateInvalido(
+            f"O texto tem {achados} emojis e o WhatsApp aceita no máximo "
+            f"{MAX_EMOJIS}."
+        )
+    # ⚠️ "Proporção entre palavras e parâmetros" NÃO é validada aqui, e é de
+    # propósito. A Meta recusa por ela (visto ao vivo em 13/08/2026 com
+    # `Ola, {{1}}`) e não publica o limite: bloquear por um palpite reprovaria
+    # texto que ela aceita - `Olá {{1}}! Código: {{2}}` tem a MESMA proporção
+    # e é mensagem legítima. A tela avisa, e quem decide é ela.
     return numeros
 
 
@@ -288,13 +342,15 @@ def validar(dados: dict) -> tuple[int, int]:
     if not (dados.get("language") or "").strip():
         raise TemplateInvalido("O template precisa de um idioma.")
 
-    no_corpo = len(validar_corpo(dados.get("body")))
-    validar_rodape(dados.get("footer"))
     no_cabecalho = validar_cabecalho(
         dados.get("header_format"),
         dados.get("header_text"),
         dados.get("header_handle"),
     )
+    # O corpo depois do cabeçalho: a mensagem de numeração precisa saber se há
+    # variável lá em cima para explicar que a contagem é separada.
+    no_corpo = len(validar_corpo(dados.get("body"), no_cabecalho > 0))
+    validar_rodape(dados.get("footer"))
     validar_botoes(dados.get("buttons"))
     validar_exemplos(dados.get("examples"), no_corpo, no_cabecalho)
     return no_corpo, no_cabecalho
