@@ -196,3 +196,71 @@ class WhatsAppTemplateCreateSerializer(Serializer):
             status=status_normalizado(criado.status),
             meta_template_id=criado.id,
         )
+
+
+#: Editar só faz sentido nestes: PENDING está em revisão (a Meta recusa a
+#: edição), e o que nunca foi para lá se CRIA, não se edita.
+EDITAVEIS = {"APPROVED", "REJECTED", "PAUSED"}
+
+
+class WhatsAppTemplateEditSerializer(WhatsAppTemplateCreateSerializer):
+    """
+    Reescrever um template que já está na Meta (RF-INB-3.2.7).
+
+    ⚠️ A Meta SUBSTITUI os componentes inteiros, não aplica diferença: o
+    formulário volta preenchido e manda tudo de novo, inclusive o que não
+    mudou. E `name` e `language` não se alteram - ela não deixa renomear nem
+    trocar o idioma de um template existente.
+    """
+
+    def validate(self, attrs):
+        template = self.instance
+        if not template.meta_template_id:
+            raise ValidationError(
+                "Este template nunca chegou a ser enviado para a Meta. "
+                "Crie um novo em vez de editar este."
+            )
+        if template.status not in EDITAVEIS:
+            raise ValidationError(
+                f"Template em revisão ({template.status}) não pode ser editado. "
+                "Espere o resultado da Meta."
+            )
+        if attrs.get("name") != template.name:
+            raise ValidationError("O nome de um template não pode mudar depois de criado.")
+        if attrs.get("language") != template.language:
+            raise ValidationError("O idioma de um template não pode mudar depois de criado.")
+        return super().validate(attrs)
+
+    def update(self, instance, validated_data):
+        from apps.inbox.models import Channel
+        from apps.inbox.template_builder import montar_para_a_meta
+        from apps.integrations.whatsapp.exceptions import WhatsAppError
+        from apps.integrations.whatsapp.registry import get_whatsapp_provider
+
+        channel = Channel.objects.filter(clinic=instance.clinic).first()
+        if channel is None:
+            raise ValidationError("Esta clínica não tem canal de WhatsApp configurado.")
+
+        payload = montar_para_a_meta(dict(validated_data))
+        try:
+            get_whatsapp_provider(channel).update_template(
+                instance.meta_template_id, payload
+            )
+        except WhatsAppError as exc:
+            # ⚠️ O que está no ar na Meta continua o de ANTES: guardar a versão
+            # nova aqui faria a tela mostrar um texto que o paciente não vai
+            # receber. O motivo fica registrado e o template segue como estava.
+            instance.rejection_reason = str(exc)
+            instance.save(update_fields=["rejection_reason"])
+            raise ValidationError(str(exc)) from exc
+
+        instance.category = payload["category"]
+        instance.components = payload["components"]
+        # Toda edição volta para a fila de revisão da Meta, e o motivo da
+        # recusa anterior deixa de valer.
+        instance.status = "PENDING"
+        instance.rejection_reason = ""
+        instance.save(
+            update_fields=["category", "components", "status", "rejection_reason"]
+        )
+        return instance

@@ -161,6 +161,24 @@ class WhatsAppProvider(Protocol):
         """Cache de templates aprovados (beat 6h)."""
         ...
 
+    def update_template(self, meta_template_id: str, payload: dict) -> None:
+        """
+        Reescreve um template que já está na Meta (RF-INB-3.2.7).
+
+        ⚠️ Ela SUBSTITUI os componentes inteiros, não aplica diferença: o
+        payload precisa trazer tudo, inclusive o que não mudou.
+        """
+        ...
+
+    def delete_template(self, name: str, meta_template_id: str = "") -> None:
+        """
+        Apaga um template na Meta.
+
+        ⚠️ Sem `meta_template_id` ela apaga TODAS as variantes de idioma com
+        aquele nome, e não só a que se pediu.
+        """
+        ...
+
     def create_template(self, payload: dict) -> TemplateCriado:
         """
         Manda um template para a revisão da Meta (RF-INB-3.2).

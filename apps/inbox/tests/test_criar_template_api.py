@@ -165,3 +165,207 @@ def test_template_de_outra_clinica_nao_aparece(
     api_client.force_authenticate(manager_single_clinic)
     nomes = [t["name"] for t in api_client.get(URL).data["results"]]
     assert "de_outra" not in nomes
+
+
+# --------------------------- editar e apagar --------------------------- #
+
+
+@pytest.fixture
+def na_meta(clinic_a):
+    """Um template que JÁ existe na conta da Meta, como os criados por aqui."""
+    return WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="retorno_paciente",
+        language="pt_BR",
+        category="MARKETING",
+        status="APPROVED",
+        meta_template_id="tpl-existente",
+        components=[{"type": "BODY", "text": "Olá, {{1}}!"}],
+    )
+
+
+def _url(template) -> str:
+    return f"{URL}{template.pk}/"
+
+
+@pytest.mark.django_db
+def test_editar_reescreve_na_meta_e_volta_para_revisao(
+    api_client, manager_single_clinic, inbox_a, na_meta, monkeypatch
+):
+    """
+    ⚠️ A Meta SUBSTITUI os componentes inteiros e devolve o template à fila de
+    revisão. Deixar como APPROVED aqui faria a recepção mandar, achando que o
+    texto novo já vale.
+    """
+    editados = []
+
+    class _Espiao:
+        def update_template(self, meta_template_id, payload):
+            editados.append((meta_template_id, payload))
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Espiao(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(
+        _url(na_meta),
+        _corpo(body="Olá, {{1}}! Temos horário nesta semana.", examples={"body": ["Ivanita"]}),
+        format="json",
+    )
+
+    assert resposta.status_code == 200
+    na_meta.refresh_from_db()
+    assert na_meta.status == "PENDING"
+    assert "nesta semana" in na_meta.components[0]["text"]
+    # O id da variante vai junto: é por ele que a Meta acha o template.
+    assert editados[0][0] == "tpl-existente"
+
+
+@pytest.mark.django_db
+def test_template_em_revisao_nao_se_edita(
+    api_client, manager_single_clinic, inbox_a, na_meta
+):
+    na_meta.status = "PENDING"
+    na_meta.save(update_fields=["status"])
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(_url(na_meta), _corpo(examples={"body": ["a", "b"]}), format="json")
+
+    assert resposta.status_code == 400
+    assert "em revisão" in str(resposta.data)
+
+
+@pytest.mark.django_db
+def test_template_que_nunca_foi_para_a_meta_se_CRIA_e_nao_se_edita(
+    api_client, manager_single_clinic, inbox_a, clinic_a
+):
+    local = WhatsAppTemplate.objects.create(
+        clinic=clinic_a, name="rascunho", language="pt_BR", status="REJECTED"
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(
+        _url(local), _corpo(name="rascunho", examples={"body": ["a", "b"]}), format="json"
+    )
+
+    assert resposta.status_code == 400
+    assert "Crie um novo" in str(resposta.data)
+
+
+@pytest.mark.django_db
+def test_nome_e_idioma_nao_mudam(api_client, manager_single_clinic, inbox_a, na_meta):
+    """A Meta não deixa renomear nem trocar o idioma de um template existente."""
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(
+        _url(na_meta), _corpo(name="outro_nome", examples={"body": ["a", "b"]}), format="json"
+    )
+
+    assert resposta.status_code == 400
+    assert "nome de um template não pode mudar" in str(resposta.data)
+
+
+@pytest.mark.django_db
+def test_meta_recusando_a_edicao_MANTEM_o_que_esta_no_ar(
+    api_client, manager_single_clinic, inbox_a, na_meta, monkeypatch
+):
+    """
+    ⚠️ Guardar a versão nova aqui faria a tela mostrar um texto que o paciente
+    não vai receber: na Meta continua valendo o de antes.
+    """
+    from apps.integrations.whatsapp.exceptions import WhatsAppError
+
+    class _Recusa:
+        def update_template(self, meta_template_id, payload):
+            raise WhatsAppError("Template em uso por uma campanha ativa.")
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Recusa(),
+    )
+    antes = na_meta.components
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(
+        _url(na_meta), _corpo(body="Texto novo {{1}}", examples={"body": ["a"]}), format="json"
+    )
+
+    assert resposta.status_code == 400
+    na_meta.refresh_from_db()
+    assert na_meta.components == antes
+    assert na_meta.status == "APPROVED"
+    assert "campanha ativa" in na_meta.rejection_reason
+
+
+@pytest.mark.django_db
+def test_apagar_manda_o_ID_junto_para_nao_levar_os_outros_idiomas(
+    api_client, manager_single_clinic, inbox_a, na_meta, monkeypatch
+):
+    """
+    ⚠️ Sem o `meta_template_id`, a Meta apaga TODAS as variantes de idioma com
+    aquele nome — inclusive as que ninguém pediu para apagar.
+    """
+    apagados = []
+
+    class _Espiao:
+        def delete_template(self, name, meta_template_id=""):
+            apagados.append((name, meta_template_id))
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Espiao(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.delete(_url(na_meta))
+
+    assert resposta.status_code == 204
+    assert apagados == [("retorno_paciente", "tpl-existente")]
+    assert not WhatsAppTemplate.objects.filter(pk=na_meta.pk).exists()
+
+
+@pytest.mark.django_db
+def test_meta_recusando_a_exclusao_NAO_apaga_aqui(
+    api_client, manager_single_clinic, inbox_a, na_meta, monkeypatch
+):
+    """
+    ⚠️ Apagar o nosso e falhar lá deixaria um template órfão na conta da
+    clínica: nome ocupado, e nada por aqui apontando para ele.
+    """
+    from apps.integrations.whatsapp.exceptions import WhatsAppError
+
+    class _Recusa:
+        def delete_template(self, name, meta_template_id=""):
+            raise WhatsAppError("Template em uso.")
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Recusa(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.delete(_url(na_meta))
+
+    assert resposta.status_code == 400
+    assert WhatsAppTemplate.objects.filter(pk=na_meta.pk).exists()
+
+
+@pytest.mark.django_db
+def test_apagar_o_que_so_existe_aqui_nao_chama_a_meta(
+    api_client, manager_single_clinic, inbox_a, clinic_a, monkeypatch
+):
+    local = WhatsAppTemplate.objects.create(
+        clinic=clinic_a, name="rascunho", language="pt_BR", status="REJECTED"
+    )
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: pytest.fail("não devia falar com a Meta"),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+
+    assert api_client.delete(_url(local)).status_code == 204
+
+
+@pytest.mark.django_db
+def test_atendente_nao_edita_nem_apaga(api_client, attendant_a, inbox_a, na_meta):
+    api_client.force_authenticate(attendant_a)
+    assert api_client.delete(_url(na_meta)).status_code == 403
+    assert (
+        api_client.put(_url(na_meta), _corpo(examples={"body": ["a", "b"]}), format="json").status_code
+        == 403
+    )

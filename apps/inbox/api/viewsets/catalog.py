@@ -1,4 +1,5 @@
 from django.db.models import Case, IntegerField, Q, Value, When
+from rest_framework.exceptions import ValidationError
 
 from apps.core.api.permissions import IsClinicManager, IsClinicMember
 from apps.core.api.viewsets import (
@@ -9,6 +10,7 @@ from apps.core.mixins import AuditMixin
 from apps.inbox.api.serializers import (
     QuickReplySerializer,
     WhatsAppTemplateCreateSerializer,
+    WhatsAppTemplateEditSerializer,
     WhatsAppTemplateSerializer,
 )
 from apps.inbox.models import QuickReply, WhatsAppTemplate
@@ -62,13 +64,16 @@ class QuickReplyViewSet(AuditMixin, ClinicScopedModelViewSet):
         )
 
 
-class WhatsAppTemplateViewSet(AuditMixin, ClinicScopedCreateListViewSet):
+class WhatsAppTemplateViewSet(AuditMixin, ClinicScopedModelViewSet):
     """
-    Templates da clínica: ler (RF-INB-3) e CRIAR (RF-INB-3.2).
+    Templates da clínica: ler (RF-INB-3), criar, editar e apagar (RF-INB-3.2).
 
     Ler é de todo mundo, porque é a recepção que escolhe o template na hora de
-    responder. Criar é só do gestor: o que se manda daqui vai para a revisão
-    da Meta em nome da clínica e fica na conta dela.
+    responder. Escrever é só do gestor: o que sai daqui vai para a conta da
+    clínica na Meta e passa por revisão humana.
+
+    ⚠️ Apagar chega na Meta e é IRREVERSÍVEL. O template some da conta, e todo
+    fluxo ou campanha que apontava para ele para de enviar.
     """
 
     model = WhatsAppTemplate
@@ -87,7 +92,43 @@ class WhatsAppTemplateViewSet(AuditMixin, ClinicScopedCreateListViewSet):
     def get_serializer_class(self):
         if self.action == "create":
             return WhatsAppTemplateCreateSerializer
+        if self.action in ("update", "partial_update"):
+            return WhatsAppTemplateEditSerializer
         return WhatsAppTemplateSerializer
+
+    def perform_destroy(self, instance):
+        """
+        Apaga na Meta ANTES de apagar aqui (RF-INB-3.2.8).
+
+        ⚠️ A ordem importa: apagar o nosso primeiro e falhar lá deixaria um
+        template órfão na conta da clínica, com o nome ocupado e sem nada por
+        aqui que aponte para ele.
+
+        Template que nunca chegou à Meta pula essa chamada: ele só existe
+        aqui.
+        """
+        from apps.inbox.models import Channel
+        from apps.integrations.whatsapp.exceptions import WhatsAppError
+        from apps.integrations.whatsapp.registry import get_whatsapp_provider
+
+        if instance.meta_template_id:
+            channel = Channel.objects.filter(clinic=instance.clinic).first()
+            if channel is None:
+                raise ValidationError(
+                    "Esta clínica não tem canal de WhatsApp configurado, então "
+                    "não dá para apagar o template na Meta."
+                )
+            try:
+                # O id vai junto de propósito: sem ele a Meta apaga TODAS as
+                # variantes de idioma com este nome.
+                get_whatsapp_provider(channel).delete_template(
+                    instance.name, instance.meta_template_id
+                )
+            except WhatsAppError as exc:
+                raise ValidationError(
+                    f"A Meta não apagou o template: {exc}"
+                ) from exc
+        super().perform_destroy(instance)
 
     def get_queryset(self):
         return super().get_queryset().order_by("name")

@@ -79,6 +79,8 @@ class FakeWhatsAppAdapter:
         self.channel = channel
         #: O que o teste conferiu que foi mandado para a Meta.
         self.criados: list[dict] = []
+        self.editados: list[tuple[str, dict]] = []
+        self.apagados: list[tuple[str, str]] = []
 
     def send_text(self, to: str, body: str, reply_to: str | None = None) -> SendResult:
         return SendResult(provider_message_id=fake_wamid(), raw={"fake": True, "to": to})
@@ -158,6 +160,14 @@ class FakeWhatsAppAdapter:
         """
         self.criados.append(payload)
         return TemplateCriado(id=f"fake-tpl-{len(self.criados)}", status="PENDING")
+
+    def update_template(self, meta_template_id: str, payload: dict) -> None:
+        self.editados.append((meta_template_id, payload))
+
+    def delete_template(self, name: str, meta_template_id: str = "") -> None:
+        # Guarda o id junto: é ele que separa "apagar esta variante" de
+        # "apagar todas as línguas com este nome".
+        self.apagados.append((name, meta_template_id))
 
     def parse_webhook(self, payload: dict) -> list[WhatsAppEvent]:
         return parse_meta_webhook(payload)

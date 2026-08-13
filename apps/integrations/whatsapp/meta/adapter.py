@@ -382,6 +382,49 @@ class MetaAdapter:
             category=resposta.get("category") or "",
         )
 
+    def update_template(self, meta_template_id: str, payload: dict) -> None:
+        """
+        Reescreve o template na Meta e devolve ele à revisão.
+
+        ⚠️ Ela SUBSTITUI os componentes inteiros: o payload traz tudo,
+        inclusive o que não mudou. `name` e `language` NÃO vão - a Meta não
+        deixa renomear nem trocar o idioma de um template existente.
+        """
+        try:
+            self._wa.api.update_template(
+                template_id=meta_template_id,
+                template={
+                    "category": payload["category"],
+                    "components": payload["components"],
+                },
+            )
+        except pywa_errors.WhatsAppError as exc:
+            raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
+
+    def delete_template(self, name: str, meta_template_id: str = "") -> None:
+        """
+        Apaga o template na Meta.
+
+        ⚠️ O `template_id` não é opcional por conveniência: SEM ele a Meta
+        apaga todas as variantes de idioma com aquele nome de uma vez.
+        """
+        if not self.waba_id:
+            raise WhatsAppNotConfiguredError(
+                "Canal Meta sem waba_id - não dá para apagar template."
+            )
+        try:
+            self._wa.api.delete_template(
+                waba_id=self.waba_id,
+                template_name=name,
+                template_id=meta_template_id or None,
+            )
+        except pywa_errors.WhatsAppError as exc:
+            raise _translate(exc) from exc
+        except httpx.TransportError as exc:
+            raise _rede(exc) from exc
+
     # ----------------------------- webhook ------------------------------- #
 
     def parse_webhook(self, payload: dict) -> list[WhatsAppEvent]:
