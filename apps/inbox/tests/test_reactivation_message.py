@@ -216,6 +216,33 @@ def test_template_de_outra_clinica_e_recusado(
     assert resposta.status_code == 400
 
 
+@pytest.mark.parametrize("status", ["PENDING", "REJECTED", "PAUSED", "DISABLED"])
+def test_template_que_a_meta_nao_aprovou_e_recusado(
+    api_client, manager_single_clinic, clinic_a, status
+):
+    """
+    ⚠️ A configuração daqui é PERSISTENTE e sai depois para a fila inteira.
+    Guardar um template que a Meta não aceita adiaria a recusa para a hora do
+    disparo, quando ninguém está olhando a tela - e a tela nem oferece esses,
+    então quem chegar aqui veio por fora dela.
+    """
+    reprovado = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="ainda_nao_vale",
+        language="pt_BR",
+        category="MARKETING",
+        status=status,
+        components=[{"type": "BODY", "text": "Olá!"}],
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    resposta = api_client.put(
+        URL, {"template": reprovado.pk, "variables": {}}, format="json"
+    )
+
+    assert resposta.status_code == 400
+    assert "aprovado" in str(resposta.data)
+
+
 def test_limpar_o_template_limpa_o_mapa(
     api_client, manager_single_clinic, clinic_a, template, paciente_caixa_alta
 ):
@@ -300,3 +327,33 @@ def test_template_sem_botao_nao_leva_modelo_de_link(
     achado = api_client.get(URL).data["available_templates"][0]
     assert achado["variable_url_templates"] == {}
     assert achado["variable_labels"] == {"1": "{{1}}", "2": "{{2}}", "3": "{{3}}"}
+
+
+def test_opcao_leva_os_componentes_crus(
+    api_client, manager_single_clinic, clinic_a
+):
+    """
+    A tela desenha o template como a mensagem que ele é, e o cabeçalho, o
+    rodapé e os botões só existem nos componentes: sem eles a campanha lista
+    o corpo em cinza e esconde metade do que a fila vai receber.
+    """
+    WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="com_rodape",
+        language="pt_BR",
+        category="MARKETING",
+        status="APPROVED",
+        components=[
+            {"type": "HEADER", "format": "TEXT", "text": "Sentimos sua falta"},
+            {"type": "BODY", "text": "Olá, {{1}}!"},
+            {"type": "FOOTER", "text": "Responda SAIR para não receber mais"},
+        ],
+    )
+    api_client.force_authenticate(manager_single_clinic)
+    achado = next(
+        t
+        for t in api_client.get(URL).data["available_templates"]
+        if t["name"] == "com_rodape"
+    )
+
+    assert [c["type"] for c in achado["components"]] == ["HEADER", "BODY", "FOOTER"]

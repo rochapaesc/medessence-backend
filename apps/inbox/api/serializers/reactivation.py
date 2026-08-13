@@ -48,6 +48,22 @@ class ReactivationMessageSerializer(Serializer):
         if template is None:
             raise ValidationError({"template": "Template não encontrado nesta clínica."})
 
+        # ⚠️ Só APROVADO. A tela já oferece apenas esses, mas a configuração
+        # aqui é PERSISTENTE e sai depois para a fila inteira: guardar um
+        # template que a Meta não aceita adiaria a recusa para a hora do
+        # disparo, quando ninguém está olhando. É a mesma régua do broadcast
+        # do wacrm, que esconde o que não é APPROVED em vez de deixar a pessoa
+        # escolher algo que vai falhar.
+        if template.status != "APPROVED":
+            raise ValidationError(
+                {
+                    "template": (
+                        "A Meta ainda não aprovou este template, então ele não "
+                        "pode sair para a fila. Escolha um aprovado."
+                    )
+                }
+            )
+
         pedidas = variaveis_do_template(template)
         recebidas = self.initial_data.get("variables") or {}
         if not isinstance(recebidas, dict):

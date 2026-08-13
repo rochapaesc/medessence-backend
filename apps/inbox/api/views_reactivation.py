@@ -67,6 +67,13 @@ class ReactivationMessageView(APIView):
                     "language": template.language,
                     "category": template.category,
                     "body": corpo_do_template(template),
+                    # ⚠️ Os componentes CRUS, como a Meta os guarda. A tela
+                    # desenha o template como a mensagem que ele é (cabeçalho
+                    # em negrito, rodapé apagado, botões azuis embaixo), e sem
+                    # eles a campanha voltaria a listar só o corpo em cinza:
+                    # quem escolhe o template da fila deixa de ver metade do
+                    # que 1.891 pessoas vão receber.
+                    "components": template.components or [],
                     "variables": variaveis_do_template(template),
                     # ⚠️ Os MESMOS três campos do serializer do Inbox. A
                     # campanha é o terceiro lugar que manda template, e sem
