@@ -54,6 +54,17 @@ MIME_OPUS = "audio/ogg"
 
 ENVIAVEIS = frozenset(TETOS)
 
+# ⚠️ Teto da Cloud API para a LEGENDA de um anexo. Passar dele faz a Meta
+# recusar a mensagem inteira, com o arquivo já subido: a recepção perde o
+# upload e o texto, e o erro não diz que o problema é o tamanho da legenda.
+# O wacrm corta no `maxLength` do compositor; aqui o servidor também cobra,
+# porque ele é quem fala com a Meta.
+TETO_DA_LEGENDA = 1024
+
+# Áudio e figurinha não levam legenda: a Meta ignora, e mandar mesmo assim
+# faz o texto sumir sem aviso nenhum para quem escreveu.
+SEM_LEGENDA = frozenset({MessageKind.AUDIO, MessageKind.STICKER})
+
 
 def tipo_do_arquivo(mime: str) -> str:
     """

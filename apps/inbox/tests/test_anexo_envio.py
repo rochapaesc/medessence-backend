@@ -257,3 +257,85 @@ def test_anexo_tambem_respeita_a_janela_de_24h(logado, inbox_a):
 
     assert resposta.status_code == 400
     assert "24h" in str(resposta.data)
+
+
+def test_legenda_acima_do_teto_da_meta_e_recusada(logado, inbox_a):
+    """
+    ⚠️ A Meta recusa a mensagem INTEIRA acima de 1.024 caracteres, com o
+    arquivo já subido: a recepção perde o upload e o texto de uma vez, e o
+    erro não diz que o problema é o tamanho da legenda.
+    """
+    conversation = inbox_a["conversation"]
+    _abre_janela(conversation)
+    media_id = _subir(logado, _png(), "preparo.png", "image/png").data["id"]
+
+    resposta = logado.post(
+        MESSAGES,
+        {"conversation": conversation.id, "media": media_id, "caption": "a" * 1025},
+        format="json",
+    )
+
+    assert resposta.status_code == 400
+    assert "1024" in str(resposta.data)
+
+
+def test_legenda_no_limite_exato_passa(logado, inbox_a, monkeypatch):
+    espiao = _ProvedorEspiao()
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider", lambda c: espiao
+    )
+    conversation = inbox_a["conversation"]
+    _abre_janela(conversation)
+    media_id = _subir(logado, _png(), "preparo.png", "image/png").data["id"]
+
+    resposta = logado.post(
+        MESSAGES,
+        {"conversation": conversation.id, "media": media_id, "caption": "a" * 1024},
+        format="json",
+    )
+
+    assert resposta.status_code == 201
+
+
+def test_audio_nao_leva_legenda(logado, inbox_a):
+    """A Meta ignora, e o texto sumiria sem aviso para quem escreveu."""
+    conversation = inbox_a["conversation"]
+    _abre_janela(conversation)
+    media_id = _subir(
+        logado, b"\x00" * 64, "recado.ogg", "audio/ogg"
+    ).data["id"]
+
+    resposta = logado.post(
+        MESSAGES,
+        {"conversation": conversation.id, "media": media_id, "caption": "escuta isso"},
+        format="json",
+    )
+
+    assert resposta.status_code == 400
+    assert "legenda" in str(resposta.data).lower()
+
+
+def test_legenda_de_emoji_composto_conta_por_ponto_de_codigo(logado, inbox_a):
+    """
+    ⚠️ O front e o servidor contavam DIFERENTE: o formatter do Flutter conta
+    grafemas e o `len()` do Python conta pontos de código. Uma família 👨‍👩‍👧 é
+    1 grafema e 5 pontos, então 400 delas passavam na digitação e a requisição
+    devolvia "2000 caracteres". Contar diferente dos dois lados é prometer na
+    tela o que a requisição vai negar; o front passou a cortar por pontos.
+    """
+    conversation = inbox_a["conversation"]
+    _abre_janela(conversation)
+    media_id = _subir(logado, _png(), "preparo.png", "image/png").data["id"]
+
+    resposta = logado.post(
+        MESSAGES,
+        {
+            "conversation": conversation.id,
+            "media": media_id,
+            "caption": "👨‍👩‍👧" * 400,
+        },
+        format="json",
+    )
+
+    assert resposta.status_code == 400
+    assert "2000" in str(resposta.data)
