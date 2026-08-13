@@ -202,7 +202,60 @@ def _release_to_queue(conversation, *, activity: str | None = None, data: dict |
 # --------------------------------------------------------------------- #
 
 
-def _send(run, conversation, *, body: str, kind: str = MessageKind.TEXT, content_data=None):
+def _params_do_template(cfg: dict, conversation, vars_: dict) -> dict[str, str]:
+    """
+    Os valores de `{{1}}`, `{{2}}` ... do template, na ordem que a Meta espera.
+
+    Usa o MESMO resolvedor do Inbox e da campanha (`template_vars`), com o
+    contexto do fluxo: além do paciente e do contato da conversa, ele conhece
+    a fonte `flow_var`, que busca no que o fluxo coletou.
+
+    Buraco na numeração não desloca o resto: a Meta casa por POSIÇÃO, e uma
+    lista curta faria `{{3}}` receber o valor de `{{2}}` sem ninguém perceber.
+    """
+    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.template_vars import Contexto, parametros
+
+    nome = (cfg.get("template_name") or "").strip()
+    template = WhatsAppTemplate.objects.filter(
+        clinic=conversation.clinic, name=nome
+    ).first()
+    if template is None:
+        return []
+    return parametros(
+        template,
+        cfg.get("variables") or {},
+        Contexto.da_conversa(conversation, flow_vars=vars_),
+    )
+
+
+def _corpo_do_template(cfg: dict, conversation, vars_: dict) -> str:
+    """A mensagem montada, como o paciente vai ler."""
+    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.template_vars import Contexto, montar
+
+    nome = (cfg.get("template_name") or "").strip()
+    template = WhatsAppTemplate.objects.filter(
+        clinic=conversation.clinic, name=nome
+    ).first()
+    if template is None:
+        return ""
+    return montar(
+        template,
+        cfg.get("variables") or {},
+        Contexto.da_conversa(conversation, flow_vars=vars_),
+    )
+
+
+def _send(
+    run,
+    conversation,
+    *,
+    body: str,
+    kind: str = MessageKind.TEXT,
+    content_data=None,
+    template_name: str = "",
+):
     """
     Cria a mensagem do robô e a põe na FILA DO AVANÇO, conferindo a posse.
 
@@ -224,6 +277,7 @@ def _send(run, conversation, *, body: str, kind: str = MessageKind.TEXT, content
         sender_kind=SenderKind.BOT,
         body=body,
         content_data=content_data or {},
+        template_name=template_name,
         wa_timestamp=timezone.now(),
     )
     _fila_do_avanco.setdefault(run.pk, []).append(message.pk)
@@ -370,11 +424,24 @@ def _execute(node, run, conversation):
         return EDGE_DEFAULT
 
     if node.type == FlowNodeType.SEND_TEMPLATE:
+        # ⚠️ Este nó mandava TEXTO LIVRE até 12/08/2026: ele só preenchia
+        # `body` e nunca `template_name`, e o envio (que decide pelo nome)
+        # caía no `send_text`. O nó existe justamente para falar FORA da
+        # janela de 24h, que é onde a Meta recusa texto livre - ou seja, ele
+        # falhava exatamente no único caso em que serve. Passou despercebido
+        # porque nunca foi usado num fluxo de verdade, e porque o validador
+        # cobrava `template_name` enquanto o motor lia `text`.
+        nome = (cfg.get("template_name") or "").strip()
         _send(
             run,
             conversation,
-            body=interpolate(cfg.get("text") or "", vars_),
+            # O corpo MONTADO: a thread mostra para a equipe o que o paciente
+            # recebeu, e não o template cru cheio de `{{n}}`.
+            body=_corpo_do_template(cfg, conversation, vars_)
+            or interpolate(cfg.get("text") or "", vars_),
             kind=MessageKind.TEMPLATE,
+            template_name=nome,
+            content_data={"template_params": _params_do_template(cfg, conversation, vars_)},
         )
         return EDGE_DEFAULT
 

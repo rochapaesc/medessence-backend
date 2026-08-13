@@ -169,7 +169,75 @@ def required_conditions(node: Node) -> set[str]:
 # ---- validação (RF-FLW-4) ----
 
 
-def _check_config(node: Node) -> list[str]:
+def _tem_fonte(config) -> bool:
+    """
+    A variável está de fato configurada?
+
+    ⚠️ `bool(config)` não serve: `{}` é falso mas `{"source": ""}` é
+    verdadeiro, e um mapa com a chave presente e a fonte em branco passaria
+    pela publicação para morrer no envio.
+    """
+    if not isinstance(config, dict):
+        return False
+    fonte = (config.get("source") or "").strip()
+    if not fonte:
+        return False
+    # Texto fixo e variável de fluxo guardam o conteúdo em `value`: sem ele a
+    # fonte existe e não resolve nada.
+    if fonte in ("fixed", "flow_var"):
+        return bool((config.get("value") or "").strip())
+    return True
+
+
+def _problemas_do_template(cfg: dict, onde: str, clinic) -> list[str]:
+    """
+    O nó de template só publica com o template escolhido E todas as variáveis
+    mapeadas (RF-FLW-24).
+
+    ⚠️ Aqui é o lugar certo para este erro. O nó existe para falar FORA da
+    janela de 24h, e template com parâmetro faltando é recusado pela Meta na
+    hora do envio - ou seja, com o paciente do outro lado esperando e o fluxo
+    morrendo no meio. Barrar na publicação joga o erro para quem monta, que é
+    quem pode consertar.
+
+    Sem `clinic` a checagem cai para o que dá sem consultar os aprovados:
+    ainda pega o nó sem template e o mapa com buraco na numeração.
+    """
+    from apps.inbox.models import WhatsAppTemplate
+
+    nome = (cfg.get("template_name") or "").strip()
+    if not nome:
+        return [f"{onde} não tem template escolhido."]
+
+    mapa = cfg.get("variables") or {}
+    problems: list[str] = []
+
+    if clinic is None:
+        # Buraco na numeração desloca TUDO: a Meta casa por posição, e um
+        # `{{2}}` faltando faz o valor do `{{3}}` chegar no lugar dele.
+        numeros = sorted(int(k) for k in mapa if str(k).isdigit())
+        if numeros and numeros != list(range(1, len(numeros) + 1)):
+            problems.append(f"{onde} tem um buraco na numeração das variáveis.")
+        return problems
+
+    from apps.inbox.template_vars import rotulo_da_variavel, variaveis_do_template
+
+    template = WhatsAppTemplate.objects.filter(clinic=clinic, name=nome).first()
+    if template is None:
+        return [f'{onde} usa o template "{nome}", que não está aprovado nesta conta.']
+
+    pedidas = variaveis_do_template(template)
+    faltando = [chave for chave in pedidas if not _tem_fonte(mapa.get(chave))]
+    if faltando:
+        quais = ", ".join(rotulo_da_variavel(template, c) for c in faltando)
+        problems.append(
+            f'{onde} usa o template "{nome}", que pede {len(pedidas)} '
+            f"variáveis, e {quais} não foram preenchidas."
+        )
+    return problems
+
+
+def _check_config(node: Node, clinic=None) -> list[str]:
     """
     O mínimo para o nó conseguir executar. Não é validação de formulário: é a
     diferença entre o fluxo rodar e morrer no meio de uma conversa real.
@@ -208,8 +276,8 @@ def _check_config(node: Node) -> list[str]:
     elif node.type == FlowNodeType.SEND_MEDIA and not (cfg.get("media_url") or "").strip():
         problems.append(f"{onde} não tem o endereço da mídia.")
 
-    elif node.type == FlowNodeType.SEND_TEMPLATE and not (cfg.get("template_name") or "").strip():
-        problems.append(f"{onde} não tem template escolhido.")
+    elif node.type == FlowNodeType.SEND_TEMPLATE:
+        problems.extend(_problemas_do_template(cfg, onde, clinic))
 
     elif node.type == FlowNodeType.COLLECT_INPUT:
         if not (cfg.get("prompt_text") or "").strip():
@@ -267,7 +335,7 @@ def _has_cycle_without_wait(graph: FlowGraph) -> bool:
     return any(state[node_id] == unvisited and walk(node_id) for node_id in list(state))
 
 
-def validate_graph(raw: dict) -> list[str]:
+def validate_graph(raw: dict, clinic=None) -> list[str]:
     """
     Os problemas que impedem ATIVAR (RF-FLW-4). Lista vazia = pode ativar.
 
@@ -275,6 +343,10 @@ def validate_graph(raw: dict) -> list[str]:
     várias sessões. Esta função é a porta de ativar, e devolve frases que o
     gestor entende - ele é quem vai consertar, e "nó órfão" não diz nada a
     quem não desenha grafo.
+
+    `clinic` é opcional e só serve ao nó de template: com ela dá para conferir
+    o mapa de variáveis contra o template APROVADO e barrar antes de publicar.
+    Sem ela, a checagem cai para o que dá sem consultar a Meta.
     """
     graph = FlowGraph(raw)
     problems: list[str] = []
@@ -305,7 +377,7 @@ def validate_graph(raw: dict) -> list[str]:
             )
         if node.is_terminal and graph.outgoing(node.id):
             problems.append(f'O nó "{node.label or node.id}" encerra o fluxo e não pode ter saída.')
-        problems.extend(_check_config(node))
+        problems.extend(_check_config(node, clinic))
 
     # 4. nós que ninguém alcança
     if entry:

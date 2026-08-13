@@ -70,7 +70,7 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
                 status=HTTP_400_BAD_REQUEST,
             )
 
-        problems = validate_graph(version.graph or {})
+        problems = validate_graph(version.graph or {}, self.clinic)
         if problems:
             return Response(
                 {"detail": "O fluxo tem pendências.", "problems": problems},

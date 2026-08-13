@@ -48,7 +48,9 @@ class FlowVersionSerializer(ModelSerializer):
         poder mostrar a lista enquanto o gestor monta, e não só quando ele
         tenta ativar e leva um erro.
         """
-        return validate_graph(obj.graph or {})
+        # A clínica vem do FLUXO: a versão não a tem, e é ela que diz quais
+        # templates estão aprovados para o nó de template conferir.
+        return validate_graph(obj.graph or {}, getattr(obj.flow, "clinic", None))
 
 
 class FlowSerializer(ModelSerializer):
@@ -85,7 +87,7 @@ class FlowSerializer(ModelSerializer):
 
     def get_can_activate(self, obj) -> bool:
         version = obj.current_version
-        return bool(version) and not validate_graph(version.graph or {})
+        return bool(version) and not validate_graph(version.graph or {}, version.flow.clinic)
 
     def create(self, validated_data):
         """
