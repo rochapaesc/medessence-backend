@@ -395,3 +395,25 @@ class TestOErroDaMetaNaTela:
         assert motivo == "Invalid parameter"
         assert "fbtrace_id" not in motivo
         assert "raw_response" not in motivo
+
+
+def test_payload_pede_recategorizacao_a_meta():
+    """
+    ⚠️ Sem `allow_category_change` a Meta RECUSA quando discorda da categoria
+    ("Modelo de mensagem com categoria inválida"), sem dizer qual seria a
+    certa. Aconteceu em produção em 18/08. Com a chave, ela recategoriza e
+    segue para revisão, que é melhor para a clínica em qualquer caso.
+    """
+    from apps.inbox.template_builder import montar_para_a_meta
+
+    payload = montar_para_a_meta(
+        {
+            "name": "aviso_de_retorno",
+            "category": "UTILITY",
+            "language": "pt_BR",
+            "body": "Olá {{1}}, seu retorno está próximo.",
+            "examples": {"body": ["Ana"]},
+        }
+    )
+
+    assert payload["allow_category_change"] is True

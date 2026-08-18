@@ -902,6 +902,27 @@ def _barrado_por_opt_out(message) -> bool:
     return categoria.upper() == "MARKETING"
 
 
+def _formato_sem_suporte(message) -> str:
+    """
+    O template desta mensagem tem formato que não sabemos montar? A frase, ou
+    vazio.
+
+    ⚠️ Nasceu de um `#132012` em produção (18/08): o template de carrossel
+    declara zero variáveis para nós, ia sem `components` nenhum e a Meta
+    recusava por formato. O código cru chegava à recepção sem dizer o que
+    fazer.
+    """
+    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.template_vars import motivo_de_nao_enviar
+
+    if message.kind != MessageKind.TEMPLATE or not message.template_name:
+        return ""
+    template = WhatsAppTemplate.objects.filter(
+        clinic_id=message.clinic_id, name=message.template_name
+    ).first()
+    return motivo_de_nao_enviar(template) if template else ""
+
+
 def send_message(message) -> None:
     """Envia uma mensagem OUT pendente pelo provider do canal e grava o wamid
     e o status. Chamado pela task `send_whatsapp_message`."""
@@ -920,6 +941,17 @@ def send_message(message) -> None:
         message.status_error = "Este contato pediu para não receber mensagens de marketing."
         message.save(update_fields=["status", "status_error", "updated_at"])
         return
+    # Barreira do formato que não sabemos montar (RF-INB-3.3), na mesma
+    # fileira das outras duas e pelo mesmo motivo: o envio nasce da recepção,
+    # da sequência e do nó de fluxo, e só aqui os três se encontram. Fica
+    # ANTES do provider: não há por que montar o adapter para não enviar.
+    recusa = _formato_sem_suporte(message)
+    if recusa:
+        message.status = MessageStatus.FAILED
+        message.status_error = recusa
+        message.save(update_fields=["status", "status_error", "updated_at"])
+        return
+
     from apps.integrations.whatsapp.exceptions import (
         WhatsAppError,
         WhatsAppRateLimitedError,

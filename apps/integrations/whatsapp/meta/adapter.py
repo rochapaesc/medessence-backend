@@ -374,6 +374,7 @@ class MetaAdapter:
                         status=item.get("status", ""),
                         components=item.get("components", []),
                         meta_id=str(item.get("id") or ""),
+                        parameter_format=(item.get("parameter_format") or "").upper(),
                     )
                 )
             after = page.get("paging", {}).get("cursors", {}).get("after")

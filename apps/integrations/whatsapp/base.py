@@ -91,6 +91,15 @@ class Template:
     #: a clínica sem mexer justamente nos templates que ela já tem.
     meta_id: str = ""
 
+    #: `POSITIONAL` (`{{1}}`) ou `NAMED` (`{{nome}}`).
+    #:
+    #: ⚠️ Também vinha e era descartado, e o preço apareceu em produção
+    #: (18/08): template NOMEADO exige `parameter_name` em cada parâmetro, e
+    #: mandar posicional devolve `#132012 Parameter format does not match`.
+    #: O caminho é o do Chatwoot (`template_processor_service.rb`), que decide
+    #: por este campo.
+    parameter_format: str = ""
+
 
 @dataclass(frozen=True)
 class TemplateCriado:

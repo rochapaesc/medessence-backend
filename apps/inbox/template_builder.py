@@ -430,6 +430,19 @@ def montar_para_a_meta(dados: dict) -> dict:
         "category": (dados["category"] or "").upper(),
         "language": (dados["language"] or "").strip(),
         "components": componentes,
+        # ⚠️ A Meta CLASSIFICA o texto por conta própria, e sem esta chave ela
+        # RECUSA quando discorda da categoria escolhida: "Modelo de mensagem
+        # com categoria inválida", sem dizer qual seria a certa e sem deixar
+        # nada aproveitável. Aconteceu em produção (18/08) com um texto de
+        # atendimento marcado como UTILITY.
+        #
+        # Com ela, a Meta RECATEGORIZA e segue para revisão. É melhor para a
+        # clínica em todos os casos: o template existe, e a categoria real
+        # volta na sincronização (é ela que decide o preço da conversa, então
+        # a tela mostra a que a Meta gravou, não a que foi pedida).
+        #
+        # Nenhuma das três referências manda isto; é a Meta que documenta.
+        "allow_category_change": True,
     }
 
 

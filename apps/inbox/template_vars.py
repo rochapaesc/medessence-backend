@@ -23,7 +23,32 @@ import re
 from apps.inbox.choices import VariableSource
 
 #: `{{1}}`, `{{2}}` ... na ordem em que a Meta numera.
-_VARIAVEL = re.compile(r"\{\{\s*(\d+)\s*\}\}")
+#: ⚠️ Aceita `{{1}}` E `{{nome}}` (18/08). Só numérico era o formato antigo, e
+#: em template NOMEADO isso devolvia ZERO variáveis: a tela não pedia nada, o
+#: envio ia sem parâmetro e a Meta respondia `#132012 Parameter format does
+#: not match`. O nome válido é o da Meta: letras, números e sublinhado.
+_VARIAVEL = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+
+
+def _ordem(chave: str):
+    """
+    Ordena as variáveis: as numéricas por valor, as nomeadas alfabeticamente.
+
+    ⚠️ Existe porque `sorted(..., key=int)` estourava `ValueError` no primeiro
+    template nomeado que aparecesse.
+    """
+    return (0, int(chave), "") if chave.isdigit() else (1, 0, chave)
+
+
+def formato_dos_parametros(template) -> str:
+    """
+    `NAMED` ou `POSITIONAL`. Vazio ou desconhecido vale POSITIONAL, que é o
+    formato antigo e o de todo template já existente.
+
+    É o discriminador do `template_processor_service.rb` do Chatwoot, e é o
+    que decide se cada parâmetro leva `parameter_name` no envio.
+    """
+    return "NAMED" if (getattr(template, "parameter_format", "") or "").upper() == "NAMED" else "POSITIONAL"
 
 #: Os formatos de cabeçalho que exigem o component de mídia em todo envio.
 _MIDIAS = {"IMAGE", "VIDEO", "DOCUMENT"}
@@ -100,7 +125,7 @@ def variaveis_do_template(template) -> list[str]:
     formato = (cabecalho or {}).get("format") or "TEXT"
     if cabecalho and formato.upper() == "TEXT":
         achadas = {m.group(1) for m in _VARIAVEL.finditer(cabecalho.get("text") or "")}
-        chaves += [f"header:{n}" for n in sorted(achadas, key=int)]
+        chaves += [f"header:{n}" for n in sorted(achadas, key=_ordem)]
     elif cabecalho and formato.upper() in _MIDIAS:
         # ⚠️ Header de MÍDIA vai em TODO envio, mesmo sem variável e mesmo com
         # a imagem inalterada desde a aprovação: a Meta recusa a mensagem
@@ -110,7 +135,7 @@ def variaveis_do_template(template) -> list[str]:
         chaves.append("header:media")
 
     achadas = {m.group(1) for m in _VARIAVEL.finditer(corpo_do_template(template))}
-    chaves += sorted(achadas, key=int)
+    chaves += sorted(achadas, key=_ordem)
 
     # ⚠️ O índice é a posição no array INTEIRO de botões, contando os que não
     # pedem parâmetro: um quick-reply antes do URL desloca o índice, e a Meta
@@ -121,7 +146,7 @@ def variaveis_do_template(template) -> list[str]:
         tipo = (botao.get("type") or "").upper()
         if tipo == "URL":
             achadas = {m.group(1) for m in _VARIAVEL.finditer(botao.get("url") or "")}
-            chaves += [f"button:{indice}:{n}" for n in sorted(achadas, key=int)]
+            chaves += [f"button:{indice}:{n}" for n in sorted(achadas, key=_ordem)]
         elif tipo == "COPY_CODE":
             # Sempre pede valor, e o `example` do template serve de padrão:
             # o caso comum é um código promocional fixo.
@@ -266,6 +291,38 @@ def montar(template, mapa: dict, contexto: Contexto) -> str:
     return _VARIAVEL.sub(lambda m: resolvidos.get(m.group(1), ""), corpo_do_template(template))
 
 
+#: Formatos de template que ainda NÃO sabemos montar no envio. O valor é a
+#: frase que a tela mostra, porque "não suportado" não diz à recepção o que
+#: fazer.
+#:
+#: ⚠️ CAROUSEL entrou em 18/08 depois de um `#132012` ao vivo em produção: o
+#: template declara ZERO variáveis para nós (as imagens e links moram dentro
+#: dos `cards`), então a tela oferecia enviar sem pedir nada e a Meta recusava
+#: por formato. Barrar antes é melhor do que um código de erro na cara de quem
+#: atende.
+FORMATOS_SEM_SUPORTE = {
+    "CAROUSEL": (
+        "Este modelo é um carrossel, e o envio de carrossel ainda não está "
+        "pronto aqui. Escolha outro modelo."
+    ),
+}
+
+
+def motivo_de_nao_enviar(template) -> str:
+    """
+    Por que este template não pode ser enviado por aqui, em uma frase. Vazio
+    quando ele pode.
+
+    Mora ao lado do montador de propósito: quem não sabe montar é quem tem de
+    dizer que não sabe.
+    """
+    for componente in (getattr(template, "components", None) or []):
+        tipo = (componente.get("type") or "").upper()
+        if tipo in FORMATOS_SEM_SUPORTE:
+            return FORMATOS_SEM_SUPORTE[tipo]
+    return ""
+
+
 def componentes_para_a_meta(template, resolvidos: dict[str, str]) -> list | None:
     """
     Os `components` no formato que o `send_template` recebe.
@@ -283,22 +340,47 @@ def componentes_para_a_meta(template, resolvidos: dict[str, str]) -> list | None
     inteira. O valor vem em `header:media` como qualquer outra variável.
     """
 
-    def _em_ordem(prefixo: str) -> list[str]:
-        numeros = {}
+    nomeado = formato_dos_parametros(template) == "NAMED"
+
+    def _em_ordem(prefixo: str) -> list[tuple[str, str]]:
+        """
+        Os valores do bloco, como `(nome_da_variavel, valor)`.
+
+        No POSICIONAL a lista é preenchida do 1 até o maior número usado, com
+        vazio nos buracos: a Meta casa por posição, e um `{{2}}` faltando faria
+        o valor do `{{3}}` chegar no lugar dele sem erro nenhum. No NOMEADO não
+        existe buraco, porque cada parâmetro leva o próprio nome.
+        """
+        achados = {}
         for chave, valor in resolvidos.items():
             if prefixo and not chave.startswith(prefixo):
                 continue
             if not prefixo and (":" in chave):
                 continue
-            numero = chave.split(":")[-1]
-            if numero.isdigit():
-                numeros[int(numero)] = valor
+            achados[chave.split(":")[-1]] = valor
+        if not achados:
+            return []
+        if nomeado:
+            return sorted(achados.items(), key=lambda par: _ordem(par[0]))
+        numeros = {int(k): v for k, v in achados.items() if k.isdigit()}
         if not numeros:
             return []
-        return [numeros.get(i, "") for i in range(1, max(numeros) + 1)]
+        return [(str(i), numeros.get(i, "")) for i in range(1, max(numeros) + 1)]
 
-    def _texto(valores_: list[str]) -> list[dict]:
-        return [{"type": "text", "text": str(v or "")} for v in valores_]
+    def _texto(valores_: list[tuple[str, str]]) -> list[dict]:
+        """
+        ⚠️ `parameter_name` SÓ no formato nomeado, e é obrigatório nele: é o
+        que o `build_named_parameter` do Chatwoot faz. Mandar posicional para
+        template nomeado (ou o contrário) é `#132012`.
+        """
+        return [
+            (
+                {"type": "text", "parameter_name": nome, "text": str(v or "")}
+                if nomeado
+                else {"type": "text", "text": str(v or "")}
+            )
+            for nome, v in valores_
+        ]
 
     def _tipo_do_botao(indice: int) -> str:
         botoes = (_componente(template, "BUTTONS") or {}).get("buttons") or []

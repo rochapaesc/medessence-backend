@@ -62,6 +62,9 @@ class WhatsAppTemplateSerializer(ModelSerializer):
     #: lugar, para a tela mostrar o link se formando embaixo do campo. É o que
     #: evita a pessoa colar a URL inteira num lugar que só quer o final dela.
     variable_url_templates = SerializerMethodField()
+    #: Vazio quando dá para enviar; a frase do motivo quando não dá. A tela
+    #: usa para desabilitar o modelo em vez de deixar a Meta recusar depois.
+    motivo_de_nao_enviar = SerializerMethodField()
 
     class Meta:
         model = WhatsAppTemplate
@@ -75,6 +78,7 @@ class WhatsAppTemplateSerializer(ModelSerializer):
             "variables",
             "variable_labels",
             "variable_url_templates",
+            "motivo_de_nao_enviar",
             # Criado por aqui, e não só sincronizado: é o que permite editar e
             # apagar esta variante depois.
             "meta_template_id",
@@ -107,6 +111,11 @@ class WhatsAppTemplateSerializer(ModelSerializer):
 
     def get_variable_url_templates(self, obj) -> dict:
         from apps.inbox.template_vars import modelo_do_link, variaveis_do_template
+
+    def get_motivo_de_nao_enviar(self, obj) -> str:
+        from apps.inbox.template_vars import motivo_de_nao_enviar
+
+        return motivo_de_nao_enviar(obj)
 
         modelos = {
             chave: modelo_do_link(obj, chave) for chave in variaveis_do_template(obj)
@@ -201,6 +210,11 @@ class WhatsAppTemplateCreateSerializer(Serializer):
                 **comum, status="REJECTED", rejection_reason=str(exc)
             )
 
+        # ⚠️ A categoria gravada é a que a META devolveu, não a pedida: com
+        # `allow_category_change` ela recategoriza, e é a categoria dela que
+        # decide o preço da conversa e se o opt-out barra o envio. Guardar a
+        # pedida faria a tela mentir sobre as duas coisas.
+        comum["category"] = (criado.category or comum["category"]).upper()
         return WhatsAppTemplate.objects.create(
             **comum,
             status=status_normalizado(criado.status),

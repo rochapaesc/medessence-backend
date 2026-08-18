@@ -22,6 +22,14 @@ class WhatsAppTemplate(TenantScopedModel):
     status = CharField(verbose_name="Status", max_length=20, blank=True)
     components = JSONField(verbose_name="Componentes", default=list, blank=True)
 
+    #: `POSITIONAL` (`{{1}}`) ou `NAMED` (`{{nome}}`), como a Meta devolve.
+    #: Vazio = desconhecido, e aí vale posicional, que é o formato antigo.
+    #: Decide o envio: NAMED exige `parameter_name` em cada parâmetro
+    #: (RF-INB-3.4), e errar isso é `#132012`.
+    parameter_format = CharField(
+        verbose_name="Formato dos parâmetros", max_length=20, blank=True
+    )
+
     #: O id da Meta desta VARIANTE de idioma (RF-INB-3.2).
     #:
     #: ⚠️ Sem ele não dá para editar nem apagar uma variante sozinha: a Meta

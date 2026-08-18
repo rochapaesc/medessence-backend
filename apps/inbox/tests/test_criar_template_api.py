@@ -717,3 +717,209 @@ def test_atendente_pode_atualizar_a_lista(api_client, attendant_a, inbox_a, monk
     )
     api_client.force_authenticate(attendant_a)
     assert api_client.post(f"{URL}sincronizar/").status_code == 200
+
+
+@pytest.mark.django_db
+def test_sincronizar_CURA_o_canal_caido(clinic_a, inbox_a, monkeypatch):
+    """
+    ⚠️ Achado em PRODUÇÃO (18/08): a clínica trocou o token, o "Atualizar
+    agora" falou com a Meta e trouxe os templates, e o canal seguia marcado
+    como caído — com o envio bloqueado e nada na tela ligando uma coisa à
+    outra. Listar template é sucesso, e sucesso cura.
+    """
+    from django.utils import timezone
+
+    from apps.inbox.tasks import refresh_channel_templates
+    from apps.integrations.whatsapp.base import Template
+
+    canal = inbox_a["channel"]
+    canal.auth_error_count = 2
+    canal.disconnected_at = timezone.now()
+    canal.save(update_fields=["auth_error_count", "disconnected_at"])
+
+    class _Provedor:
+        def list_templates(self):
+            return [
+                Template(
+                    name="qualquer",
+                    language="pt_BR",
+                    category="UTILITY",
+                    status="APPROVED",
+                    components=[{"type": "BODY", "text": "Oi"}],
+                    meta_id="1",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Provedor(),
+    )
+    refresh_channel_templates(canal.pk)
+
+    canal.refresh_from_db()
+    assert canal.disconnected_at is None, "o canal tinha de estar curado"
+    assert canal.auth_error_count == 0
+
+
+@pytest.mark.django_db
+def test_carrossel_e_barrado_ANTES_de_gastar_chamada_a_meta(clinic_a, inbox_a):
+    """
+    ⚠️ Achado em PRODUÇÃO (18/08): o template de carrossel declara ZERO
+    variáveis para nós (imagens e links moram dentro dos `cards`), então a
+    tela oferecia enviar sem pedir nada, ia sem `components` e a Meta recusava
+    com `#132012 Parameter format does not match`. O código cru chegava à
+    recepção sem dizer o que fazer.
+    """
+    from apps.inbox.template_vars import motivo_de_nao_enviar
+
+    carrossel = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="carrossel",
+        language="pt_BR",
+        category="MARKETING",
+        status="APPROVED",
+        components=[
+            {"type": "BODY", "text": "Veja nossas ofertas"},
+            {
+                "type": "CAROUSEL",
+                "cards": [
+                    {
+                        "components": [
+                            {"type": "HEADER", "format": "IMAGE"},
+                            {"type": "BODY", "text": "Card 1"},
+                        ]
+                    }
+                ],
+            },
+        ],
+    )
+    simples = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="simples",
+        language="pt_BR",
+        category="UTILITY",
+        status="APPROVED",
+        components=[{"type": "BODY", "text": "Olá {{1}}"}],
+    )
+
+    assert "carrossel" in motivo_de_nao_enviar(carrossel).lower()
+    assert motivo_de_nao_enviar(simples) == ""
+
+
+@pytest.mark.django_db
+def test_envio_de_carrossel_falha_com_frase_e_sem_chamar_a_meta(
+    clinic_a, inbox_a, monkeypatch
+):
+    """A barreira final: sequência e nó de fluxo também passam por aqui."""
+    from apps.inbox.choices import MessageKind, MessageStatus, SenderKind
+    from apps.inbox.models import Message
+    from apps.inbox.services import send_message
+
+    WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="carrossel",
+        language="pt_BR",
+        category="MARKETING",
+        status="APPROVED",
+        components=[
+            {"type": "BODY", "text": "Ofertas"},
+            {"type": "CAROUSEL", "cards": [{"components": []}]},
+        ],
+    )
+
+    def _explode(channel):
+        raise AssertionError("não pode chamar a Meta com formato que não montamos")
+
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider", _explode
+    )
+
+    from django.utils import timezone
+
+    mensagem = Message.objects.create(
+        clinic=clinic_a,
+        conversation=inbox_a["conversation"],
+        kind=MessageKind.TEMPLATE,
+        template_name="carrossel",
+        sender_kind=SenderKind.BOT,
+        body="",
+        wa_timestamp=timezone.now(),
+    )
+    send_message(mensagem)
+
+    mensagem.refresh_from_db()
+    assert mensagem.status == MessageStatus.FAILED
+    assert "carrossel" in mensagem.status_error.lower()
+
+
+@pytest.mark.django_db
+def test_template_NOMEADO_manda_parameter_name(clinic_a):
+    """
+    ⚠️ `#132012 Parameter format does not match` em produção (18/08). A Meta
+    marca cada template com `parameter_format`, e o NOMEADO (`{{nome}}`) exige
+    `parameter_name` em cada parâmetro. O caminho é o do
+    `template_processor_service.rb` do Chatwoot.
+
+    Antes disto a regex só via `{{1}}`: template nomeado devolvia ZERO
+    variáveis, a tela não pedia nada e o envio ia vazio.
+    """
+    from apps.inbox.template_vars import componentes_para_a_meta, variaveis_do_template
+
+    nomeado = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="nomeado",
+        language="pt_BR",
+        category="UTILITY",
+        status="APPROVED",
+        parameter_format="NAMED",
+        components=[{"type": "BODY", "text": "Olá {{nome}}, dia {{data}}."}],
+    )
+
+    assert set(variaveis_do_template(nomeado)) == {"nome", "data"}
+
+    componentes = componentes_para_a_meta(nomeado, {"nome": "Ana", "data": "terça"})
+    parametros = componentes[0]["parameters"]
+    assert {p["parameter_name"] for p in parametros} == {"nome", "data"}
+    assert {p["text"] for p in parametros} == {"Ana", "terça"}
+
+
+@pytest.mark.django_db
+def test_template_POSICIONAL_nao_manda_parameter_name(clinic_a):
+    """O formato antigo não pode regredir: `parameter_name` ali é `#132012` também."""
+    from apps.inbox.template_vars import componentes_para_a_meta
+
+    posicional = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="posicional",
+        language="pt_BR",
+        category="UTILITY",
+        status="APPROVED",
+        parameter_format="POSITIONAL",
+        components=[{"type": "BODY", "text": "Olá {{1}}, dia {{2}}."}],
+    )
+
+    parametros = componentes_para_a_meta(posicional, {"1": "Ana", "2": "terça"})[0][
+        "parameters"
+    ]
+    assert parametros == [
+        {"type": "text", "text": "Ana"},
+        {"type": "text", "text": "terça"},
+    ]
+
+
+@pytest.mark.django_db
+def test_formato_vazio_vale_POSICIONAL(clinic_a):
+    """Todo template sincronizado antes de 18/08 tem o campo vazio."""
+    from apps.inbox.template_vars import componentes_para_a_meta
+
+    antigo = WhatsAppTemplate.objects.create(
+        clinic=clinic_a,
+        name="antigo",
+        language="pt_BR",
+        category="UTILITY",
+        status="APPROVED",
+        components=[{"type": "BODY", "text": "Olá {{1}}"}],
+    )
+
+    parametros = componentes_para_a_meta(antigo, {"1": "Ana"})[0]["parameters"]
+    assert parametros == [{"type": "text", "text": "Ana"}]
