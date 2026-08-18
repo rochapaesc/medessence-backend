@@ -52,13 +52,74 @@ def _verify_subscription(request):
     return HttpResponseForbidden()
 
 
-def _signature_ok(request) -> bool:
-    secret = settings.WHATSAPP_APP_SECRET
-    if not secret:
+def _segredos_possiveis(payload: dict) -> list[str]:
+    """
+    Os app secrets que podem ter assinado esta chamada, na ordem de tentativa.
+
+    Primeiro o do CANAL (em `credentials["app_secret"]`), depois o global do
+    ambiente. É o desenho do `meta_app_secrets` do Chatwoot
+    (`webhooks/whatsapp_controller.rb`), e ele existe para o caso que temos
+    aqui: um WABA compartilhado entre dois produtos, em que o secret do
+    ambiente é de OUTRO app e o número desta clínica pertence a um app
+    próprio. Sem isto, uma das duas pontas fica sem receber para sempre.
+    """
+    segredos: list[str] = []
+    for phone_id in _phone_number_ids(payload):
+        canal = Channel.objects.filter(phone_number_id=phone_id).first()
+        if canal is None:
+            continue
+        do_canal = (canal.credentials or {}).get("app_secret") or ""
+        if do_canal and do_canal not in segredos:
+            segredos.append(do_canal)
+    global_ = settings.WHATSAPP_APP_SECRET
+    if global_ and global_ not in segredos:
+        segredos.append(global_)
+    return segredos
+
+
+def _signature_ok(request, payload: dict | None = None) -> bool:
+    """
+    A assinatura da Meta bate?
+
+    ⚠️ Recusa que NÃO deixa rastro é recusa impossível de depurar (18/08, em
+    produção: "coloquei o webhook e não recebo nada", sem uma linha em lugar
+    nenhum). O 403 continua igual para quem chama; o que muda é o log daqui,
+    que diz QUAL das três coisas aconteceu. Nada de segredo no log: só se o
+    cabeçalho veio e o tamanho dele.
+    """
+    segredos = _segredos_possiveis(payload or {})
+    if not segredos:
+        logger.error(
+            "Webhook RECUSADO: nenhum app secret disponível. Configure o "
+            "WHATSAPP_APP_SECRET do ambiente, ou o `app_secret` nas "
+            "credenciais do canal desta clínica. Sem ele nada entra."
+        )
         return False  # fail closed: sem app secret não há webhook confiável
+
     header = request.headers.get("X-Hub-Signature-256", "")
-    expected = "sha256=" + hmac.new(secret.encode(), request.body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(header, expected)
+    if not header:
+        logger.warning(
+            "Webhook RECUSADO: chamada sem X-Hub-Signature-256. Ou não é a "
+            "Meta, ou algum proxy está removendo o cabeçalho."
+        )
+        return False
+
+    for segredo in segredos:
+        esperado = (
+            "sha256="
+            + hmac.new(segredo.encode(), request.body, hashlib.sha256).hexdigest()
+        )
+        if hmac.compare_digest(header, esperado):
+            return True
+
+    logger.warning(
+        "Webhook RECUSADO: assinatura não confere com nenhum dos %d app "
+        "secret(s) conhecidos (corpo de %d bytes). O secret configurado é de "
+        "OUTRO app da Meta, ou não é o app dono deste número.",
+        len(segredos),
+        len(request.body or b""),
+    )
+    return False
 
 
 def _phone_number_ids(payload: dict) -> list[str]:
@@ -93,13 +154,17 @@ def _slice_for(payload: dict, phone_number_id: str) -> dict:
 
 
 def _receive_events(request):
-    if not _signature_ok(request):
-        return HttpResponseForbidden()
-
+    # ⚠️ O corpo é lido ANTES da conferência porque o app secret pode ser o do
+    # CANAL, e achar o canal exige o `phone_number_id` de dentro do payload
+    # (é o que o Chatwoot faz). O payload não verificado serve SÓ para essa
+    # busca: nada é gravado nem processado antes da assinatura bater.
     try:
         payload = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
         payload = {"_invalid_json": request.body.decode("utf-8", "replace")[:2000]}
+
+    if not _signature_ok(request, payload):
+        return HttpResponseForbidden()
 
     phone_ids = _phone_number_ids(payload)
     if not phone_ids:

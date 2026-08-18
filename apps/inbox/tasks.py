@@ -327,14 +327,27 @@ def sincronizar_templates_da_clinica(clinic) -> int:
 
 
 def _upsert_templates(channel) -> int:
-    """O upsert em si, usado pelo beat e pelo botão de atualizar."""
+    """
+    O upsert em si, usado pelo beat e pelo botão de atualizar.
+
+    ⚠️ Listar template é chamada bem-sucedida à Meta, e por isso CURA o canal
+    (18/08). Sem isto o "Atualizar agora" funcionava, trazia os templates, e o
+    canal seguia marcado como caído: o envio continuava bloqueado depois de a
+    clínica já ter trocado o token, sem nada na tela ligando uma coisa à
+    outra. O invariante é o do `registrar_saude_do_canal`: qualquer sucesso
+    cura.
+    """
     from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.services import registrar_saude_do_canal
     from apps.inbox.template_builder import status_normalizado
     from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
     provider = get_whatsapp_provider(channel)
+    templates = provider.list_templates()
+    registrar_saude_do_canal(channel)
+
     count = 0
-    for template in provider.list_templates():
+    for template in templates:
         WhatsAppTemplate.objects.update_or_create(
             clinic=channel.clinic,
             name=template.name,
@@ -354,6 +367,9 @@ def _upsert_templates(channel) -> int:
                 # variante certa. Ele vem no `get_templates` e era jogado
                 # fora.
                 "meta_template_id": template.meta_id,
+                # ⚠️ NAMED exige `parameter_name` no envio; sem guardar isto,
+                # todo template nomeado falharia com `#132012` (RF-INB-3.4).
+                "parameter_format": template.parameter_format,
             },
         )
         count += 1

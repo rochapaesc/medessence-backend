@@ -156,3 +156,73 @@ def test_reenvio_NAO_assina_de_novo(logado, inbox_a, manager_single_clinic):
     assert assinou is False
     message.refresh_from_db()
     assert message.body == antes
+
+
+def test_app_secret_DO_CANAL_vale_alem_do_global(client, settings, clinic_a, inbox_a):
+    """
+    ⚠️ O caso do WABA COMPARTILHADO (18/08, produção): o secret do ambiente é
+    de outro produto do usuário, e o número desta clínica pertence a um app
+    próprio. Sem tentar o secret do canal, uma das duas pontas fica sem
+    receber para sempre. É o `meta_app_secrets` do Chatwoot.
+    """
+    import hashlib
+    import hmac
+    import json
+
+    settings.WHATSAPP_APP_SECRET = "segredo-do-OUTRO-app"
+    canal = inbox_a["channel"]
+    # O scaffold nasce sem `phone_number_id`, e é por ele que o webhook acha o
+    # canal para descobrir o secret dele.
+    canal.phone_number_id = "111222333"
+    canal.credentials = {**(canal.credentials or {}), "app_secret": "segredo-DESTE-app"}
+    canal.save(update_fields=["phone_number_id", "credentials"])
+
+    corpo = json.dumps(
+        {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "metadata": {"phone_number_id": canal.phone_number_id},
+                                "messages": [],
+                            }
+                        }
+                    ]
+                }
+            ],
+        }
+    ).encode()
+    assinatura = "sha256=" + hmac.new(
+        b"segredo-DESTE-app", corpo, hashlib.sha256
+    ).hexdigest()
+
+    resposta = client.post(
+        "/webhooks/whatsapp/meta/",
+        data=corpo,
+        content_type="application/json",
+        HTTP_X_HUB_SIGNATURE_256=assinatura,
+    )
+
+    assert resposta.status_code == 200, "assinado pelo app do canal, tem de entrar"
+
+
+def test_assinatura_errada_continua_recusada(client, settings, clinic_a, inbox_a):
+    """A porta não afrouxou: secret desconhecido continua 403."""
+    import hashlib
+    import hmac
+    import json
+
+    settings.WHATSAPP_APP_SECRET = "o-certo"
+    corpo = json.dumps({"object": "whatsapp_business_account", "entry": []}).encode()
+    assinatura = "sha256=" + hmac.new(b"o-errado", corpo, hashlib.sha256).hexdigest()
+
+    resposta = client.post(
+        "/webhooks/whatsapp/meta/",
+        data=corpo,
+        content_type="application/json",
+        HTTP_X_HUB_SIGNATURE_256=assinatura,
+    )
+
+    assert resposta.status_code == 403
