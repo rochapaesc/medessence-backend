@@ -208,6 +208,21 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
                     )
                 )
 
+            # Preferência de marketing (RF-SEQ-8.1). Chega no MESMO formato dos
+            # demais, numa chave própria do `value`, então entra como mais um
+            # laço: `stop` é o contato pedindo para parar promoções, `resume` é
+            # ele voltando atrás.
+            for pref in value.get("user_preferences", []) or []:
+                events.append(
+                    WhatsAppEvent(
+                        kind=WhatsAppEventKind.PREFERENCE,
+                        wa_id=pref.get("wa_id", ""),
+                        marketing_opt_out=pref.get("value") == "stop",
+                        wa_timestamp=_ts(pref.get("timestamp")),
+                        raw=pref,
+                    )
+                )
+
             for status in value.get("statuses", []) or []:
                 events.append(
                     WhatsAppEvent(

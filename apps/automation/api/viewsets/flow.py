@@ -8,7 +8,7 @@ from rest_framework.status import HTTP_400_BAD_REQUEST
 from apps.automation.api.serializers import FlowRunSerializer, FlowSerializer, FlowVersionSerializer
 from apps.automation.choices import FlowRunStatus, FlowStatus
 from apps.automation.graph import validate_graph
-from apps.automation.models import Flow, FlowRun
+from apps.automation.models import Flow, FlowRun, SequenceStep
 from apps.core.api.permissions import IsClinicManager, IsClinicMember
 from apps.core.api.viewsets import ClinicScopedModelViewSet, ClinicScopedReadOnlyViewSet
 from apps.core.mixins import AuditMixin
@@ -44,12 +44,49 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
             .annotate(
                 runs_active=Count(
                     "runs",
-                    filter=Q(runs__status=FlowRunStatus.ACTIVE, runs__deleted_at__isnull=True),
+                    filter=Q(
+                        runs__status=FlowRunStatus.ACTIVE,
+                        runs__deleted_at__isnull=True,
+                        # Execução de teste não é atendimento (RF-FLW-25.5).
+                        runs__is_test=False,
+                    ),
                     distinct=True,
                 )
             )
             .order_by("priority", "name")
         )
+
+    def perform_destroy(self, instance):
+        """
+        Apagar um fluxo tem duas guardas, e as duas falam (RF-FLW-26).
+
+        Ativo não se apaga: tem paciente podendo cair nele agora, e sumir com
+        o fluxo no meio é o robô mudo sem aviso. Despublicar primeiro é o ato
+        consciente. E fluxo que é passo de sequência não se apaga: o RESTRICT
+        do banco estouraria um 500, e a mensagem de banco não diz à clínica
+        QUAL sequência segura o fluxo.
+        """
+        if instance.status == FlowStatus.ACTIVE:
+            raise ValidationError(
+                {"detail": "Este fluxo está publicado. Despublique antes de apagar."}
+            )
+        donos = list(
+            SequenceStep.objects.filter(flow=instance)
+            .select_related("sequence")
+            .values_list("sequence__name", flat=True)
+            .distinct()
+        )
+        if donos:
+            nomes = ", ".join(sorted(set(donos)))
+            raise ValidationError(
+                {
+                    "detail": (
+                        f"Este fluxo é um passo da sequência {nomes}. "
+                        "Troque o fluxo do passo antes de apagar."
+                    )
+                }
+            )
+        super().perform_destroy(instance)
 
     @action(detail=True, methods=["post"], url_path="activate")
     def activate(self, request, pk=None):
@@ -96,6 +133,53 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
         flow.status = FlowStatus.DRAFT
         flow.save(update_fields=["status", "updated_at"])
         return Response(self.get_serializer(self.get_queryset().get(pk=flow.pk)).data)
+
+    # ------------------------------------------------------------------ #
+    # Modo de teste (RF-FLW-25): o gestor conversa com o rascunho.
+    # ------------------------------------------------------------------ #
+
+    @action(detail=True, methods=["post", "delete"], url_path="teste")
+    def teste(self, request, pk=None):
+        """POST abre ou zera a sessão; DELETE encerra e apaga o rastro."""
+        from apps.automation import teste as modo_teste
+
+        flow = self.get_object()
+        if request.method == "DELETE":
+            modo_teste.encerrar_teste(flow)
+            return Response({"detail": "Teste encerrado."})
+        return Response(modo_teste.iniciar_teste(flow))
+
+    @action(detail=True, methods=["post"], url_path="teste/falar")
+    def teste_falar(self, request, pk=None):
+        """O gestor fala como o paciente: texto, ou o toque num botão."""
+        from apps.automation import teste as modo_teste
+
+        flow = self.get_object()
+        texto = (request.data.get("texto") or "").strip()
+        botao = (request.data.get("botao") or "").strip()
+        titulo = (request.data.get("titulo") or "").strip()
+        if not texto and not botao:
+            raise ValidationError({"texto": "Diga alguma coisa, como o paciente diria."})
+        return Response(
+            modo_teste.falar_no_teste(
+                flow, texto=titulo if botao else texto, interactive_id=botao
+            )
+        )
+
+    @action(detail=True, methods=["post"], url_path="teste/comecar")
+    def teste_comecar(self, request, pk=None):
+        """Fluxo de disparo manual: o botão "Começar como a recepção"."""
+        from apps.automation import teste as modo_teste
+
+        flow = self.get_object()
+        return Response(modo_teste.comecar_manual(flow))
+
+    @action(detail=True, methods=["post"], url_path="teste/pular-espera")
+    def teste_pular_espera(self, request, pk=None):
+        from apps.automation import teste as modo_teste
+
+        flow = self.get_object()
+        return Response(modo_teste.pular_espera(flow))
 
     @action(detail=True, methods=["get"], url_path="versions")
     def versions(self, request, pk=None):

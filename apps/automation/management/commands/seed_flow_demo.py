@@ -26,7 +26,7 @@ from django.utils import timezone
 
 from apps.automation.choices import FlowNodeType, FlowStatus, FlowTrigger
 from apps.automation.graph import validate_graph
-from apps.automation.models import Flow, FlowVersion
+from apps.automation.models import Flow, FlowVersion, Sequence
 from apps.inbox.models import ConversationLabel
 from apps.tenants.models import Clinic
 
@@ -34,6 +34,8 @@ NOME = "Agendamento (demonstração)"
 NOME_COMPLETO = "Validação completa (todos os passos)"
 NOME_SIMPLES = "Teste rápido"
 ETIQUETA = "Agendamento"
+# Alvo dos nós de sequência no fluxo de validação (RF-SEQ-3.1).
+SEQUENCIA = "Pós-consulta (demonstração)"
 
 
 def _no(node_id, tipo, rotulo, x=0, y=0, **config):
@@ -242,9 +244,9 @@ def montar_grafo_simples(label_id):
     return {"entry_node": "inicio", "nodes": nodes, "edges": edges}
 
 
-def montar_grafo_completo(label_id):
+def montar_grafo_completo(label_id, sequence_id=None):
     """
-    Fluxo de validação: usa os DOZE tipos de nó da v1, cada um pelo menos uma
+    Fluxo de validação: usa os QUATORZE tipos de nó, cada um pelo menos uma
     vez, com ramificação de verdade.
 
     Serve para exercitar o canvas inteiro (todo tipo de cartão, toda forma de
@@ -262,8 +264,10 @@ def montar_grafo_completo(label_id):
                         │         └─ o dia é hoje?
                         │              ├─ sim → recepção (é urgência)
                         │              └─ não → etiqueta → confirmação
-                        │                        └─ espera 1 dia → lembrete → fim
-                        ├─ Exames → manda o preparo em PDF → fim
+                        │                        └─ espera 1 dia → lembrete
+                        │                             └─ inscreve na trilha → fim
+                        ├─ Exames → manda o preparo em PDF
+                        │    └─ sai da trilha (já resolveu) → fim
                         └─ Falar com atendente → recepção
     """
     nodes = [
@@ -377,7 +381,17 @@ def montar_grafo_completo(label_id):
             360,
             template_name="lembrete_retorno",
         ),
-        _no("fim_agendamento", FlowNodeType.END, "Fim", 3740, 360),
+        # F3 (RF-SEQ-3.1): quem marcou consulta entra na trilha de pós-consulta;
+        # quem só queria o preparo sai dela, se estava dentro.
+        _no(
+            "entra_na_trilha",
+            FlowNodeType.ENROLL_SEQUENCE,
+            "Inscrever no pós-consulta",
+            3740,
+            360,
+            sequence_id=sequence_id,
+        ),
+        _no("fim_agendamento", FlowNodeType.END, "Fim", 4100, 360),
         _no(
             "preparo",
             FlowNodeType.SEND_MEDIA,
@@ -387,7 +401,15 @@ def montar_grafo_completo(label_id):
             media_url="https://exemplo.com/preparo-de-exames.pdf",
             caption="Aqui está o preparo dos exames mais pedidos. 📄",
         ),
-        _no("fim_exames", FlowNodeType.END, "Fim", 1720, 600),
+        _no(
+            "sai_da_trilha",
+            FlowNodeType.UNENROLL_SEQUENCE,
+            "Remover do pós-consulta",
+            1720,
+            580,
+            sequence_id=sequence_id,
+        ),
+        _no("fim_exames", FlowNodeType.END, "Fim", 2080, 600),
         _no(
             "atendente",
             FlowNodeType.HANDOFF,
@@ -414,8 +436,10 @@ def montar_grafo_completo(label_id):
         _liga("marca", "confirma"),
         _liga("confirma", "espera"),
         _liga("espera", "lembrete"),
-        _liga("lembrete", "fim_agendamento"),
-        _liga("preparo", "fim_exames"),
+        _liga("lembrete", "entra_na_trilha"),
+        _liga("entra_na_trilha", "fim_agendamento"),
+        _liga("preparo", "sai_da_trilha"),
+        _liga("sai_da_trilha", "fim_exames"),
     ]
     return {"entry_node": "inicio", "nodes": nodes, "edges": edges}
 
@@ -460,13 +484,23 @@ class Command(BaseCommand):
         etiqueta, _ = ConversationLabel.objects.get_or_create(
             clinic=clinic, name=ETIQUETA, defaults={"color": "#12A150"}
         )
-        montador = (
-            montar_grafo_simples
-            if simples
-            else (montar_grafo_completo if completo else montar_grafo)
-        )
-        graph = montador(etiqueta.pk)
+        if completo:
+            # O fluxo de validação exercita os nós de sequência (RF-SEQ-3.1), e
+            # o validador cobra que a sequência EXISTA nesta clínica. Ela nasce
+            # desligada e sem passo: aqui ela é alvo de nó, não trilha a rodar.
+            trilha, _ = Sequence.objects.get_or_create(
+                clinic=clinic, name=SEQUENCIA, defaults={"is_active": False}
+            )
+            graph = montar_grafo_completo(etiqueta.pk, trilha.pk)
+        elif simples:
+            graph = montar_grafo_simples(etiqueta.pk)
+        else:
+            graph = montar_grafo(etiqueta.pk)
 
+        # Sem a clínica de propósito: com ela o validador cobra também que os
+        # templates estejam aprovados na conta da Meta, e o fluxo semeado é
+        # exemplo, não envio. A checagem completa acontece no `--ativar`, pela
+        # API, que é onde ela importa.
         problemas = validate_graph(graph)
         if problemas:
             # O fluxo semeado é o exemplo que o cliente vê primeiro: se ele

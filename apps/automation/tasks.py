@@ -180,3 +180,78 @@ def sweep_flow_runs():
     if any(stats.values()):
         logger.info("sweep_flow_runs: %s", stats)
     return stats
+
+
+# Teto de inscrições enfileiradas por varredura. Existe por causa do lote
+# (RF-SEQ-9): inscrever 1.891 pacientes de uma vez põe muita gente com o mesmo
+# `next_dispatch_at`, e despejar tudo num tick só afogaria a fila de saída. O
+# que sobra volta no minuto seguinte, e o corte é BARULHENTO de propósito -
+# teto que corta calado faz o gestor achar que a sequência morreu.
+MAX_DISPAROS_POR_VARREDURA = 300
+
+
+@shared_task(queue="automation")
+def sweep_sequences():
+    """
+    Varredura de minuto das sequências (§4.4, RF-SEQ-5).
+
+    Só seleciona e enfileira: quem resolve é uma task por inscrição, porque
+    disparar envolve falar com a Meta e uma lenta não pode segurar as outras.
+    A trava contra varreduras sobrepostas mora no `resolver_disparo`, num
+    UPDATE condicionado - aqui não há estado para proteger.
+
+    É a MESMA varredura de minuto do `sweep_flow_runs` no sentido do RF-FLW-20
+    (um relógio para os dois motores), mas task própria: elas olham tabelas
+    diferentes e nada ganhariam disputando as mesmas linhas.
+    """
+    from apps.automation.choices import SequenceEnrollmentStatus
+    from apps.automation.models import SequenceEnrollment
+
+    agora = timezone.now()
+    vencidas = list(
+        SequenceEnrollment.objects.filter(
+            status=SequenceEnrollmentStatus.ACTIVE,
+            next_dispatch_at__lte=agora,
+            sequence__is_active=True,
+            # ⚠️ O `delete()` do projeto é SOFT, e uma sequência apagada
+            # continua com `is_active=True`. Sem esta linha, apagar a trilha
+            # deixava as inscrições disparando. O gerenciador padrão filtra o
+            # `deleted_at` da INSCRIÇÃO, não o do que ela referencia.
+            sequence__deleted_at__isnull=True,
+        )
+        .order_by("next_dispatch_at")
+        .values_list("pk", flat=True)[: MAX_DISPAROS_POR_VARREDURA + 1]
+    )
+
+    truncou = len(vencidas) > MAX_DISPAROS_POR_VARREDURA
+    if truncou:
+        vencidas = vencidas[:MAX_DISPAROS_POR_VARREDURA]
+        logger.warning(
+            "sweep_sequences: mais de %s disparos vencidos neste tick; o teto foi "
+            "aplicado e o resto sai no próximo minuto",
+            MAX_DISPAROS_POR_VARREDURA,
+        )
+
+    for pk in vencidas:
+        resolver_disparo_da_sequencia.delay(pk)
+
+    if vencidas:
+        logger.info("sweep_sequences: %s enfileirados", len(vencidas))
+    return {"enfileirados": len(vencidas), "truncou": truncou}
+
+
+@shared_task(queue="automation")
+def resolver_disparo_da_sequencia(enrollment_id: int):
+    """
+    Resolve UM passo vencido (RF-SEQ-5). Uma task por inscrição.
+
+    ⚠️ Sem retry automático de propósito: o relógio da própria inscrição já é
+    o retry. A reserva empurra `next_dispatch_at` cinco minutos para frente
+    antes de qualquer coisa, então um worker que morra no meio faz o passo
+    voltar sozinho na varredura seguinte, sem risco de disparo duplo.
+    """
+    from apps.automation.sequences import resolver_disparo
+
+    resultado = resolver_disparo(enrollment_id)
+    logger.info("resolver_disparo(%s): %s", enrollment_id, resultado)
+    return resultado

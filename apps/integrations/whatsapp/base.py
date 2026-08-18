@@ -19,6 +19,10 @@ class WhatsAppEventKind:
     INBOUND = "inbound"  # mensagem recebida do contato
     STATUS = "status"  # atualização de entrega de uma mensagem OUT
     ECHO = "echo"  # mensagem OUT enviada pelo app do celular (coexistência)
+    # Preferência de marketing (RF-SEQ-8.1): o contato apertou o botão nativo
+    # de parar promoções que a Meta põe nos modelos MARKETING. Não é mensagem
+    # e não vira balão - muda um campo do contato.
+    PREFERENCE = "preference"
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,8 @@ class WhatsAppEvent:
     reply_to_provider_id: str = ""
     status: str = ""  # para kind=STATUS: sent/delivered/read/failed
     status_error: str = ""  # para status=failed: motivo legível (errors[] da Meta)
+    # para kind=PREFERENCE: True quando o contato pediu para PARAR (RF-SEQ-8.1)
+    marketing_opt_out: bool = False
     wa_timestamp: datetime | None = None  # aware
     contact_name: str = ""
     raw: dict = field(default_factory=dict)

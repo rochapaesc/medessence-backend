@@ -24,6 +24,17 @@ class Contact(TenantScopedModel):
         help_text="E.164 sem '+' (formato Meta).",
     )
     display_name = CharField(verbose_name="Nome no WhatsApp", max_length=160, blank=True)
+    marketing_opt_out = BooleanField(
+        verbose_name="Pediu para não receber promoções",
+        default=False,
+        help_text=(
+            "RF-SEQ-8. Sai do botão nativo da Meta nos modelos de marketing "
+            "(webhook `user_preferences`) ou da mão da equipe. O pedido é do "
+            "NÚMERO: se dois pacientes usam o mesmo aparelho, a casa pediu "
+            "para parar. Barra sequência de marketing e modelo MARKETING; "
+            "confirmação de consulta continua saindo."
+        ),
+    )
 
     class Meta:
         verbose_name = "Contato"

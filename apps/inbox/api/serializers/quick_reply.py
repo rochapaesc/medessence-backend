@@ -175,7 +175,9 @@ class WhatsAppTemplateCreateSerializer(Serializer):
                 "neste idioma."
             )
 
-        channel = Channel.objects.filter(clinic=clinic).first()
+        # ⚠️ Nunca o canal de teste (RF-FLW-25.5): criar template por ele
+        # "daria certo" no FAKE e nada chegaria à revisão da Meta.
+        channel = Channel.objects.filter(clinic=clinic, is_test=False).first()
         if channel is None:
             raise ValidationError(
                 "Esta clínica não tem canal de WhatsApp configurado."

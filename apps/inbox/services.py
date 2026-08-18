@@ -108,7 +108,7 @@ def apply_message_to_conversation(message, *, created: bool) -> None:
 def ingest_events(channel, events) -> dict:
     """Aplica uma lista de `WhatsAppEvent` normalizados. Idempotente: reentrega
     do webhook não duplica (unique clinic+wamid) nem recontagem."""
-    stats = {"inbound": 0, "echo": 0, "status": 0, "ignored": 0}
+    stats = {"inbound": 0, "echo": 0, "status": 0, "preference": 0, "ignored": 0}
     for event in events:
         if event.kind == WhatsAppEventKind.INBOUND:
             stats["inbound"] += bool(_ingest_message(channel, event, SenderKind.CONTACT))
@@ -116,9 +116,33 @@ def ingest_events(channel, events) -> dict:
             stats["echo"] += bool(_ingest_message(channel, event, SenderKind.AGENT))
         elif event.kind == WhatsAppEventKind.STATUS:
             stats["status"] += bool(_apply_status(channel, event))
+        elif event.kind == WhatsAppEventKind.PREFERENCE:
+            stats["preference"] += bool(_apply_preference(channel, event))
         else:
             stats["ignored"] += 1
     return stats
+
+
+def _apply_preference(channel, event) -> bool:
+    """
+    O contato apertou o botão nativo de parar (ou voltar a receber) promoções.
+
+    Pedir para parar CANCELA as inscrições de marketing dele (RF-SEQ-8.2); as
+    operacionais seguem, porque parar promoção não é parar de confirmar
+    consulta. Voltar atrás só reabre a porta: não ressuscita trilha cancelada,
+    que seria decisão nossa sobre coisa que a pessoa não pediu.
+    """
+    from apps.automation.sequences import aplicar_opt_out
+
+    contact = _resolver_contato(channel.clinic, event)
+    if contact.marketing_opt_out == event.marketing_opt_out:
+        return False
+
+    contact.marketing_opt_out = event.marketing_opt_out
+    contact.save(update_fields=["marketing_opt_out", "updated_at"])
+    if event.marketing_opt_out:
+        aplicar_opt_out(contact)
+    return True
 
 
 def _resolver_contato(clinic, event):
@@ -206,7 +230,9 @@ def iniciar_conversa(clinic, user, *, patient=None, phone=None):
     from apps.patients.phone import canonizar_telefone, pode_ser_celular
     from apps.patients.vinculos import contato_do_numero, vincular
 
-    channel = Channel.objects.filter(clinic=clinic).first()
+    # ⚠️ Nunca o canal de teste (RF-FLW-25.5): um disparo de sequência caindo
+    # nele "enviaria" para o nada e a clínica acharia que o paciente recebeu.
+    channel = Channel.objects.filter(clinic=clinic, is_test=False).first()
     if channel is None:
         raise ConversaSemDestino("Esta clínica não tem canal de WhatsApp configurado.")
 
@@ -264,6 +290,46 @@ def iniciar_conversa(clinic, user, *, patient=None, phone=None):
         )
         notify_conversation_updated_on_commit(conversation)
     return conversation, created
+
+
+def conversa_para_disparo(clinic, contact):
+    """
+    A conversa que a SEQUÊNCIA usa para disparar um fluxo (RF-SEQ-1.1).
+
+    É irmã do `iniciar_conversa`, com uma diferença que é o ponto inteiro: lá a
+    conversa nasce COM DONO (quem clicou fica com ela), e aqui nasce LIVRE,
+    porque o robô só toma a caneta de quem não tem ninguém (`_claim_for_bot`
+    exige `attended_by = none`). Nascer atribuída faria todo disparo de
+    sequência falhar em silêncio.
+
+    ⚠️ Quem chama tem de estar dentro de uma transação que desfaz tudo se a
+    tomada não vier (é o que `sequences._disparar` faz): senão um disparo
+    adiado deixa conversa vazia na fila da recepção, sem uma mensagem sequer.
+    """
+    from apps.inbox.models import Channel, Conversation
+
+    # ⚠️ Nunca o canal de teste (RF-FLW-25.5).
+    channel = Channel.objects.filter(clinic=clinic, is_test=False).first()
+    if channel is None:
+        raise ConversaSemDestino("Esta clínica não tem canal de WhatsApp configurado.")
+
+    principal = (
+        contact.patient_contacts.order_by("-is_primary", "pk")
+        .select_related("patient")
+        .first()
+    )
+    conversation, _ = Conversation.objects.get_or_create(
+        clinic=clinic,
+        channel=channel,
+        contact=contact,
+        defaults={
+            "patient": principal.patient if principal else None,
+            "status": ConversationStatus.WAITING,
+            "attended_by": AttendedBy.NONE,
+            "waiting_since": timezone.now(),
+        },
+    )
+    return conversation
 
 
 MOTIVO_CREDENCIAL = "Canal do WhatsApp desconectado. Avise o suporte para reconectar."
@@ -810,6 +876,32 @@ def _enviar_anexo(provider, to: str, message):
     )
 
 
+def _barrado_por_opt_out(message) -> bool:
+    """
+    Este envio esbarra no opt-out do contato? (RF-SEQ-8.2)
+
+    Só modelo de categoria MARKETING. Texto livre não entra: ele só existe
+    dentro da janela de 24h, ou seja, numa conversa que o próprio paciente
+    reabriu - barrar ali seria a recepção sem conseguir responder quem
+    escreveu.
+    """
+    from apps.inbox.models import WhatsAppTemplate
+
+    if message.kind != MessageKind.TEMPLATE or not message.template_name:
+        return False
+    if not message.conversation.contact.marketing_opt_out:
+        return False
+    categoria = (
+        WhatsAppTemplate.objects.filter(
+            clinic_id=message.clinic_id, name=message.template_name
+        )
+        .values_list("category", flat=True)
+        .first()
+        or ""
+    )
+    return categoria.upper() == "MARKETING"
+
+
 def send_message(message) -> None:
     """Envia uma mensagem OUT pendente pelo provider do canal e grava o wamid
     e o status. Chamado pela task `send_whatsapp_message`."""
@@ -817,6 +909,16 @@ def send_message(message) -> None:
     # enfileirada para ela, mas o custo do erro é o paciente ler comentário da
     # equipe — a guarda fica também aqui, no ponto onde a mensagem SAI.
     if message.is_internal:
+        return
+    # Barreira do opt-out (RF-SEQ-8.2), no mesmo ponto e pelo mesmo motivo: o
+    # pedido de parar promoção tem de valer venha o disparo de onde vier
+    # (sequência, campanha de resgate, nó de fluxo ou mão da recepção), e só
+    # aqui todos os caminhos se encontram. Barra MARKETING; modelo utilitário
+    # de confirmação continua saindo.
+    if _barrado_por_opt_out(message):
+        message.status = MessageStatus.FAILED
+        message.status_error = "Este contato pediu para não receber mensagens de marketing."
+        message.save(update_fields=["status", "status_error", "updated_at"])
         return
     from apps.integrations.whatsapp.exceptions import (
         WhatsAppError,

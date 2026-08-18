@@ -79,6 +79,10 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         return (
             super()
             .get_queryset()
+            # A conversa do MODO DE TESTE de fluxo não existe para o Inbox
+            # (RF-FLW-25.5): aparecer aqui faria a recepção responder um
+            # paciente que não existe.
+            .exclude(channel__is_test=True)
             .prefetch_related("labels")
             .order_by(F("last_message_at").desc(nulls_last=True))
         )

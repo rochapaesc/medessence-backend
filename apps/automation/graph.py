@@ -303,7 +303,30 @@ def _check_config(node: Node, clinic=None) -> list[str]:
     elif node.type == FlowNodeType.WAIT and not (cfg.get("amount") or 0) > 0:
         problems.append(f"{onde} não tem tempo de espera.")
 
+    elif node.type in (FlowNodeType.ENROLL_SEQUENCE, FlowNodeType.UNENROLL_SEQUENCE):
+        problems.extend(_problemas_da_sequencia(cfg, onde, clinic))
+
     return problems
+
+
+def _problemas_da_sequencia(cfg: dict, onde: str, clinic) -> list[str]:
+    """
+    O nó aponta para uma sequência que existe nesta clínica?
+
+    Cobra na ATIVAÇÃO, e não na hora do disparo, pelo mesmo motivo do nó de
+    template: erro que só aparece com o paciente do outro lado é erro que a
+    clínica descobre tarde.
+    """
+    from apps.automation.models import Sequence
+
+    sequence_id = cfg.get("sequence_id")
+    if not sequence_id:
+        return [f"{onde} não tem sequência escolhida."]
+    if clinic is None:
+        return []
+    if not Sequence.objects.filter(pk=sequence_id, clinic=clinic).exists():
+        return [f"{onde} aponta para uma sequência que não existe nesta clínica."]
+    return []
 
 
 def _has_cycle_without_wait(graph: FlowGraph) -> bool:

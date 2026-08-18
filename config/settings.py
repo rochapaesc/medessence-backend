@@ -418,6 +418,13 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.automation.tasks.sweep_flow_runs",
         "schedule": crontab(minute="*"),
     },
+    # Sequências (F3, RF-SEQ-5): passo vencido dispara o fluxo dele. Um minuto
+    # porque o `send_time` do passo promete hora certa, e porque o lote desliza
+    # os disparos minuto a minuto.
+    "sweep-sequences": {
+        "task": "apps.automation.tasks.sweep_sequences",
+        "schedule": crontab(minute="*"),
+    },
 }
 
 

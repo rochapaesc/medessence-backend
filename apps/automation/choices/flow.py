@@ -85,6 +85,11 @@ class FlowNodeType(TextChoices):
     WAIT = "wait", "Aguardar"
     HANDOFF = "handoff", "Transferir para humano"
     END = "end", "Fim"
+    # F3 (RF-SEQ-3.1): ação instantânea, como marcar etiqueta - não falam com o
+    # paciente e não esperam resposta. É por aqui que o robô coloca alguém numa
+    # trilha depois de entender o que a pessoa quer.
+    ENROLL_SEQUENCE = "enroll_sequence", "Inscrever na sequência"
+    UNENROLL_SEQUENCE = "unenroll_sequence", "Remover da sequência"
 
 
 # Nós que encerram o ramo: não têm saída, e aresta partindo deles é defeito
@@ -116,6 +121,12 @@ class FlowRunEventType(TextChoices):
     REPROMPT = "reprompt", "Repetiu a pergunta"
     HANDOFF = "handoff", "Entregou a um humano"
     ENDED = "ended", "Terminou"
+    # Os três abaixo entraram com o modo de teste (RF-FLW-25.3), mas valem em
+    # produção também: são o "o que o fluxo fez" que a linha do tempo não
+    # contava (guardou o quê, marcou o quê, mexeu em qual sequência).
+    VAR_SAVED = "var_saved", "Guardou uma resposta"
+    LABEL_APPLIED = "label_applied", "Marcou etiqueta"
+    SEQUENCE_APPLIED = "sequence_applied", "Mexeu numa sequência"
 
 
 # ---- condições de aresta (RF-FLW-2) ----

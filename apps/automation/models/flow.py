@@ -194,6 +194,11 @@ class FlowRun(TenantScopedModel):
     sexta e ainda está esperando resposta no sábado de manhã.
     """
 
+    # Execução do MODO DE TESTE (RF-FLW-25.5): fora do contador de execuções
+    # ativas e de qualquer medição. O flag fica na execução, e não só no canal,
+    # para a exclusão não depender de um join que alguém esquece.
+    is_test = BooleanField(verbose_name="Execução de teste", default=False)
+
     flow = ForeignKey(
         Flow,
         verbose_name="Fluxo",

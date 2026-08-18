@@ -2,6 +2,7 @@ import secrets
 import uuid
 
 from django.db.models import (
+    BooleanField,
     CharField,
     DateTimeField,
     PositiveIntegerField,
@@ -48,6 +49,11 @@ class Channel(TenantScopedModel):
     display_number = CharField(verbose_name="Número exibido", max_length=20, blank=True)
     credentials = EncryptedJSONField(verbose_name="Credenciais", default=dict)
 
+    # Canal interno do MODO DE TESTE de fluxo (RF-FLW-25.1). Provider FAKE,
+    # invisível para o Inbox e nunca escolhido para disparo: existe para a
+    # conversa de teste ter onde viver sem alcançar ninguém.
+    is_test = BooleanField(verbose_name="Canal de teste", default=False)
+
     # ------------------- saúde do canal (item 2 do fechamento) -------------
     # Desenho do `Reauthorizable` do Chatwoot: erro de credencial CONTA, e só
     # ao bater o limiar o canal é dado como morto. Um 401 isolado é blip da
@@ -65,10 +71,12 @@ class Channel(TenantScopedModel):
         verbose_name = "Canal"
         verbose_name_plural = "Canais"
         constraints = [
-            # Um canal por clínica entre registros vivos (soft delete não bloqueia recriação).
+            # Um canal DE VERDADE por clínica entre registros vivos (soft
+            # delete não bloqueia recriação). O canal interno de teste
+            # (RF-FLW-25.1) fica fora da conta: ele coexiste com o real.
             UniqueConstraint(
                 fields=["clinic"],
-                condition=Q(deleted_at__isnull=True),
+                condition=Q(deleted_at__isnull=True, is_test=False),
                 name="one_channel_per_clinic",
             ),
         ]

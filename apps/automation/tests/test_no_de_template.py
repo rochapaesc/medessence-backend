@@ -426,7 +426,7 @@ def test_o_motor_manda_TEMPLATE_e_nao_texto_livre(clinic_a, template):
     combinação de motor e envio, e cada lado testado sozinho passava.
     """
     from apps.automation.engine import start_run
-    from apps.automation.tests.conftest import make_conversation, make_contact, make_flow
+    from apps.automation.tests.conftest import make_contact, make_conversation, make_flow
 
     fluxo = make_flow(
         clinic_a,

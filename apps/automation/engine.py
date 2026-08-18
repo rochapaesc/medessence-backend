@@ -35,6 +35,7 @@ from apps.automation.choices import (
     FlowNodeType,
     FlowRunEventType,
     FlowRunStatus,
+    SequenceEnrollmentStatus,
 )
 from apps.automation.graph import FlowGraph
 from apps.automation.models import FlowRun, FlowRunEvent
@@ -453,7 +454,11 @@ def _execute(node, run, conversation):
         return _eval_condition(node, run)
 
     if node.type == FlowNodeType.SET_LABEL:
-        _apply_label(node, conversation)
+        _apply_label(node, run, conversation)
+        return EDGE_DEFAULT
+
+    if node.type in (FlowNodeType.ENROLL_SEQUENCE, FlowNodeType.UNENROLL_SEQUENCE):
+        _apply_sequence(node, run, conversation)
         return EDGE_DEFAULT
 
     if node.type == FlowNodeType.WAIT:
@@ -492,7 +497,65 @@ def _wake_at(cfg):
     return timezone.now() + timedelta(seconds=quantidade * segundos)
 
 
-def _apply_label(node, conversation):
+def _apply_sequence(node, run, conversation):
+    """
+    Inscreve ou remove da sequência (RF-SEQ-3.1). Ação instantânea, como
+    marcar etiqueta: não fala com o paciente e não espera resposta.
+
+    ⚠️ Nunca estoura. Sequência apagada, contato com opt-out ou inscrição que
+    já existia são todos NO-OP, e a razão é o RF-FLW-21: exceção aqui derruba
+    o avanço inteiro do fluxo, e a conversa do paciente vale mais do que a
+    inscrição numa trilha. O que não deu certo vira log, não erro.
+    """
+    from apps.automation.choices import EnrollmentEndReason, EnrollmentSource
+    from apps.automation.models import Sequence, SequenceEnrollment
+    from apps.automation.sequences import inscrever, remover
+
+    sequence = Sequence.objects.filter(
+        pk=node.config.get("sequence_id"), clinic=conversation.clinic
+    ).first()
+    if sequence is None:
+        logger.warning("Nó %s aponta para sequência inexistente", node.id)
+        return
+
+    entrar = node.type == FlowNodeType.ENROLL_SEQUENCE
+    if run.is_test:
+        # RF-FLW-25.4: no teste a sequência é ANUNCIADA, nunca executada.
+        # Inscrever o contato de teste numa trilha real apareceria no painel
+        # dela como uma pessoa a mais, e a varredura ainda dispararia para ele.
+        _log(
+            run,
+            FlowRunEventType.SEQUENCE_APPLIED,
+            node.id,
+            {"sequence": sequence.name, "acao": "entrar" if entrar else "sair", "anunciado": True},
+        )
+        return
+
+    _log(
+        run,
+        FlowRunEventType.SEQUENCE_APPLIED,
+        node.id,
+        {"sequence": sequence.name, "acao": "entrar" if entrar else "sair", "anunciado": False},
+    )
+    if entrar:
+        inscrever(
+            sequence,
+            conversation.contact,
+            source=EnrollmentSource.FLOW_NODE,
+            patient=conversation.patient,
+        )
+        return
+
+    ativa = SequenceEnrollment.objects.filter(
+        sequence=sequence,
+        contact=conversation.contact,
+        status=SequenceEnrollmentStatus.ACTIVE,
+    ).first()
+    if ativa is not None:
+        remover(ativa, reason=EnrollmentEndReason.FLOW_NODE)
+
+
+def _apply_label(node, run, conversation):
     """
     RF-FLW-13.1 - `ConversationLabel`, NUNCA `patients.Tag`.
 
@@ -506,6 +569,7 @@ def _apply_label(node, conversation):
     ).first()
     if label:
         conversation.labels.add(label)
+        _log(run, FlowRunEventType.LABEL_APPLIED, node.id, {"label": label.name})
 
 
 def _estourou_o_teto_de_falas(run) -> bool:
@@ -694,7 +758,7 @@ def advance(run, *, from_outcome: str | None = None) -> None:
 # --------------------------------------------------------------------- #
 
 
-def start_run(flow, conversation, *, by_user=None) -> FlowRun | None:
+def start_run(flow, conversation, *, by_user=None, is_test=False) -> FlowRun | None:
     """
     Começa uma execução para o contato desta conversa.
 
@@ -730,6 +794,10 @@ def start_run(flow, conversation, *, by_user=None) -> FlowRun | None:
                 contact=conversation.contact,
                 conversation=conversation,
                 current_node=entry,
+                # ⚠️ No create, e não depois: o primeiro avanço acontece ainda
+                # dentro do start_run, e um nó de sequência logo após o início
+                # leria o flag errado (RF-FLW-25.4).
+                is_test=is_test,
             )
     except IntegrityError:
         # A trava do banco (RF-FLW-6): outra entrega do mesmo webhook chegou
@@ -846,6 +914,7 @@ def on_inbound(conversation, message) -> bool:
             # Grava já: o que o paciente respondeu não pode depender de o
             # avanço seguinte chegar a um nó de espera para ser persistido.
             run.save(update_fields=["vars", "updated_at"])
+            _log(run, FlowRunEventType.VAR_SAVED, node.id, {"chave": chave, "valor": texto})
         outcome = EDGE_DEFAULT
     else:
         outcome = EDGE_DEFAULT
@@ -891,6 +960,7 @@ def _guardar_escolha(run, node, escolha: str, texto: str, chave_das_opcoes: str)
     # do que variável vazia numa nota que alguém vai ler.
     run.vars = {**(run.vars or {}), chave: titulo or texto}
     run.save(update_fields=["vars", "updated_at"])
+    _log(run, FlowRunEventType.VAR_SAVED, node.id, {"chave": chave, "valor": titulo or texto})
 
 
 def _reprompt(run, node, conversation):

@@ -118,7 +118,9 @@ class WhatsAppTemplateViewSet(AuditMixin, ClinicScopedModelViewSet):
         from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
         if instance.meta_template_id:
-            channel = Channel.objects.filter(clinic=instance.clinic).first()
+            channel = Channel.objects.filter(
+                clinic=instance.clinic, is_test=False
+            ).first()
             if channel is None:
                 raise ValidationError(
                     "Esta clínica não tem canal de WhatsApp configurado, então "

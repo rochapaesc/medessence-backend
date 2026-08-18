@@ -319,7 +319,8 @@ def sincronizar_templates_da_clinica(clinic) -> int:
     """
     from apps.inbox.models import Channel
 
-    channel = Channel.objects.filter(clinic=clinic).first()
+    # Nunca o canal de teste (RF-FLW-25.5): sincronizar por ele não acha nada.
+    channel = Channel.objects.filter(clinic=clinic, is_test=False).first()
     if channel is None:
         return 0
     return _upsert_templates(channel)
