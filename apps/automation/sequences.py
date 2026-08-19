@@ -950,9 +950,35 @@ def _disparar(enrollment, step, previsto) -> str:
         # ⚠️ A anotação do "segurando" acontece FORA do bloco que foi desfeito:
         # ela precisa sobreviver ao rollback, senão o painel não teria o que
         # mostrar ao lado da hora que já passou.
-        return _segurar(enrollment, adiar.motivo)
+        resultado = _segurar(enrollment, adiar.motivo)
+        # RF-SEQ-5.5: quem está com a conversa precisa saber que segura uma
+        # campanha, e a espera nasce aqui, na varredura de minuto - a tela que
+        # já está aberta não saberia de nada sem este aviso.
+        #
+        # ⚠️ Só o `busy`. `no_window` pode ter acabado de criar a conversa
+        # dentro do bloco desfeito, e avisar sobre uma conversa que o rollback
+        # levou seria falar de algo que não existe; além de não ser problema de
+        # quem atende, que é o que o RF recorta.
+        if adiar.motivo == HoldReason.BUSY:
+            _avisar_a_tela(conversation)
+        return resultado
+    tinha_espera = bool(enrollment.hold_reason)
     _soltar(enrollment)
+    # Soltou: a faixa tem de sair da tela. Sem isto ela ficaria até a próxima
+    # carga, porque o evento da mensagem que acabou de sair NÃO carrega o campo.
+    if tinha_espera:
+        _avisar_a_tela(conversation)
     return "disparado"
+
+
+def _avisar_a_tela(conversation) -> None:
+    """Manda a espera desta conversa para quem está com o Inbox aberto."""
+    from apps.automation.sequence_holds import espera_da_conversa
+    from apps.inbox.realtime import notify_conversation_updated_on_commit
+
+    notify_conversation_updated_on_commit(
+        conversation, sequencias_segurando=espera_da_conversa(conversation)
+    )
 
 
 class _AdiarDisparo(Exception):

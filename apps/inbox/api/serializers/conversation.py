@@ -19,6 +19,7 @@ class ConversationSerializer(ModelSerializer):
     window_open = SerializerMethodField()
     assigned_to_name = SerializerMethodField()
     labels = ConversationLabelSummarySerializer(many=True, read_only=True)
+    sequencias_segurando = SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -44,6 +45,7 @@ class ConversationSerializer(ModelSerializer):
             "priority",
             "labels",
             "team",
+            "sequencias_segurando",
         ]
 
     def get_patient_name(self, obj):
@@ -54,3 +56,27 @@ class ConversationSerializer(ModelSerializer):
 
     def get_assigned_to_name(self, obj):
         return obj.assigned_to.get_full_name() if obj.assigned_to_id else ""
+
+    def get_sequencias_segurando(self, obj):
+        """
+        Qual trilha está parada esperando esta conversa ficar livre (RF-SEQ-5.5).
+
+        Prefere a anotação da listagem, e só vai ao banco quando ela não veio
+        (objeto avulso, como o do `retrieve` e o do evento). A pergunta por
+        linha é o que a anotação existe para evitar.
+        """
+        from apps.automation.sequence_holds import (
+            ANOTACAO_DESDE,
+            ANOTACAO_NOME,
+            ANOTACAO_QUANTAS,
+            espera_da_conversa,
+            montar,
+        )
+
+        if hasattr(obj, ANOTACAO_QUANTAS):
+            return montar(
+                getattr(obj, ANOTACAO_QUANTAS),
+                getattr(obj, ANOTACAO_NOME),
+                getattr(obj, ANOTACAO_DESDE),
+            )
+        return espera_da_conversa(obj)

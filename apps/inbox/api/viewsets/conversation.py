@@ -76,7 +76,9 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         local, então a lista trocava de ordem sozinha assim que alguém
         resolvia qualquer conversa. Os dois lados agora ordenam igual.
         """
-        return (
+        from apps.automation.sequence_holds import anotar_sequencias_seguradas
+
+        return anotar_sequencias_seguradas(
             super()
             .get_queryset()
             # A conversa do MODO DE TESTE de fluxo não existe para o Inbox
@@ -84,8 +86,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
             # paciente que não existe.
             .exclude(channel__is_test=True)
             .prefetch_related("labels")
-            .order_by(F("last_message_at").desc(nulls_last=True))
-        )
+        ).order_by(F("last_message_at").desc(nulls_last=True))
 
     @action(detail=True, methods=["post"], url_path="read")
     def read(self, request, pk=None):

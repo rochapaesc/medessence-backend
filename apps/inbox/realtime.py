@@ -211,17 +211,33 @@ def notify_message_new_on_commit(message) -> None:
     transaction.on_commit(lambda: notify_message_new(message))
 
 
-def notify_conversation_updated(conversation) -> None:
+#: "não me passaram nada", que é diferente de "me passaram nada". Ver
+#: `notify_conversation_updated`.
+AUSENTE = object()
+
+
+def notify_conversation_updated(conversation, *, sequencias_segurando=AUSENTE) -> None:
     """
     A fila muda para todo mundo, não só para quem agiu: status e posse vão no
     evento porque é por eles que a conversa SAI da lista de quem está olhando
     (resolvida, adiada) e é por eles que o composer trava (RF-ATD-14). Sem
     isso, quem não agiu continuaria escrevendo numa conversa que já é de
     outra pessoa até apertar F5.
+
+    ⚠️ `sequencias_segurando` (RF-SEQ-5.5) só viaja quando QUEM CHAMA o passa, e
+    quem passa é o motor de sequência, nos dois instantes em que o valor muda:
+    ao segurar e ao soltar. Este evento dispara a cada mensagem; calcular a
+    espera em todos eles seria uma consulta por mensagem para responder quase
+    sempre a mesma coisa. Campo ausente faz o cliente PRESERVAR o que tem, que
+    é o mesmo contrato já usado pela posse.
     """
+    payload_espera = (
+        {} if sequencias_segurando is AUSENTE else {"sequencias_segurando": sequencias_segurando}
+    )
     _broadcast(
         conversation.clinic_id,
         {
+            **payload_espera,
             "event": "conversation:updated",
             "conversation_id": conversation.pk,
             "unread_count": conversation.unread_count,
@@ -272,12 +288,16 @@ def notify_conversation_updated(conversation) -> None:
     )
 
 
-def notify_conversation_updated_on_commit(conversation) -> None:
+def notify_conversation_updated_on_commit(conversation, *, sequencias_segurando=AUSENTE) -> None:
     """Como o `notify_message_new_on_commit`: quem cria mensagem dentro de
     transação emite só depois do commit."""
     from django.db import transaction
 
-    transaction.on_commit(lambda: notify_conversation_updated(conversation))
+    transaction.on_commit(
+        lambda: notify_conversation_updated(
+            conversation, sequencias_segurando=sequencias_segurando
+        )
+    )
 
 
 def notify_conversation_new(conversation) -> None:
