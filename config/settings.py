@@ -480,3 +480,11 @@ EHR_DATA_GUARD = config("EHR_DATA_GUARD", default=True, cast=bool)
 # Vazios = webhook fecha tudo (fail closed) - preencher na calibração.
 WHATSAPP_APP_SECRET = config("WHATSAPP_APP_SECRET", default="")
 WHATSAPP_VERIFY_TOKEN = config("WHATSAPP_VERIFY_TOKEN", default="")
+
+# Cadastro incorporado (§4.3.3, F2.7). O `app_id` e o `config_id` são públicos
+# (vão na URL do popup da Meta) e a tela os recebe por endpoint, RF-CON-1.3; o
+# `app_secret` acima é o que NUNCA sai do servidor. Vazios = o botão de
+# conectar se explica em vez de abrir um popup que a Meta recusa.
+WHATSAPP_APP_ID = config("WHATSAPP_APP_ID", default="")
+WHATSAPP_CONFIG_ID = config("WHATSAPP_CONFIG_ID", default="")
+WHATSAPP_GRAPH_VERSION = config("WHATSAPP_GRAPH_VERSION", default="v25.0")

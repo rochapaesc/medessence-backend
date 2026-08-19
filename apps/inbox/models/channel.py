@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from apps.core.fields import EncryptedJSONField
 from apps.core.models import TenantScopedModel
-from apps.inbox.choices import WhatsAppProviderKind
+from apps.inbox.choices import ChannelSource, WhatsAppProviderKind
 
 
 def default_webhook_secret() -> str:  # pragma: no cover
@@ -54,6 +54,30 @@ class Channel(TenantScopedModel):
     # conversa de teste ter onde viver sem alcançar ninguém.
     is_test = BooleanField(verbose_name="Canal de teste", default=False)
 
+    # ------------- como o canal foi ligado (F2.7, §4.3.3) ------------------
+    connection_source = CharField(
+        verbose_name="Ligado por",
+        max_length=20,
+        choices=ChannelSource.choices,
+        blank=True,
+        help_text="Vazio nos canais anteriores ao cadastro incorporado.",
+    )
+    is_coexistence = BooleanField(
+        verbose_name="Também no celular",
+        default=False,
+        help_text=(
+            "RF-CON-3. O número segue no app do WhatsApp Business, então "
+            "mensagem enviada de lá chega aqui como eco (RF-CON-5.1)."
+        ),
+    )
+    connected_at = DateTimeField(verbose_name="Ligado em", null=True, blank=True)
+    verified_name = CharField(
+        verbose_name="Nome verificado",
+        max_length=120,
+        blank=True,
+        help_text="O nome que o paciente vê no WhatsApp, aprovado na Meta.",
+    )
+
     # ------------------- saúde do canal (item 2 do fechamento) -------------
     # Desenho do `Reauthorizable` do Chatwoot: erro de credencial CONTA, e só
     # ao bater o limiar o canal é dado como morto. Um 401 isolado é blip da
@@ -78,6 +102,19 @@ class Channel(TenantScopedModel):
                 fields=["clinic"],
                 condition=Q(deleted_at__isnull=True, is_test=False),
                 name="one_channel_per_clinic",
+            ),
+            # RF-CON-2.6 — o webhook resolve o tenant pelo `phone_number_id` do
+            # payload (§7). Dois canais vivos com o mesmo número entregariam a
+            # conversa de uma clínica DENTRO de outra, e em silêncio: o
+            # `filter(...).first()` do webhook pegaria qualquer um dos dois.
+            # Enquanto o canal era colado por nós isso era improvável; com o
+            # gestor conectando sozinho, deixa de ser. É a lição da migration
+            # 013 do wacrm, onde a duplicata derrubava todo inbound sem erro.
+            # Vazio fica de fora: canal FAKE e canal recém-criado não têm.
+            UniqueConstraint(
+                fields=["phone_number_id"],
+                condition=Q(deleted_at__isnull=True) & ~Q(phone_number_id=""),
+                name="uniq_channel_phone_number_id",
             ),
         ]
 

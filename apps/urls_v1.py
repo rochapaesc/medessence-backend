@@ -3,6 +3,12 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, Spec
 
 from apps.accounts.api.views import MeMembershipsView, MeView
 from apps.inbox.api.views_reactivation import ReactivationMessageView
+from apps.inbox.api.views_signup import (
+    ChannelConnectView,
+    ChannelDisconnectView,
+    ChannelSignupConfigView,
+    ChannelView,
+)
 from apps.integrations.api.views import EHRSyncView
 from apps.notifications.api.views import (
     NotificationsCountersView,
@@ -41,6 +47,20 @@ urlpatterns = [
         "clinic/business-hours/",
         ClinicBusinessHoursView.as_view(),
         name="clinic-business-hours",
+    ),
+    # Conexão do canal WhatsApp (F2.7, §4.3.3): o gestor liga o número da
+    # clínica pelo cadastro incorporado da Meta, sem ver credencial nenhuma.
+    path("channel/", ChannelView.as_view(), name="channel"),
+    path(
+        "channel/signup-config/",
+        ChannelSignupConfigView.as_view(),
+        name="channel-signup-config",
+    ),
+    path("channel/connect/", ChannelConnectView.as_view(), name="channel-connect"),
+    path(
+        "channel/disconnect/",
+        ChannelDisconnectView.as_view(),
+        name="channel-disconnect",
     ),
     # Mensagem de resgate: qual template sai e o que cada variável recebe
     # (RF-REA-2.2/2.3). O disparo em si segue bloqueado (RF-REA-2).

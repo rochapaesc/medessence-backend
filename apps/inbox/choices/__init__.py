@@ -1,4 +1,4 @@
-from apps.inbox.choices.channel import WhatsAppProviderKind
+from apps.inbox.choices.channel import ChannelSource, WhatsAppProviderKind
 from apps.inbox.choices.conversation import (
     DORMANT_STATUSES,
     ActivityType,
@@ -23,6 +23,7 @@ __all__ = [
     "SENDER_TO_DIRECTION",
     "ActivityType",
     "AttendedBy",
+    "ChannelSource",
     "ConversationPriority",
     "ConversationStatus",
     "MediaState",
