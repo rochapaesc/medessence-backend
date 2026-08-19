@@ -119,27 +119,35 @@ def test_lote_e_singular_escolhem_o_mesmo_numero(clinic_a):
     Duas regras para "por qual número falamos" acabariam divergindo, e a
     divergência só apareceria com o paciente do outro lado. Este teste prende
     as duas juntas.
+
+    ⚠️ A expectativa MUDOU em 18/08/2026. Este teste dizia que o secundário
+    ganhava por ter falado por último, e era o comportamento de verdade - até
+    ele mandar a trilha de um paciente para o número de outra pessoa da mesma
+    ficha, ao vivo. Agora o principal vence, e o que continua valendo é o
+    propósito do teste: os dois caminhos escolhem o MESMO número.
     """
     patient = Patient.objects.create(clinic=clinic_a, name="Dois números")
-    antigo = make_contact(clinic_a, wa_id="5585900000301")
+    principal = make_contact(clinic_a, wa_id="5585900000301")
     novo = make_contact(clinic_a, wa_id="5585900000302")
-    PatientContact.objects.create(patient=patient, contact=antigo, is_primary=True)
+    PatientContact.objects.create(patient=patient, contact=principal, is_primary=True)
     PatientContact.objects.create(patient=patient, contact=novo)
 
     canal = make_channel(clinic_a)
     Conversation.objects.create(
         clinic=clinic_a,
         channel=canal,
-        contact=antigo,
+        contact=principal,
         last_message_at=timezone.now() - timedelta(days=5),
     )
     Conversation.objects.create(
         clinic=clinic_a, channel=canal, contact=novo, last_message_at=timezone.now()
     )
 
-    # O secundário ganha porque falou por último, nos dois caminhos.
-    assert contato_do_paciente(patient) == novo
-    assert contatos_dos_pacientes([patient])[patient.pk] == novo
+    # O PRINCIPAL ganha, mesmo com o outro tendo falado agora, nos dois
+    # caminhos. Previsível vale mais aqui do que recente: quem olha a ficha
+    # precisa saber para onde a mensagem vai.
+    assert contato_do_paciente(patient) == principal
+    assert contatos_dos_pacientes([patient])[patient.pk] == principal
 
 
 def test_sem_conversa_nenhuma_vence_o_vinculo_principal(clinic_a):

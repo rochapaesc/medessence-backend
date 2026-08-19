@@ -25,6 +25,8 @@ class EnrollmentEndReason(TextChoices):
     FLOW_NODE = "flow_node", "Removida por um fluxo"
     APPOINTMENT_CANCELED = "appointment_canceled", "Consulta cancelada"
     SEQUENCE_RETIRED = "sequence_retired", "Sequência aposentada"
+    REPLIED = "replied", "Respondeu"
+    SCHEDULED = "scheduled", "Marcou consulta"
 
 
 class SequenceDispatchStatus(TextChoices):
@@ -56,6 +58,7 @@ class DispatchSkipReason(TextChoices):
     PATIENT_NO_SHOW = "patient_no_show", "Paciente faltou"
     FLOW_UNPUBLISHED = "flow_unpublished", "Fluxo sem versão publicada"
     NO_CHANNEL = "no_channel", "Clínica sem canal de WhatsApp"
+    REORDERED = "reordered", "O prazo do passo mudou depois que a pessoa passou"
 
 
 class HoldReason(TextChoices):

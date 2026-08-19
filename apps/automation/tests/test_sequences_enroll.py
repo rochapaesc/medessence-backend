@@ -315,3 +315,93 @@ def test_no_que_aponta_para_sequencia_apagada_nao_derruba_o_fluxo(clinic_a):
     )
 
     assert start_run(flow, conversa) is not None
+
+
+# ---- por qual NÚMERO a trilha fala (RF-SEQ-3.6, corrigido em 18/08/2026) ----
+
+
+def _com_dois_numeros(clinic):
+    """
+    Um paciente com dois números, como acontece de verdade: o dele e o de quem
+    divide a ficha (RF-PAC-7). O SEGUNDO é o que conversou por último.
+    """
+    from apps.inbox.models import Conversation
+    from apps.patients.models import Patient, PatientContact
+
+    from apps.automation.tests.conftest import make_channel, make_contact
+
+    canal = make_channel(clinic)
+    patient = Patient.objects.create(clinic=clinic, name="Willian de teste")
+
+    principal = make_contact(clinic, wa_id="5589900000001")
+    outro = make_contact(clinic, wa_id="5589900000002")
+    PatientContact.objects.create(patient=patient, contact=principal, is_primary=True)
+    PatientContact.objects.create(patient=patient, contact=outro, is_primary=False)
+
+    agora = timezone.now()
+    Conversation.objects.create(
+        clinic=clinic,
+        channel=canal,
+        contact=principal,
+        last_message_at=agora - timedelta(hours=9),
+    )
+    Conversation.objects.create(
+        clinic=clinic,
+        channel=canal,
+        contact=outro,
+        last_message_at=agora,  # falou AGORA, e mesmo assim não deve vencer
+    )
+    return patient, principal, outro
+
+
+def test_o_principal_da_ficha_vence_a_conversa_mais_recente(clinic_a):
+    """
+    ⚠️ Defeito real de 18/08: a trilha foi para o número de OUTRA pessoa da
+    mesma ficha, só porque alguém tinha conversado por ali mais recentemente.
+    O dono do produto ficou olhando a conversa certa, vazia.
+    """
+    from apps.automation.sequences import contato_do_paciente
+
+    patient, principal, _outro = _com_dois_numeros(clinic_a)
+
+    assert contato_do_paciente(patient).pk == principal.pk
+
+
+def test_o_lote_escolhe_o_mesmo_numero_que_a_ficha(clinic_a):
+    """
+    Se as duas regras divergirem, inscrever pela ficha e inscrever por um lote
+    de mil mandam a mensagem para números diferentes - e isso só aparece com o
+    paciente do outro lado.
+    """
+    from apps.automation.sequences import contatos_dos_pacientes, contato_do_paciente
+
+    patient, _principal, _outro = _com_dois_numeros(clinic_a)
+
+    do_lote = contatos_dos_pacientes([patient])[patient.pk]
+    assert do_lote.pk == contato_do_paciente(patient).pk
+
+
+def test_sem_principal_marcado_vale_quem_falou_por_ultimo(clinic_a):
+    """A regra antiga continua valendo como desempate, e só como desempate."""
+    from apps.inbox.models import Conversation
+    from apps.patients.models import Patient, PatientContact
+
+    from apps.automation.sequences import contato_do_paciente
+    from apps.automation.tests.conftest import make_channel, make_contact
+
+    canal = make_channel(clinic_a)
+    patient = Patient.objects.create(clinic=clinic_a, name="Sem principal")
+    antigo = make_contact(clinic_a, wa_id="5589900000003")
+    recente = make_contact(clinic_a, wa_id="5589900000004")
+    PatientContact.objects.create(patient=patient, contact=antigo, is_primary=False)
+    PatientContact.objects.create(patient=patient, contact=recente, is_primary=False)
+
+    agora = timezone.now()
+    Conversation.objects.create(
+        clinic=clinic_a, channel=canal, contact=antigo, last_message_at=agora - timedelta(days=2)
+    )
+    Conversation.objects.create(
+        clinic=clinic_a, channel=canal, contact=recente, last_message_at=agora
+    )
+
+    assert contato_do_paciente(patient).pk == recente.pk

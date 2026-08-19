@@ -6,6 +6,7 @@ from rest_framework.serializers import (
 )
 
 from apps.automation.models import Sequence, SequenceDispatch, SequenceEnrollment, SequenceStep
+from apps.automation.sequences import saidas_padrao
 
 
 class SequenceStepSerializer(ModelSerializer):
@@ -69,9 +70,27 @@ class SequenceSerializer(ModelSerializer):
             "is_marketing",
             "enroll_on_appointment",
             "conversion_days",
+            "exit_on_reply",
+            "exit_on_appointment",
             "steps",
             "active_enrollments",
         ]
+
+    def create(self, validated_data):
+        """
+        As duas saídas nascem pelo TIPO da trilha (RF-SEQ-6.2).
+
+        O padrão mora aqui e não no `default` do campo porque depende de outro
+        campo do mesmo objeto. Quem mandar o valor explícito vence: isto é
+        padrão de nascimento, não regra de negócio.
+        """
+        padrao = saidas_padrao(
+            is_marketing=validated_data.get("is_marketing", True),
+            enroll_on_appointment=validated_data.get("enroll_on_appointment", False),
+        )
+        for campo, valor in padrao.items():
+            validated_data.setdefault(campo, valor)
+        return super().create(validated_data)
 
 
 class ProximoDisparoSerializer(ModelSerializer):

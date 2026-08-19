@@ -12,19 +12,37 @@ logger = logging.getLogger(__name__)
 @receiver(inbound_ingested)
 def on_inbound_ingested(sender, conversation, message, **kwargs):
     """
-    O paciente falou: continua a execução em andamento ou começa uma nova.
+    O paciente falou: o fluxo continua ou começa, e quem respondeu sai da
+    trilha que pede isso (RF-SEQ-6.2).
 
     Falha aqui NÃO pode derrubar a ingestão. Uma mensagem que não foi gravada
     porque o motor de fluxos estourou é pior do que um fluxo que não
     respondeu: a recepção deixa de ver que o paciente escreveu, e o webhook da
     Meta ainda seria reentregue tentando de novo.
+
+    ⚠️ São DOIS `try` e não um. A saída da trilha é arrumação de calendário e
+    não pode levar junto a resposta do fluxo ao paciente, nem ser levada por
+    ela: num único bloco, a primeira exceção calaria a segunda tarefa.
     """
+    from apps.automation.sequences import aplicar_saida_por_resposta
     from apps.automation.triggers import handle_inbound
 
     try:
         handle_inbound(conversation, message)
     except Exception:
         logger.exception("Motor de fluxos falhou no inbound da conversa %s", conversation.pk)
+
+    try:
+        if conversation.contact_id:
+            quantas = aplicar_saida_por_resposta(conversation.contact)
+            if quantas:
+                logger.info(
+                    "Contato %s respondeu e saiu de %s trilha(s).",
+                    conversation.contact_id,
+                    quantas,
+                )
+    except Exception:
+        logger.exception("Saída por resposta falhou na conversa %s", conversation.pk)
 
 
 @receiver(post_save, sender="scheduling.Appointment")
@@ -44,12 +62,12 @@ def on_appointment_saved(sender, instance, **kwargs):
     RF-FLW-21.
     """
     try:
-        _sincronizar_inscricoes(instance)
+        _sincronizar_inscricoes(instance, created=bool(kwargs.get("created")))
     except Exception:
         logger.exception("Sequência falhou no post_save da consulta %s", instance.pk)
 
 
-def _sincronizar_inscricoes(appointment):
+def _sincronizar_inscricoes(appointment, *, created=False):
     from apps.automation.choices import (
         EnrollmentEndReason,
         EnrollmentSource,
@@ -58,6 +76,7 @@ def _sincronizar_inscricoes(appointment):
     from apps.automation.models import Sequence, SequenceEnrollment
     from apps.automation.sequences import (
         SemContato,
+        aplicar_saida_por_agendamento,
         contato_do_paciente,
         inscrever,
         recalcular,
@@ -95,6 +114,17 @@ def _sincronizar_inscricoes(appointment):
         return
     if appointment.patient_id is None:
         return
+
+    # Marcar consulta tira das trilhas de divulgação (RF-SEQ-6.2). Vem depois
+    # das guardas e só no ATO de marcar: o pull da agenda regrava as mesmas
+    # consultas futuras a cada 5 minutos, e sem o `created` cada passada
+    # refaria a conta para quem já saiu.
+    #
+    # Não morde a inscrição logo abaixo: quem sai aqui são as trilhas com
+    # `enroll_on_appointment` DESLIGADO, e quem entra ali são as com ele
+    # ligado. Conjuntos disjuntos por construção.
+    if created:
+        aplicar_saida_por_agendamento(appointment)
 
     candidatas = Sequence.objects.filter(
         clinic_id=appointment.clinic_id, enroll_on_appointment=True, is_active=True

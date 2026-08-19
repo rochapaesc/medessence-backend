@@ -84,6 +84,25 @@ class Sequence(TenantScopedModel):
             "véspera e resgatar inativo têm ritmos diferentes."
         ),
     )
+    exit_on_reply = BooleanField(
+        verbose_name="Quem responder sai",
+        default=False,
+        help_text=(
+            "Saída configurável (RF-SEQ-6.2): quem responder DEPOIS de receber "
+            "um disparo desta trilha para de receber os próximos passos. Nasce "
+            "ligada em divulgação e desligada em atendimento."
+        ),
+    )
+    exit_on_appointment = BooleanField(
+        verbose_name="Quem marcar consulta sai",
+        default=False,
+        help_text=(
+            "Saída configurável (RF-SEQ-6.2): consulta futura marcada tira das "
+            "trilhas de divulgação. Não vale onde `enroll_on_appointment` está "
+            "ligado - ali a consulta é a porta de ENTRADA, e quem decide pular "
+            "um passo pós-consulta é o RF-SEQ-7."
+        ),
+    )
 
     class Meta:
         verbose_name = "Sequência"

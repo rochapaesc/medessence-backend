@@ -22,12 +22,14 @@ import zoneinfo
 from datetime import UTC, datetime, timedelta
 
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.automation.choices import (
     DispatchSkipReason,
     EnrollmentEndReason,
     FlowNodeType,
+    FlowStatus,
     HoldReason,
     SequenceDispatchStatus,
     SequenceEnrollmentStatus,
@@ -227,30 +229,49 @@ def contato_do_paciente(patient):
     """
     Por qual número esta sequência fala com o paciente (RF-SEQ-3.6).
 
-    Com mais de um, vence o da conversa mais recente; sem conversa nenhuma,
-    o vínculo mais novo. Sem número, `SemContato` - a porta que chamou avisa
-    quem está na tela, porque silêncio aqui vira paciente que nunca recebe e
-    ninguém sabe por quê.
+    **O PRINCIPAL da ficha vence sempre.** A conversa mais recente só desempata
+    entre os outros, ou quando nenhum foi marcado como principal.
+
+    ⚠️ Era o contrário até 18/08/2026, e o defeito apareceu ao vivo: um paciente
+    com três números recebeu a trilha no número de OUTRA pessoa que divide a
+    ficha com ele, porque alguém tinha conversado por ali mais recentemente. O
+    dono do produto ficou olhando a conversa certa, vazia, enquanto as
+    mensagens chegavam noutra. Número compartilhado é comum numa clínica
+    (RF-PAC-7: mãe e filho, casal, cuidador), então isso não era exceção.
+
+    O que a regra velha tinha de bom era falar pelo canal em uso, que tende a
+    estar dentro da janela de 24h. O que ela tinha de fatal é que **o destino
+    mudava sozinho**: bastava alguém responder por outro número para a próxima
+    mensagem daquele paciente ir para outro lugar, sem ninguém mexer em nada e
+    sem nada na tela dizendo para onde iria.
+
+    Sem número, `SemContato` - a porta que chamou avisa quem está na tela,
+    porque silêncio aqui vira paciente que nunca recebe e ninguém sabe por quê.
     """
     from apps.inbox.models import Conversation
-    from apps.patients.models import PatientContact
+    from apps.patients.models import Contact, PatientContact
 
-    ids = list(
+    vinculos = list(
         PatientContact.objects.filter(patient=patient)
         .order_by("-is_primary", "-pk")
-        .values_list("contact_id", flat=True)
+        .values_list("contact_id", "is_primary")
     )
-    if not ids:
+    if not vinculos:
         raise SemContato("Paciente sem número de WhatsApp vinculado.")
 
+    principal = next((cid for cid, marcado in vinculos if marcado), None)
+    if principal is not None:
+        return Contact.objects.get(pk=principal)
+
+    # Ninguém marcado: aí sim vale quem falou por último, e o vínculo mais novo
+    # como último recurso.
+    ids = [cid for cid, _ in vinculos]
     recente = (
         Conversation.objects.filter(contact_id__in=ids, last_message_at__isnull=False)
         .order_by("-last_message_at")
         .values_list("contact_id", flat=True)
         .first()
     )
-    from apps.patients.models import Contact
-
     return Contact.objects.get(pk=recente or ids[0])
 
 
@@ -260,8 +281,13 @@ def contatos_dos_pacientes(patients) -> dict:
 
     Existe por causa do lote (RF-SEQ-3.3): resolver um por um custaria duas
     consultas por paciente, e a fila de resgate real tem 1.891. Aqui são duas
-    consultas no total, e a regra de desempate é a mesma - vence o número da
-    conversa mais recente, senão o vínculo mais novo.
+    consultas no total, e a regra é a MESMA do singular - o principal da ficha
+    vence, e a conversa mais recente só desempata entre os outros.
+
+    ⚠️ As duas regras têm de andar juntas SEMPRE. Se divergirem, inscrever uma
+    pessoa pela ficha e inscrever a mesma pessoa por um lote de mil mandam a
+    mensagem para números diferentes, e isso só aparece com o paciente do outro
+    lado. Existe teste prendendo uma à outra.
 
     Devolve `{patient_id: contact}`, e quem não tem número simplesmente não
     aparece no mapa: é o chamador que conta e explica (RF-SEQ-3.6).
@@ -275,12 +301,15 @@ def contatos_dos_pacientes(patients) -> dict:
 
     # Os vínculos de todos, já na ordem de desempate do singular.
     candidatos: dict[int, list[int]] = {}
-    for patient_id, contact_id in (
+    principais: dict[int, int] = {}
+    for patient_id, contact_id, marcado in (
         PatientContact.objects.filter(patient_id__in=ids)
         .order_by("-is_primary", "-pk")
-        .values_list("patient_id", "contact_id")
+        .values_list("patient_id", "contact_id", "is_primary")
     ):
         candidatos.setdefault(patient_id, []).append(contact_id)
+        if marcado:
+            principais.setdefault(patient_id, contact_id)
 
     todos = {cid for lista in candidatos.values() for cid in lista}
     # Quando o contato falou pela última vez. ⚠️ A conversa entra pelo
@@ -297,6 +326,9 @@ def contatos_dos_pacientes(patients) -> dict:
 
     escolhidos = {}
     for patient_id, lista in candidatos.items():
+        if patient_id in principais:
+            escolhidos[patient_id] = principais[patient_id]
+            continue
         com_conversa = [cid for cid in lista if cid in ultima]
         escolhidos[patient_id] = (
             max(com_conversa, key=lambda cid: ultima[cid]) if com_conversa else lista[0]
@@ -439,6 +471,99 @@ def aplicar_opt_out(contact):
     return ativas.count()
 
 
+def saidas_padrao(*, is_marketing: bool, enroll_on_appointment: bool) -> dict:
+    """
+    Como as duas saídas do RF-SEQ-6.2 nascem, por TIPO de trilha.
+
+    Divulgação nasce com as duas LIGADAS: campanha que obteve resposta ou
+    consulta já cumpriu o papel, e insistir depois disso é o que derruba a
+    régua de qualidade do número. Atendimento nasce com as duas DESLIGADAS: a
+    jornada do paciente continua depois de ele responder.
+
+    A saída por consulta não nasce ligada em trilha ancorada NELA, onde a
+    consulta é a porta de entrada: ligar ali guardaria um estado que o motor
+    ignora, e a tela teria de explicar uma chave que não faz nada.
+    """
+    return {
+        "exit_on_reply": is_marketing,
+        "exit_on_appointment": is_marketing and not enroll_on_appointment,
+    }
+
+
+def aplicar_saida_por_resposta(contact) -> int:
+    """
+    O paciente respondeu (RF-SEQ-6.2): sai das trilhas configuradas para isso.
+
+    Só sai de trilha que JÁ FALOU com ele. Sem disparo não há o que responder,
+    e uma mensagem espontânea tiraria da campanha justamente quem ela ainda
+    não alcançou.
+
+    Qualquer mensagem serve, sem prazo (decisão do usuário em 18/08): a janela
+    de conversão do painel existe para ATRIBUIR causa a um disparo, e a
+    pergunta aqui é outra - "essa pessoa já falou conosco?". Insistir com quem
+    respondeu no décimo dia é tão ruim quanto insistir com quem respondeu no
+    primeiro.
+
+    ⚠️ NÃO se pendura no evento `replied` do motor de fluxos, e é de propósito:
+    ele só nasce em execução ATIVA, e o fluxo de campanha de um nó termina no
+    instante do envio (RF-SEQ-11.3.1). Ali ninguém sairia da trilha, e em
+    silêncio - sem número errado na tela para denunciar.
+    """
+    ativas = list(
+        SequenceEnrollment.objects.filter(
+            contact=contact,
+            status=SequenceEnrollmentStatus.ACTIVE,
+            sequence__exit_on_reply=True,
+            dispatches__status=SequenceDispatchStatus.STARTED,
+            dispatches__deleted_at__isnull=True,
+        ).distinct()
+    )
+    for enrollment in ativas:
+        remover(enrollment, reason=EnrollmentEndReason.REPLIED)
+    return len(ativas)
+
+
+def aplicar_saida_por_agendamento(appointment) -> int:
+    """
+    O paciente marcou consulta (RF-SEQ-6.2): sai das trilhas configuradas.
+
+    Só das NÃO ancoradas em consulta. Onde a consulta é a porta de ENTRADA,
+    quem marca entra, e é o RF-SEQ-7 que decide pular um passo pós-consulta -
+    duas regras sobre o mesmo fato, e confundi-las tiraria da jornada
+    exatamente quem acabou de entrar nela.
+
+    Diferente da saída por resposta, aqui NÃO se exige disparo anterior: a
+    consulta marcada já torna o convite obsoleto, e "volte a nos visitar" para
+    quem marcou ontem é pior do que silêncio.
+    """
+    if appointment.patient_id is None:
+        return 0
+
+    alvo = Q(patient_id=appointment.patient_id)
+    try:
+        contact = contato_do_paciente(appointment.patient)
+    except SemContato:
+        contact = None
+    if contact is not None:
+        # Inscrição nascida de nó de fluxo tem contato e NÃO tem paciente
+        # (mesma razão da leitura da ficha, RF-SEQ-3.2): filtrar só por
+        # paciente deixaria de fora quem entrou pela conversa.
+        alvo |= Q(contact=contact)
+
+    ativas = list(
+        SequenceEnrollment.objects.filter(
+            alvo,
+            status=SequenceEnrollmentStatus.ACTIVE,
+            sequence__clinic_id=appointment.clinic_id,
+            sequence__exit_on_appointment=True,
+            sequence__enroll_on_appointment=False,
+        ).distinct()
+    )
+    for enrollment in ativas:
+        remover(enrollment, reason=EnrollmentEndReason.SCHEDULED)
+    return len(ativas)
+
+
 # --------------------------------------------------------------------- #
 # O disparo
 # --------------------------------------------------------------------- #
@@ -570,6 +695,48 @@ def _soltar(enrollment) -> None:
     enrollment.save(update_fields=["held_since", "hold_reason", "updated_at"])
 
 
+def _registrar_ultrapassados(enrollment, step):
+    """
+    Passo que o gestor moveu para ANTES de onde a pessoa já está (RF-SEQ-2.3).
+
+    Achado ao vivo em 18/08: o gestor mexeu no prazo dos passos com gente
+    dentro da trilha, e um deles ficou para trás do ponteiro. O motor anda pelo
+    relógio, então ele nunca mais seria visitado - e sumia sem envio, sem pulo
+    e sem motivo. A recepção ficava sem resposta para "por que ele não recebeu
+    a segunda mensagem?", que é justamente o que os motivos de pulo existem
+    para responder.
+
+    Só vale para quem JÁ ANDOU na trilha: sem disparo anterior não há ponteiro
+    que alguém tenha ultrapassado, e todo passo atrás dele é passo que aquela
+    inscrição nunca teve. É o caso de quem entra pela consulta já passada, que
+    começa direto no passo de depois.
+
+    ⚠️ O `exclude` do passo atual não é detalhe: esta função roda DEPOIS de o
+    disparo dele ser gravado, e sem isso a guarda de "já andou" seria sempre
+    verdadeira - foi o que quebrou o teste da falta na primeira versão.
+    """
+    anteriores = SequenceDispatch.objects.filter(enrollment=enrollment).exclude(step=step)
+    if not anteriores.exists():
+        return
+
+    ja_resolvidos = set(anteriores.values_list("step_id", flat=True)) | {step.pk}
+    atual = chave_do_passo(step)
+    perdidos = [
+        p
+        for p in _passos_vivos(enrollment.sequence)
+        if chave_do_passo(p) < atual and p.pk not in ja_resolvidos
+    ]
+    for passo in perdidos:
+        SequenceDispatch.objects.create(
+            enrollment=enrollment,
+            step=passo,
+            scheduled_for=horario_do_passo(passo, enrollment.anchor_at, enrollment.clinic),
+            resolved_at=timezone.now(),
+            status=SequenceDispatchStatus.SKIPPED,
+            skip_reason=DispatchSkipReason.REORDERED,
+        )
+
+
 def _resolver(enrollment, step, previsto, *, status, skip_reason="", flow_run=None):
     """Grava o histórico do passo e anda o calendário, numa transação só."""
     _soltar(enrollment)
@@ -583,6 +750,7 @@ def _resolver(enrollment, step, previsto, *, status, skip_reason="", flow_run=No
             skip_reason=skip_reason,
             flow_run=flow_run,
         )
+        _registrar_ultrapassados(enrollment, step)
         _agendar(enrollment, _proximo_passo(enrollment, depois_de=step))
 
 
@@ -652,13 +820,25 @@ def resolver_disparo(enrollment_id) -> str:
 
     # 4. Fluxo que não tem o que disparar: pula.
     #
-    # ⚠️ Duas situações, e a segunda é traiçoeira: versão nenhuma publicada, ou
-    # versão publicada com grafo SEM NÓ DE ENTRADA. A segunda faz o `start_run`
-    # devolver `None` igualzinho a "a caneta está ocupada", e sem esta guarda o
-    # disparo ficaria adiando a cada cinco minutos até a validade vencer,
-    # anotando "ocupado" o tempo todo. O painel diria a coisa errada sobre por
-    # que o paciente não recebeu.
-    if step.flow.current_version_id is None or not _tem_no_de_entrada(step.flow):
+    # ⚠️ TRÊS situações, e as duas últimas são traiçoeiras: versão nenhuma,
+    # fluxo em RASCUNHO, ou versão com grafo SEM NÓ DE ENTRADA. A última faz o
+    # `start_run` devolver `None` igualzinho a "a caneta está ocupada", e sem
+    # esta guarda o disparo ficaria adiando a cada cinco minutos até a validade
+    # vencer, anotando "ocupado" o tempo todo.
+    #
+    # ⚠️ O RASCUNHO entrou aqui em 18/08/2026, depois de morder ao vivo. Trilha
+    # criada a partir de um modelo (RF-SEQ-12) nasce com um fluxo em rascunho
+    # por passo, com o nó de template SEM TEMPLATE ESCOLHIDO - a pendência
+    # honesta do RF-SEQ-5.4. A guarda antiga só olhava se existia versão, então
+    # os três passos dispararam, o nó tentou enviar um modelo vazio e a Meta
+    # recusou as três com "The parameter text.body is required". Pior: o painel
+    # marcou os três como disparados, porque disparar o FLUXO deu certo. Quem
+    # publica um fluxo é gente; até lá, ele não fala com paciente.
+    if (
+        step.flow.current_version_id is None
+        or step.flow.status != FlowStatus.ACTIVE
+        or not _tem_no_de_entrada(step.flow)
+    ):
         _resolver(
             enrollment,
             step,
@@ -749,6 +929,10 @@ def _disparar(enrollment, step, previsto) -> str:
                 status=SequenceDispatchStatus.STARTED,
                 flow_run=run,
             )
+            # ⚠️ Aqui também, e não só no `_resolver`: o caminho de DISPARO
+            # grava o histórico por conta própria, e foi por isso que a
+            # primeira versão deste conserto só valeu para os pulos.
+            _registrar_ultrapassados(enrollment, step)
             _agendar(enrollment, _proximo_passo(enrollment, depois_de=step))
     except ConversaSemDestino:
         _resolver(
