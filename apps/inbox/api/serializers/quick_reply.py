@@ -317,12 +317,13 @@ class WhatsAppTemplateEditSerializer(WhatsAppTemplateCreateSerializer):
         return instance
 
     def update(self, instance, validated_data):
-        from apps.inbox.models import Channel
+        from apps.inbox.services import canal_da_clinica
         from apps.inbox.template_builder import montar_para_a_meta
         from apps.integrations.whatsapp.exceptions import WhatsAppError
         from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
-        channel = Channel.objects.filter(clinic=instance.clinic).first()
+        # O canal REAL: template criado pelo fake não chega à Meta.
+        channel = canal_da_clinica(instance.clinic)
         if channel is None:
             raise ValidationError("Esta clínica não tem canal de WhatsApp configurado.")
 

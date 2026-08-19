@@ -651,12 +651,13 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
         A sonda NÃO manda mensagem para ninguém: pergunta os dados do número.
         """
-        from apps.inbox.models import Channel
-        from apps.inbox.services import registrar_saude_do_canal
+        from apps.inbox.services import canal_da_clinica, registrar_saude_do_canal
         from apps.integrations.whatsapp.exceptions import WhatsAppError
         from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
-        canal = Channel.objects.filter(clinic=self.clinic).first()
+        # ⚠️ NUNCA o canal de teste: o fake responde que está tudo bem, e a
+        # sonda diria "reconectado" com o número de verdade ainda mudo.
+        canal = canal_da_clinica(self.clinic)
         if canal is None:
             raise ValidationError("Esta clínica não tem canal de WhatsApp configurado.")
 
@@ -719,14 +720,14 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
 
     def _saude_do_canal(self) -> dict:
         from apps.inbox.models import Channel
-        from apps.inbox.services import mensagens_para_reenviar
+        from apps.inbox.services import canal_da_clinica, mensagens_para_reenviar
 
         # Quantas ficaram presas. Vai junto com a saúde porque é a mesma
         # faixa que mostra as duas coisas: caída avisa o problema, reconectada
         # oferece o conserto ("3 mensagens não saíram. Reenviar?").
         presas = mensagens_para_reenviar(self.clinic).count()
 
-        canal = Channel.objects.filter(clinic=self.clinic).first()
+        canal = canal_da_clinica(self.clinic)
         if canal is None:
             return {
                 "configured": False,

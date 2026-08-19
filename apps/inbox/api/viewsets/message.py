@@ -198,9 +198,9 @@ class MessageViewSet(
         Reenviar para um canal morto só produz a mesma falha, agora com a
         recepção achando que resolveu.
         """
-        from apps.inbox.models import Channel
+        from apps.inbox.services import canal_da_clinica
 
-        canal = Channel.objects.filter(clinic=self.clinic).first()
+        canal = canal_da_clinica(self.clinic)
         if canal is not None and canal.disconnected:
             raise ValidationError(
                 "O WhatsApp ainda está desconectado. Reenvie quando a conexão voltar."

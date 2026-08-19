@@ -262,3 +262,96 @@ def test_verificar_sem_canal_configurado_explica(
 
     assert resposta.status_code == 400
     assert "não tem canal" in str(resposta.data)
+
+
+
+# --------------------------------------------------------------------- #
+# O canal de TESTE não pode se passar pelo real (achado em 19/08/2026)
+# --------------------------------------------------------------------- #
+#
+# A clínica que já usou o modo de teste (RF-FLW-25) tem DOIS canais: o de
+# verdade e um FAKE. Vários caminhos pegavam `filter(clinic=...).first()`, sem
+# ordem nem filtro, e o fake responde SEMPRE que está tudo bem. O estrago
+# relatado pelo usuário: trocar o token, clicar em "Já reconectei", o sistema
+# dizer que a conexão voltou, e o número de verdade continuar mudo.
+#
+# ⚠️ Os testes montam o cenário ADVERSO de propósito: o canal FAKE é criado
+# ANTES do real, então é ele que o `.first()` sem filtro encontraria. Sem isso
+# os testes passavam com o defeito no lugar — provado desligando a correção.
+
+
+@pytest.fixture
+def canais_na_ordem_adversa(clinic_a):
+    """O fake primeiro, o real depois. Devolve `(fake, real)`."""
+    from apps.inbox.choices import WhatsAppProviderKind
+    from apps.inbox.models import Channel
+
+    fake = Channel.objects.create(
+        clinic=clinic_a,
+        provider=WhatsAppProviderKind.FAKE,
+        is_test=True,
+        display_number="fake-do-modo-de-teste",
+    )
+    real = Channel.objects.create(
+        clinic=clinic_a,
+        provider=WhatsAppProviderKind.META,
+        phone_number_id="PID-REAL",
+        display_number="+55 89 98119-1501",
+    )
+    assert fake.pk < real.pk, "o cenário adverso exige o fake primeiro"
+    return fake, real
+
+
+def test_o_canal_da_clinica_e_sempre_o_REAL(canais_na_ordem_adversa, clinic_a):
+    from apps.inbox.services import canal_da_clinica
+
+    _, real = canais_na_ordem_adversa
+
+    assert canal_da_clinica(clinic_a).pk == real.pk
+    assert canal_da_clinica(clinic_a.pk).pk == real.pk, "aceita o id também"
+
+
+def test_a_sonda_NAO_pode_responder_pelo_canal_de_teste(
+    api_client, manager_single_clinic, canais_na_ordem_adversa, monkeypatch
+):
+    """
+    Com o canal real recusado, "Já reconectei" tem de continuar dizendo NÃO,
+    mesmo com um canal de teste ao lado respondendo que sim.
+    """
+    from apps.integrations.whatsapp.exceptions import WhatsAppAuthError
+
+    class _Recusado:
+        def verify_credentials(self):
+            raise WhatsAppAuthError("Session has expired")
+
+    class _Fake:
+        def verify_credentials(self):
+            return {"display_phone_number": "fake"}
+
+    _, real = canais_na_ordem_adversa
+    _derruba(real)
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider",
+        lambda c: _Fake() if c.is_test else _Recusado(),
+    )
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.post("/api/v1/conversations/check-channel/")
+
+    assert resposta.data["ok"] is False, "o fake não pode curar o canal de verdade"
+    real.refresh_from_db()
+    assert real.disconnected is True
+
+
+def test_a_saude_da_tela_olha_o_canal_REAL(
+    api_client, manager_single_clinic, canais_na_ordem_adversa
+):
+    """Se os contadores olhassem o fake, a faixa nunca apareceria."""
+    _, real = canais_na_ordem_adversa
+    _derruba(real)
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.get("/api/v1/conversations/counters/")
+
+    assert resposta.data["channel"]["disconnected"] is True
+    assert resposta.data["channel"]["display_number"] == "+55 89 98119-1501"
