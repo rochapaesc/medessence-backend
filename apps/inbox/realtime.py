@@ -280,6 +280,44 @@ def notify_conversation_updated_on_commit(conversation) -> None:
     transaction.on_commit(lambda: notify_conversation_updated(conversation))
 
 
+def notify_conversation_new(conversation) -> None:
+    """
+    Uma conversa NASCEU (RF-INB-1.2).
+
+    ⚠️ Existe porque `conversation:updated` não bastava, e o defeito era mudo:
+    o cliente só sabe atualizar conversa que já está na lista dele, então o
+    aviso de uma conversa que ele nunca viu era descartado em silêncio. Quem
+    disparava uma sequência via a mensagem sair, o paciente respondia, e a
+    conversa **só aparecia depois de recarregar a página**.
+
+    Manda a LINHA INTEIRA, e não só o id, de propósito: com o id o cliente
+    teria de buscar cada uma, e uma campanha para mil pessoas viraria mil
+    requisições em poucos minutos. É o mesmo desenho do `conversation.created`
+    do Chatwoot, que também transmite o objeto.
+
+    Quem decide se ela entra na lista é o CLIENTE, porque o filtro aberto (fila,
+    etiqueta, busca) é estado de tela e o servidor não o conhece.
+    """
+    from apps.inbox.api.serializers import ConversationSerializer
+
+    _broadcast(
+        conversation.clinic_id,
+        {
+            "event": "conversation:new",
+            "conversation_id": conversation.pk,
+            "conversation": ConversationSerializer(conversation).data,
+        },
+    )
+
+
+def notify_conversation_new_on_commit(conversation) -> None:
+    """A conversa nasce dentro da transação do disparo; avisar antes do commit
+    faria o cliente pedir uma linha que ainda não existe para quem lê."""
+    from django.db import transaction
+
+    transaction.on_commit(lambda: notify_conversation_new(conversation))
+
+
 def notify_message_status(
     clinic_id: int,
     provider_message_id: str,

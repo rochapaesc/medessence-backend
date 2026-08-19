@@ -199,7 +199,7 @@ def _get_or_create_conversation(channel, event):
         if link is not None:
             conversation.patient = link.patient
             conversation.save(update_fields=["patient", "updated_at"])
-    return conversation
+    return conversation, created
 
 
 # --------------------------------------------------------------------- #
@@ -225,7 +225,7 @@ def iniciar_conversa(clinic, user, *, patient=None, phone=None):
     """
     from apps.inbox.attendance import log_activity
     from apps.inbox.models import Channel, Conversation
-    from apps.inbox.realtime import notify_conversation_updated_on_commit
+    from apps.inbox.realtime import notify_conversation_new_on_commit
     from apps.patients.models import PatientContact
     from apps.patients.phone import canonizar_telefone, pode_ser_celular
     from apps.patients.vinculos import contato_do_numero, vincular
@@ -288,7 +288,9 @@ def iniciar_conversa(clinic, user, *, patient=None, phone=None):
             user=user,
             data={"from": AttendedBy.NONE, "by": "start"},
         )
-        notify_conversation_updated_on_commit(conversation)
+        # NASCEU, e o aviso tem de dizer isso: `updated` só chega a quem já tem
+        # a conversa na lista, e ninguém tem uma que acabou de existir.
+        notify_conversation_new_on_commit(conversation)
     return conversation, created
 
 
@@ -318,7 +320,7 @@ def conversa_para_disparo(clinic, contact):
         .select_related("patient")
         .first()
     )
-    conversation, _ = Conversation.objects.get_or_create(
+    conversation, criada = Conversation.objects.get_or_create(
         clinic=clinic,
         channel=channel,
         contact=contact,
@@ -329,6 +331,14 @@ def conversa_para_disparo(clinic, contact):
             "waiting_since": timezone.now(),
         },
     )
+    if criada:
+        # ⚠️ Este era o caso que sumia. Uma campanha alcança gente com quem a
+        # clínica nunca falou, então quase toda conversa daqui NASCE - e o
+        # Inbox de quem estava com a tela aberta não mostrava nenhuma delas
+        # até apertar F5.
+        from apps.inbox.realtime import notify_conversation_new_on_commit
+
+        notify_conversation_new_on_commit(conversation)
     return conversation
 
 
@@ -469,7 +479,7 @@ def _ingest_message(channel, event, sender_kind) -> bool:
     if existing is not None:
         return False  # reentrega - idempotente
 
-    conversation = _get_or_create_conversation(channel, event)
+    conversation, conversa_nasceu = _get_or_create_conversation(channel, event)
 
     media = None
     if event.media_id:
@@ -501,11 +511,22 @@ def _ingest_message(channel, event, sender_kind) -> bool:
         fetch_media_asset.delay(media.pk)
 
     # Realtime (§12): a conversa vem atualizada pelo signal de Message.
-    from apps.inbox.realtime import notify_conversation_updated, notify_message_new
+    from apps.inbox.realtime import (
+        notify_conversation_new,
+        notify_conversation_updated,
+        notify_message_new,
+    )
 
     conversation.refresh_from_db()
     notify_message_new(message)
-    notify_conversation_updated(conversation)
+    # ⚠️ Conversa que NASCEU agora pede o evento de nova, não o de atualizada:
+    # o cliente só sabe mexer no que já tem na lista, e ninguém tem uma que
+    # acabou de existir. É o caso mais comum de todos - alguém escrevendo para
+    # a clínica pela primeira vez - e ele aparecia só depois de recarregar.
+    if conversa_nasceu:
+        notify_conversation_new(conversation)
+    else:
+        notify_conversation_updated(conversation)
 
     # Avisa quem quiser reagir ao inbound - hoje é o motor de fluxos (F2.6).
     # É SINAL e não chamada direta de propósito: o inbox não pode passar a
@@ -962,6 +983,17 @@ def send_message(message) -> None:
     conversation = message.conversation
     provider = get_whatsapp_provider(conversation.channel)
     to = conversation.contact.wa_id
+
+    # ⚠️ Carimba a TENTATIVA antes de falar com a Meta, e num save próprio.
+    #
+    # Sem isto, "nunca foi despachada" e "foi despachada e o comprovante se
+    # perdeu" ficam idênticas no banco: as duas sem status e sem identificador.
+    # Aconteceu de verdade em 18/08/2026 - a chamada saiu, a Meta aceitou,
+    # cobrou e ENTREGOU, e o `wamid` não chegou a ser gravado. A mensagem ficou
+    # parecendo que nunca tinha sido tentada, e a varredura de segurança a
+    # marcou como não enviada, o que convidaria a recepção a mandar de novo.
+    message.send_attempted_at = timezone.now()
+    message.save(update_fields=["send_attempted_at", "updated_at"])
 
     try:
         if message.kind == MessageKind.TEMPLATE and message.template_name:

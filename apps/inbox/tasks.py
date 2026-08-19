@@ -13,6 +13,7 @@ O provedor entra sempre pelo registry - as tasks não conhecem Datafy.
 import logging
 import mimetypes
 from contextlib import suppress
+from datetime import timedelta
 
 from celery import shared_task
 from django.core.files.base import ContentFile
@@ -416,3 +417,82 @@ def wake_snoozed_conversations():
 
     acordadas = sum(1 for conversation in vencidas if wake_snoozed(conversation))
     return {"woken": acordadas}
+
+
+# Quanto tempo uma mensagem de saída pode ficar sem status antes de ser dada
+# como perdida. ⚠️ Precisa ser MAIOR que o pior caso do autoretry do
+# `send_whatsapp_message` (5 tentativas com backoff até 10 min): erro
+# transitório sobe para o retry e a mensagem fica sem status DE PROPÓSITO
+# nesse meio-tempo. Varrer antes disso mataria envio que ainda ia acontecer.
+MINUTOS_PARA_DAR_POR_PERDIDA = 30
+
+
+@shared_task(queue="sync")
+def varrer_mensagens_paradas():
+    """
+    Mensagem de saída que nunca foi despachada vira FALHA visível.
+
+    Nasceu de um caso real em 18/08/2026: um passo de sequência disparou, a
+    mensagem foi criada, e ela nunca saiu - sem identificador, sem status e
+    **sem erro nenhum**. Não aparecia como falha no Inbox, não aparecia em
+    lugar nenhum, e o painel da trilha seguia contando o disparo como feito.
+    Silêncio é o pior estado possível aqui: a recepção acha que o paciente foi
+    avisado.
+
+    Isto não reenvia, e é decisão: se ninguém sabe por que a mensagem parou,
+    mandar de novo pode duplicar o que já chegou. O que se ganha é a mensagem
+    parar de mentir - vira falha, com motivo, na thread onde ela já está.
+
+    ⚠️ Nota interna NÃO entra: ela existe justamente para não sair (RF-ATD-3),
+    e nasce sem status para sempre.
+    """
+    from apps.inbox.choices import MessageKind, MessageStatus, SenderKind
+    from apps.inbox.models import Message
+    from apps.inbox.realtime import notify_message_status
+
+    limite = timezone.now() - timedelta(minutes=MINUTOS_PARA_DAR_POR_PERDIDA)
+
+    paradas = list(
+        Message.objects.filter(
+            status="",
+            provider_message_id="",
+            is_internal=False,
+            created_at__lt=limite,
+        )
+        .exclude(sender_kind=SenderKind.CONTACT)
+        .exclude(kind=MessageKind.ACTIVITY)
+    )
+    if not paradas:
+        return {"paradas": 0}
+
+    # ⚠️ Duas frases, e a diferença entre elas importa muito na mão de quem
+    # atende: uma convida a reenviar, a outra avisa que reenviar pode duplicar.
+    # Foi o que faltou no primeiro caso real - a mensagem tinha SIDO enviada, e
+    # o texto dizia que não.
+    nunca = "A mensagem não chegou a ser enviada. Reenvie se ainda fizer sentido."
+    sem_resposta = (
+        "O envio foi tentado e não voltou confirmação. Confira no WhatsApp "
+        "antes de reenviar, para não mandar duas vezes."
+    )
+    for message in paradas:
+        message.status = MessageStatus.FAILED
+        message.status_error = nunca if message.send_attempted_at is None else sem_resposta
+        message.save(update_fields=["status", "status_error", "updated_at"])
+
+    for message in paradas:
+        motivo = message.status_error
+        logger.warning(
+            "Mensagem %s (clínica %s) ficou %s min sem sair e virou falha.",
+            message.pk,
+            message.clinic_id,
+            MINUTOS_PARA_DAR_POR_PERDIDA,
+        )
+        notify_message_status(
+            message.clinic_id,
+            "",
+            MessageStatus.FAILED,
+            message.conversation_id,
+            message_id=message.pk,
+            error=motivo,
+        )
+    return {"paradas": len(paradas)}

@@ -88,6 +88,17 @@ class Message(TenantScopedModel):
         help_text="Preenchido quando FAILED: errors[] do webhook ou erro de envio. "
         '"Falhou" sem motivo não ajuda ninguém a agir.',
     )
+    send_attempted_at = DateTimeField(
+        verbose_name="Envio tentado em",
+        null=True,
+        blank=True,
+        help_text=(
+            "Carimbado ANTES de falar com a Meta. Serve para distinguir "
+            '"nunca foi despachada" de "foi despachada e não sabemos o que '
+            'houve" - sem ele, as duas ficam idênticas no banco (sem status e '
+            "sem identificador) e é impossível dizer se reenviar duplica."
+        ),
+    )
 
     # Nota interna reescrita. Marcado porque a equipe LÊ a nota como registro
     # do que se sabia: uma que mudou de texto sem avisar faria alguém confiar

@@ -405,6 +405,14 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.inbox.tasks.refresh_wa_templates",
         "schedule": crontab(minute=0, hour="*/6"),
     },
+    # Mensagem de saída que nunca foi despachada vira falha VISÍVEL. De 10 em
+    # 10 minutos porque o que ela corrige é silêncio: a recepção achando que o
+    # paciente foi avisado. A própria task só encosta em quem está parado há
+    # mais de 30 min, para não atropelar o autoretry.
+    "varrer-mensagens-paradas": {
+        "task": "apps.inbox.tasks.varrer_mensagens_paradas",
+        "schedule": crontab(minute="*/10"),
+    },
     # Fila de write-back nós → EHR (§10.2): rede de segurança do disparo
     # pós-commit - retoma operações que ficaram PENDING (EHR fora do ar).
     "push-sync-operations": {

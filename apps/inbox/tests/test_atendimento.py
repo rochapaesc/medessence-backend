@@ -545,8 +545,12 @@ def test_conversa_nova_da_ingestao_nasce_com_o_relogio_da_fila(inbox_a):
         wa_id = "5511977776666"
         contact_name = "Paciente Novo"
 
-    conversation = _get_or_create_conversation(inbox_a["channel"], _Evento())
+    # Devolve a tupla desde 18/08/2026: quem chama precisa saber se ela NASCEU,
+    # para emitir `conversation:new` em vez de `conversation:updated` - sem
+    # isso a conversa não aparecia no Inbox de ninguém sem recarregar a página.
+    conversation, nasceu = _get_or_create_conversation(inbox_a["channel"], _Evento())
 
+    assert nasceu is True
     assert conversation.status == ConversationStatus.WAITING
     assert conversation.waiting_since is not None
 

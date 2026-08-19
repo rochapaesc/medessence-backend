@@ -48,15 +48,47 @@ def _drain(layer, channel_name, limit=6):
     return eventos
 
 
-def test_inbound_emite_message_new_e_conversation_updated(clinic_a, inbox_a):
+def test_numero_novo_emite_conversation_new_com_a_linha_inteira(clinic_a, inbox_a):
+    """
+    ⚠️ Quem escreve pela PRIMEIRA vez precisa do evento de conversa NOVA.
+
+    Defeito real de 18/08/2026: só existia `conversation:updated`, e o cliente
+    só sabe mexer em conversa que já está na lista dele. O aviso de uma que ele
+    nunca viu era descartado em silêncio, e ela aparecia só depois de o
+    atendente recarregar a página.
+
+    A linha inteira viaja no evento de propósito: com só o id, uma campanha
+    para mil pessoas viraria mil requisições em poucos minutos.
+    """
     layer, channel_name = _subscribe(clinic_a.id)
     payload = build_inbound_payload(wa_id="5585900000010", body="chegou")
     ingest_events(inbox_a["channel"], parse_meta_webhook(payload))
 
     first = _receive(layer, channel_name)["data"]
     second = _receive(layer, channel_name)["data"]
-    events = {first["event"], second["event"]}
-    assert events == {"message:new", "conversation:updated"}
+    por_evento = {e["event"]: e for e in (first, second)}
+
+    assert set(por_evento) == {"message:new", "conversation:new"}
+    linha = por_evento["conversation:new"]["conversation"]
+    # O que a lista precisa para desenhar a linha sem pedir nada ao servidor.
+    for campo in ("id", "contact", "status", "attended_by", "last_message_at"):
+        assert campo in linha, f"a linha da conversa nova precisa de {campo}"
+
+
+def test_numero_conhecido_continua_emitindo_conversation_updated(clinic_a, inbox_a):
+    """A conversa que já existe segue no caminho de sempre: quem a tem na lista
+    só precisa dos campos que mudaram."""
+    layer, channel_name = _subscribe(clinic_a.id)
+    payload = build_inbound_payload(
+        wa_id=inbox_a["contact"].wa_id, body="de novo eu"
+    )
+    ingest_events(inbox_a["channel"], parse_meta_webhook(payload))
+
+    eventos = {
+        _receive(layer, channel_name)["data"]["event"],
+        _receive(layer, channel_name)["data"]["event"],
+    }
+    assert eventos == {"message:new", "conversation:updated"}
 
 
 def test_status_emite_message_status(clinic_a, inbox_a):
