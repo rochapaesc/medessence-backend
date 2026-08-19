@@ -382,14 +382,32 @@ class Command(BaseCommand):
             )
             self._log("QuickReply", f"{label} @ {clinic.slug}", qr_created)
 
-        for name, category, status in WA_TEMPLATES:
-            _, tpl_created = WhatsAppTemplate.objects.get_or_create(
-                clinic=clinic,
-                name=name,
-                language="pt_BR",
-                defaults={"category": category, "status": status},
+        # ⚠️ Template de mentira SÓ em canal de mentira (19/08/2026).
+        #
+        # Estes nascem `APPROVED` sem nunca terem existido na Meta, o que serve
+        # para desenvolver e é veneno em clínica de verdade: a recepção escolhe
+        # na tela e o envio falha na frente do paciente. Foi o que aconteceu na
+        # MedEssence, que ficou com `confirmacao_consulta` e `lembrete_retorno`
+        # aprovados e inexistentes.
+        #
+        # O canal aqui vem de `get_or_create`: numa clínica que já tem canal de
+        # verdade, ele devolve o de verdade, e é isso que a guarda enxerga.
+        if channel.provider != WhatsAppProviderKind.FAKE:
+            self.stdout.write(
+                f"  templates pulados em {clinic.slug}: o canal é de verdade."
             )
-            self._log("WhatsAppTemplate", f"{name} @ {clinic.slug}", tpl_created)
+        else:
+            for name, category, status in WA_TEMPLATES:
+                _, tpl_created = WhatsAppTemplate.objects.get_or_create(
+                    clinic=clinic,
+                    # A conta do canal de mentira é vazia, e é esse o escopo em
+                    # que estes templates vivem (RF-INB-3.3).
+                    waba_id=channel.waba_id,
+                    name=name,
+                    language="pt_BR",
+                    defaults={"category": category, "status": status},
+                )
+                self._log("WhatsAppTemplate", f"{name} @ {clinic.slug}", tpl_created)
 
         # Conversas para os primeiros contatos com paciente vinculado.
         now = timezone.now()

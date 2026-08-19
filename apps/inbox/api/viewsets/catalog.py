@@ -139,7 +139,23 @@ class WhatsAppTemplateViewSet(AuditMixin, ClinicScopedModelViewSet):
         super().perform_destroy(instance)
 
     def get_queryset(self):
-        return super().get_queryset().order_by("name")
+        """
+        Só o catálogo da CONTA que a clínica usa hoje (RF-INB-3.3).
+
+        ⚠️ A clínica que troca de número ou de app passa a usar outra conta da
+        Meta, e o catálogo antigo continuava aqui: a tela mostrava templates de
+        duas contas lado a lado, sem como saber qual era de qual. Escolher um
+        da conta velha é envio recusado na frente do paciente.
+        """
+        from apps.inbox.template_scope import conta_da_clinica
+
+        clinic_id = self.clinic.pk
+        return (
+            super()
+            .get_queryset()
+            .filter(waba_id=conta_da_clinica(clinic_id))
+            .order_by("name")
+        )
 
     @action(detail=False, methods=["post"], url_path="sincronizar")
     def sincronizar(self, request):

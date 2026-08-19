@@ -214,13 +214,11 @@ def _params_do_template(cfg: dict, conversation, vars_: dict) -> dict[str, str]:
     Buraco na numeração não desloca o resto: a Meta casa por POSIÇÃO, e uma
     lista curta faria `{{3}}` receber o valor de `{{2}}` sem ninguém perceber.
     """
-    from apps.inbox.models import WhatsAppTemplate
     from apps.inbox.template_vars import Contexto, parametros
+    from apps.inbox.template_scope import template_por_nome
 
     nome = (cfg.get("template_name") or "").strip()
-    template = WhatsAppTemplate.objects.filter(
-        clinic=conversation.clinic, name=nome
-    ).first()
+    template = template_por_nome(conversation.clinic_id, nome)
     if template is None:
         return []
     return parametros(
@@ -232,13 +230,11 @@ def _params_do_template(cfg: dict, conversation, vars_: dict) -> dict[str, str]:
 
 def _corpo_do_template(cfg: dict, conversation, vars_: dict) -> str:
     """A mensagem montada, como o paciente vai ler."""
-    from apps.inbox.models import WhatsAppTemplate
     from apps.inbox.template_vars import Contexto, montar
+    from apps.inbox.template_scope import template_por_nome
 
     nome = (cfg.get("template_name") or "").strip()
-    template = WhatsAppTemplate.objects.filter(
-        clinic=conversation.clinic, name=nome
-    ).first()
+    template = template_por_nome(conversation.clinic_id, nome)
     if template is None:
         return ""
     return montar(

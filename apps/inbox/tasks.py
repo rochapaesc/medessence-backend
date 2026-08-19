@@ -351,6 +351,10 @@ def _upsert_templates(channel) -> int:
     for template in templates:
         WhatsAppTemplate.objects.update_or_create(
             clinic=channel.clinic,
+            # ⚠️ A CONTA faz parte da identidade (RF-INB-3.3). Sem ela, o
+            # catálogo da conta nova sobrescrevia a definição de mesmo nome da
+            # conta antiga, e o que só existia na antiga ficava para sempre.
+            waba_id=channel.waba_id,
             name=template.name,
             language=template.language,
             defaults={
@@ -374,7 +378,47 @@ def _upsert_templates(channel) -> int:
             },
         )
         count += 1
+    _varrer_o_que_sumiu(channel, templates)
     return count
+
+
+def _varrer_o_que_sumiu(channel, templates) -> int:
+    """
+    Some daqui o que sumiu de lá, na semântica do Chatwoot (RF-INB-3.3).
+
+    Ele substitui a lista inteira do canal a cada sincronização, e é o
+    comportamento certo: o catálogo é da Meta, e template apagado por lá que
+    continua oferecido na tela vira envio recusado na frente do paciente.
+
+    Três travas, e nenhuma é decoração:
+
+    1. ⚠️ **Lista vazia não varre.** É a guarda que o próprio Chatwoot tem
+       (`if templates.present?`): resposta vazia por erro de permissão, token
+       trocado ou paginação interrompida apagaria o catálogo inteiro de uma
+       clínica que não fez nada de errado.
+    2. **Só a conta sincronizada.** O que é da conta antiga não é assunto desta
+       chamada; quem tira aquilo é o `templates_por_conta --limpar`.
+    3. ⚠️ **Rascunho local sobrevive.** Sem `meta_template_id`, o template nunca
+       existiu na Meta e não podia constar na resposta dela. É a regra explícita
+       do wacrm: some da tela seria perder o que a clínica escreveu e ainda não
+       submeteu.
+    """
+    from apps.inbox.models import WhatsAppTemplate
+
+    if not templates:
+        return 0
+    vivos = {(t.name, t.language) for t in templates}
+    sumidos = [
+        t.pk
+        for t in WhatsAppTemplate.objects.filter(
+            clinic=channel.clinic, waba_id=channel.waba_id
+        ).exclude(meta_template_id="")
+        if (t.name, t.language) not in vivos
+    ]
+    if not sumidos:
+        return 0
+    WhatsAppTemplate.objects.filter(pk__in=sumidos).delete()
+    return len(sumidos)
 
 
 @shared_task(queue="sync")

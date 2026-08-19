@@ -16,7 +16,7 @@ from apps.core.api.permissions import IsClinicManager
 from apps.core.context import resolve_active_membership
 from apps.inbox.api.serializers.reactivation import ReactivationMessageSerializer
 from apps.inbox.choices import VariableSource
-from apps.inbox.models import ReactivationMessage, WhatsAppTemplate
+from apps.inbox.models import ReactivationMessage
 from apps.inbox.reactivation import (
     corpo_do_template,
     previa,
@@ -24,6 +24,7 @@ from apps.inbox.reactivation import (
     variaveis_do_template,
 )
 from apps.inbox.template_vars import modelo_do_link, rotulo_da_variavel
+from apps.inbox.template_scope import templates_da_clinica
 from apps.patients.models import Patient
 
 
@@ -90,9 +91,9 @@ class ReactivationMessageView(APIView):
                         if (url := modelo_do_link(template, chave))
                     },
                 }
-                for template in WhatsAppTemplate.objects.filter(
-                    clinic=clinic, status="APPROVED"
-                ).order_by("name")
+                for template in templates_da_clinica(clinic.pk)
+                .filter(status="APPROVED")
+                .order_by("name")
             ],
             "preview": previa(mensagem, exemplo, clinic) if exemplo else "",
             "preview_patient": exemplo.name if exemplo else "",

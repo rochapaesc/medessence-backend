@@ -203,7 +203,7 @@ def _problemas_do_template(cfg: dict, onde: str, clinic) -> list[str]:
     Sem `clinic` a checagem cai para o que dá sem consultar os aprovados:
     ainda pega o nó sem template e o mapa com buraco na numeração.
     """
-    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.template_scope import template_por_nome
 
     nome = (cfg.get("template_name") or "").strip()
     if not nome:
@@ -222,7 +222,7 @@ def _problemas_do_template(cfg: dict, onde: str, clinic) -> list[str]:
 
     from apps.inbox.template_vars import rotulo_da_variavel, variaveis_do_template
 
-    template = WhatsAppTemplate.objects.filter(clinic=clinic, name=nome).first()
+    template = template_por_nome(clinic.pk, nome)
     if template is None:
         return [f'{onde} usa o template "{nome}", que não está aprovado nesta conta.']
 

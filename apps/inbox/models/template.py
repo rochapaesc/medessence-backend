@@ -16,6 +16,21 @@ class WhatsAppTemplate(TenantScopedModel):
     permite enviar um destes com status APPROVED (RF-INB-3).
     """
 
+    #: A CONTA da Meta (WABA) de onde este template veio (RF-INB-3.3).
+    #:
+    #: ⚠️ Template pertence à conta, não ao número: a clínica que troca de
+    #: número ou de app passa a usar outra WABA, e sem este campo o catálogo
+    #: antigo ficava misturado com o novo, sem como distinguir. É a conta e não
+    #: o canal porque a troca mais comum REAPONTA o canal existente, e aí o
+    #: registro do canal é o mesmo antes e depois.
+    #:
+    #: Vazio significa "não sei de que conta veio" e some da tela: é o estado
+    #: das linhas anteriores a 19/08/2026 e o que a primeira sincronização
+    #: recarimba.
+    waba_id = CharField(
+        verbose_name="Conta da Meta", max_length=32, blank=True, db_index=True
+    )
+
     name = CharField(verbose_name="Nome", max_length=120)
     language = CharField(verbose_name="Idioma", max_length=10, default="pt_BR")
     category = CharField(verbose_name="Categoria", max_length=30, blank=True)
@@ -59,8 +74,12 @@ class WhatsAppTemplate(TenantScopedModel):
         verbose_name_plural = "Templates WhatsApp"
         ordering = ["name"]
         constraints = [
+            # ⚠️ A CONTA entra na chave (RF-INB-3.3). Sem ela, dois templates de
+            # mesmo nome em contas diferentes não coexistiam: a sincronização
+            # sobrescrevia a definição antiga com a nova, e o envio montava os
+            # parâmetros com os componentes errados.
             UniqueConstraint(
-                fields=["clinic", "name", "language"],
+                fields=["clinic", "waba_id", "name", "language"],
                 condition=Q(deleted_at__isnull=True),
                 name="uniq_template",
             ),

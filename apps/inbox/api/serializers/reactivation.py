@@ -7,8 +7,8 @@ from rest_framework.serializers import (
 )
 
 from apps.inbox.choices import VariableSource
-from apps.inbox.models import WhatsAppTemplate
 from apps.inbox.reactivation import variaveis_do_template
+from apps.inbox.template_scope import templates_da_clinica
 
 
 class VariableBindingSerializer(Serializer):
@@ -44,7 +44,10 @@ class ReactivationMessageSerializer(Serializer):
         if template_id is None:
             return {"template": None, "variables": {}}
 
-        template = WhatsAppTemplate.objects.filter(clinic=clinic, pk=template_id).first()
+        # Escopado à CONTA atual (RF-INB-3.3): a configuração é persistente e
+        # sai depois para a fila inteira, então apontar para template da conta
+        # antiga seria mil envios recusados pela Meta.
+        template = templates_da_clinica(clinic.pk).filter(pk=template_id).first()
         if template is None:
             raise ValidationError({"template": "Template não encontrado nesta clínica."})
 

@@ -647,15 +647,13 @@ def _componentes_do_template(message) -> list | None:
     Lista vazia devolve `None`: template sem variável não pode levar um
     `components` vazio, que a Meta também recusa.
     """
-    from apps.inbox.models import WhatsAppTemplate
     from apps.inbox.template_vars import componentes_para_a_meta
+    from apps.inbox.template_scope import template_por_nome
 
     resolvidos = (message.content_data or {}).get("template_params") or {}
     if not isinstance(resolvidos, dict) or not resolvidos:
         return None
-    template = WhatsAppTemplate.objects.filter(
-        clinic_id=message.clinic_id, name=message.template_name
-    ).first()
+    template = template_por_nome(message.clinic_id, message.template_name)
     return componentes_para_a_meta(template, resolvidos)
 
 
@@ -668,12 +666,12 @@ def _template_language(message) -> str:
 
     Com o mesmo nome em vários idiomas, `pt_BR` ganha: é o idioma da clínica.
     """
-    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.template_scope import templates_da_clinica
 
     idiomas = list(
-        WhatsAppTemplate.objects.filter(
-            clinic_id=message.clinic_id, name=message.template_name
-        ).values_list("language", flat=True)
+        templates_da_clinica(message.clinic_id)
+        .filter(name=message.template_name)
+        .values_list("language", flat=True)
     )
     if "pt_BR" in idiomas:
         return "pt_BR"
@@ -906,16 +904,15 @@ def _barrado_por_opt_out(message) -> bool:
     reabriu - barrar ali seria a recepção sem conseguir responder quem
     escreveu.
     """
-    from apps.inbox.models import WhatsAppTemplate
+    from apps.inbox.template_scope import templates_da_clinica
 
     if message.kind != MessageKind.TEMPLATE or not message.template_name:
         return False
     if not message.conversation.contact.marketing_opt_out:
         return False
     categoria = (
-        WhatsAppTemplate.objects.filter(
-            clinic_id=message.clinic_id, name=message.template_name
-        )
+        templates_da_clinica(message.clinic_id)
+        .filter(name=message.template_name)
         .values_list("category", flat=True)
         .first()
         or ""
@@ -933,14 +930,12 @@ def _formato_sem_suporte(message) -> str:
     recusava por formato. O código cru chegava à recepção sem dizer o que
     fazer.
     """
-    from apps.inbox.models import WhatsAppTemplate
     from apps.inbox.template_vars import motivo_de_nao_enviar
+    from apps.inbox.template_scope import template_por_nome
 
     if message.kind != MessageKind.TEMPLATE or not message.template_name:
         return ""
-    template = WhatsAppTemplate.objects.filter(
-        clinic_id=message.clinic_id, name=message.template_name
-    ).first()
+    template = template_por_nome(message.clinic_id, message.template_name)
     return motivo_de_nao_enviar(template) if template else ""
 
 

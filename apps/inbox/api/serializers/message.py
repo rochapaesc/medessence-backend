@@ -275,7 +275,6 @@ class MessageCreateSerializer(ModelSerializer):
         Barrar na criação é o que põe o erro na frente de quem pode agir, e
         com o número de variáveis que faltam.
         """
-        from apps.inbox.models import WhatsAppTemplate
         from apps.inbox.template_vars import (
             Contexto,
             montar,
@@ -283,11 +282,10 @@ class MessageCreateSerializer(ModelSerializer):
             rotulo_da_variavel,
             variaveis_do_template,
         )
+        from apps.inbox.template_scope import template_por_nome
 
         nome = attrs.get("template_name") or ""
-        template = WhatsAppTemplate.objects.filter(
-            clinic=conversation.clinic, name=nome
-        ).first()
+        template = template_por_nome(conversation.clinic_id, nome)
         if template is None:
             raise ValidationError(
                 f'O template "{nome}" não está aprovado nesta conta.'
