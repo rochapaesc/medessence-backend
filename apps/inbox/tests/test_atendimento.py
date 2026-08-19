@@ -540,15 +540,21 @@ def test_conversa_nova_da_ingestao_nasce_com_o_relogio_da_fila(inbox_a):
     """RF-ATD-11: sem `waiting_since` na criação, o "aguardando há X" da
     situação mais comum - conversa nova - ficaria em branco."""
     from apps.inbox.services import _get_or_create_conversation
+    from apps.integrations.whatsapp.base import WhatsAppEvent, WhatsAppEventKind
 
-    class _Evento:
-        wa_id = "5511977776666"
-        contact_name = "Paciente Novo"
+    # ⚠️ O evento de VERDADE, e não um dublê com dois atributos: o dublê
+    # quebrou quando o `WhatsAppEvent` ganhou o identificador da Meta (F2.7),
+    # e o que ele testava não tinha nada a ver com isso.
+    evento = WhatsAppEvent(
+        kind=WhatsAppEventKind.INBOUND,
+        wa_id="5511977776666",
+        contact_name="Paciente Novo",
+    )
 
     # Devolve a tupla desde 18/08/2026: quem chama precisa saber se ela NASCEU,
     # para emitir `conversation:new` em vez de `conversation:updated` - sem
     # isso a conversa não aparecia no Inbox de ninguém sem recarregar a página.
-    conversation, nasceu = _get_or_create_conversation(inbox_a["channel"], _Evento())
+    conversation, nasceu = _get_or_create_conversation(inbox_a["channel"], evento)
 
     assert nasceu is True
     assert conversation.status == ConversationStatus.WAITING

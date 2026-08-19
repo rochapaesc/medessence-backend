@@ -44,6 +44,10 @@ def process_whatsapp_webhook(webhook_event_id: int, channel_id: int):
         de_template = _aplicar_mudancas_de_template(channel, event.payload)
         if de_template:
             stats = {**(stats if isinstance(stats, dict) else {}), "templates": de_template}
+        # Avisos de conta (RF-CON-5.4): chegam no mesmo webhook, em `field`.
+        de_conta = _aplicar_mudancas_de_conta(channel, event.payload)
+        if de_conta:
+            stats = {**(stats if isinstance(stats, dict) else {}), "conta": de_conta}
         event.processed_at = timezone.now()
         event.error = ""
         event.save(update_fields=["processed_at", "error"])
@@ -79,6 +83,43 @@ def _aplicar_mudancas_de_template(channel, payload: dict) -> list[str]:
     return feitos
 
 
+def _aplicar_mudancas_de_conta(channel, payload: dict) -> list[str]:
+    """
+    Avisos da Meta sobre a CONTA, e o que nos interessa deles hoje: a clínica
+    removeu a integração pelo aplicativo do celular (RF-CON-5.4).
+
+    ⚠️ Sem tratar isso, o sistema seguiria tentando enviar e culpando a
+    credencial, que é o diagnóstico errado: quem desligou sabe o que fez, e
+    quem só olha a tela precisa ler o motivo certo para saber o que fazer.
+
+    Como o `_aplicar_mudancas_de_template`, cada mudança é aplicada por conta
+    própria e nunca derruba o lote.
+    """
+    from apps.inbox.signup import desconectar_canal
+
+    feitos: list[str] = []
+    for entry in payload.get("entry", []) or []:
+        for change in entry.get("changes", []) or []:
+            if (change.get("field") or "") != "account_update":
+                continue
+            value = change.get("value") or {}
+            if (value.get("event") or "").upper() != "PARTNER_REMOVED":
+                # Os outros avisos de conta (verificação, banimento, mudança de
+                # limite) ficam no WebhookEvent cru até terem consumidor. Agir
+                # por adivinhação aqui derrubaria canal por evento informativo.
+                continue
+            try:
+                desconectar_canal(
+                    channel.clinic,
+                    None,
+                    motivo="A integração foi removida pelo aplicativo do celular.",
+                )
+                feitos.append("partner_removed")
+            except Exception:
+                logger.exception("Falha ao aplicar PARTNER_REMOVED do webhook de conta")
+    return feitos
+
+
 @shared_task(queue="media")
 def fetch_media_asset(media_asset_id: int):
     """Baixa o ativo pelo provedor e re-hospeda (RF-INB-6).
@@ -93,7 +134,8 @@ def fetch_media_asset(media_asset_id: int):
     """
     from apps.inbox.audio import ler_metadados
     from apps.inbox.choices import MediaState
-    from apps.inbox.models import Channel, MediaAsset
+    from apps.inbox.models import MediaAsset
+    from apps.inbox.services import canal_da_clinica
     from apps.integrations.whatsapp.registry import get_whatsapp_provider
 
     media = MediaAsset.objects.filter(pk=media_asset_id).first()
@@ -102,7 +144,9 @@ def fetch_media_asset(media_asset_id: int):
     if media.stored_file:
         return "skipped: já baixada"
 
-    channel = Channel.objects.filter(clinic=media.clinic).first()
+    # O canal REAL: o fake não sabe baixar mídia da Meta, e a clínica que já
+    # usou o modo de teste tem os dois.
+    channel = canal_da_clinica(media.clinic)
     if channel is None:
         return _media_falhou(media, "Clínica sem canal de WhatsApp configurado")
 

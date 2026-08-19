@@ -21,7 +21,24 @@ class Contact(TenantScopedModel):
     wa_id = CharField(
         verbose_name="Número (wa_id)",
         max_length=20,
-        help_text="E.164 sem '+' (formato Meta).",
+        blank=True,
+        help_text=(
+            "E.164 sem '+' (formato Meta). ⚠️ Pode vir VAZIO desde a F2.7: a "
+            "Meta esconde o telefone de quem adota nome de usuário e não fala "
+            "com a clínica há 30 dias (RF-CON-6)."
+        ),
+    )
+    user_id = CharField(
+        verbose_name="Identificador da Meta",
+        max_length=40,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "O BSUID, no formato 'BR.1234...' (RF-CON-6). Identifica a pessoa "
+            "PARA ESTA EMPRESA e é o único caminho quando o telefone não vem. "
+            "⚠️ Ele MUDA quando a pessoa troca de telefone: é identificador de "
+            "conversa, não identidade do paciente."
+        ),
     )
     display_name = CharField(verbose_name="Nome no WhatsApp", max_length=160, blank=True)
     marketing_opt_out = BooleanField(
@@ -43,15 +60,44 @@ class Contact(TenantScopedModel):
             # Unicidade entre registros VIVOS, como nas demais constraints do
             # projeto — sem a condição, um contato soft-deletado travava a
             # recriação do mesmo número para sempre (era a única sem ela).
+            #
+            # ⚠️ E entre os que TÊM número: desde a F2.7 o contato pode nascer
+            # sem telefone (RF-CON-6.4), e sem o `~Q(wa_id="")` o segundo
+            # contato sem número colidiria com o primeiro no vazio.
             UniqueConstraint(
                 fields=["clinic", "wa_id"],
-                condition=Q(deleted_at__isnull=True),
+                condition=Q(deleted_at__isnull=True) & ~Q(wa_id=""),
                 name="uniq_contact_wa_id",
+            ),
+            # A mesma regra pelo outro identificador: dois contatos com o mesmo
+            # `user_id` seriam a mesma pessoa em duas linhas, e as conversas
+            # dela se dividiriam entre as duas.
+            UniqueConstraint(
+                fields=["clinic", "user_id"],
+                condition=Q(deleted_at__isnull=True) & ~Q(user_id=""),
+                name="uniq_contact_user_id",
             ),
         ]
 
+    @property
+    def destino(self) -> str:
+        """
+        Por qual identificador se fala com este contato (RF-CON-6.3).
+
+        ⚠️ **O telefone vem primeiro**, e o identificador da Meta só entra
+        quando ele não existe. Duas razões: o BSUID é REGENERADO quando a
+        pessoa troca de telefone (a Meta o documenta), então um guardado aqui
+        pode estar velho; e a própria Meta dá precedência ao telefone quando
+        recebe os dois. O caminho por `user_id` existe para o caso que a F2.7
+        veio resolver, que é o telefone não vir mais.
+
+        O adapter reconhece o formato `BR.1234...` e o manda no campo certo, e
+        por isso quem envia não precisa saber qual dos dois está usando.
+        """
+        return self.wa_id or self.user_id
+
     def __str__(self):
-        return self.display_name or self.wa_id
+        return self.display_name or self.wa_id or self.user_id
 
 
 class PatientContact(BaseModel):

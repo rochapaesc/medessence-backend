@@ -23,6 +23,10 @@ class WhatsAppEventKind:
     # de parar promoções que a Meta põe nos modelos MARKETING. Não é mensagem
     # e não vira balão - muda um campo do contato.
     PREFERENCE = "preference"
+    # Contato da agenda do celular (RF-CON-5.3, coexistência). Chega quando o
+    # dono do número mexe na agenda do aparelho. Não é mensagem e não abre
+    # conversa: só acrescenta ou atualiza o contato.
+    CONTACT_SYNC = "contact_sync"
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,10 @@ class WhatsAppEvent:
     kind: str  # WhatsAppEventKind
     provider_message_id: str = ""  # wamid
     wa_id: str = ""  # E.164 sem "+" (contato do outro lado)
+    # O identificador da pessoa por empresa ("BR.1234...", RF-CON-6). A Meta o
+    # manda SEMPRE, e ele é o único quando o telefone não vem. Não substitui o
+    # `wa_id`: os dois viajam juntos e os dois são guardados.
+    user_id: str = ""
     message_kind: str = "text"  # já mapeado para MessageKind (choices do inbox)
     body: str = ""
     caption: str = ""
@@ -51,6 +59,8 @@ class WhatsAppEvent:
     status_error: str = ""  # para status=failed: motivo legível (errors[] da Meta)
     # para kind=PREFERENCE: True quando o contato pediu para PARAR (RF-SEQ-8.1)
     marketing_opt_out: bool = False
+    # para kind=CONTACT_SYNC: `add`, `update` ou `remove` (RF-CON-5.3)
+    sync_action: str = ""
     wa_timestamp: datetime | None = None  # aware
     contact_name: str = ""
     raw: dict = field(default_factory=dict)

@@ -64,10 +64,7 @@ def _segredos_possiveis(payload: dict) -> list[str]:
     próprio. Sem isto, uma das duas pontas fica sem receber para sempre.
     """
     segredos: list[str] = []
-    for phone_id in _phone_number_ids(payload):
-        canal = Channel.objects.filter(phone_number_id=phone_id).first()
-        if canal is None:
-            continue
+    for canal in _canais_do_payload(payload):
         do_canal = (canal.credentials or {}).get("app_secret") or ""
         if do_canal and do_canal not in segredos:
             segredos.append(do_canal)
@@ -134,6 +131,47 @@ def _phone_number_ids(payload: dict) -> list[str]:
     return ids
 
 
+def _waba_ids(payload: dict) -> list[str]:
+    """
+    As contas citadas no payload (o `entry[].id` é o WABA).
+
+    ⚠️ Existe porque **nem todo evento fala de um número**: o `account_update`
+    que avisa que a clínica removeu a integração (RF-CON-5.4) é da CONTA, e vem
+    sem `metadata.phone_number_id`. Sem este caminho ele cairia no ramo
+    "assinado pela Meta, mas sem número" e ninguém o leria.
+    """
+    ids: list[str] = []
+    for entry in payload.get("entry", []):
+        waba = str(entry.get("id") or "")
+        if waba and waba not in ids:
+            ids.append(waba)
+    return ids
+
+
+def _canais_do_payload(payload: dict) -> list:
+    """
+    Os canais que este payload alcança: pelo número, e só na falta dele, pela
+    conta. Serve à conferência da assinatura E ao roteamento, para os dois não
+    divergirem — secret achado por um caminho e canal achado por outro seria
+    webhook aceito e jogado fora.
+    """
+    canais = []
+    vistos: set[int] = set()
+    for phone_id in _phone_number_ids(payload):
+        canal = Channel.objects.filter(phone_number_id=phone_id).first()
+        if canal is not None and canal.pk not in vistos:
+            vistos.add(canal.pk)
+            canais.append(canal)
+    if canais:
+        return canais
+    for waba_id in _waba_ids(payload):
+        canal = Channel.objects.filter(waba_id=waba_id).first()
+        if canal is not None and canal.pk not in vistos:
+            vistos.add(canal.pk)
+            canais.append(canal)
+    return canais
+
+
 def _slice_for(payload: dict, phone_number_id: str) -> dict:
     """
     Recorta o payload para UM número. Payload multi-número é teórico (hoje
@@ -168,9 +206,17 @@ def _receive_events(request):
 
     phone_ids = _phone_number_ids(payload)
     if not phone_ids:
-        # Assinado pela Meta, mas sem número — update de conta/template etc.
-        # Fica o rastro global; tipos novos são assunto da F3+.
-        WebhookEvent.objects.create(source=WebhookSource.META, clinic=None, payload=payload)
+        # Sem número no payload, o evento ainda pode ser da CONTA de uma
+        # clínica (RF-CON-5.4): aí ele é processado como qualquer outro, com o
+        # canal achado pelo WABA. Sem dono conhecido, fica o rastro global.
+        canal = next(iter(_canais_do_payload(payload)), None)
+        event = WebhookEvent.objects.create(
+            source=WebhookSource.META,
+            clinic=canal.clinic if canal else None,
+            payload=payload,
+        )
+        if canal is not None:
+            process_whatsapp_webhook.delay(event.pk, canal.pk)
         return HttpResponse(status=200)
 
     single = len(phone_ids) == 1

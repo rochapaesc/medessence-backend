@@ -108,7 +108,14 @@ def apply_message_to_conversation(message, *, created: bool) -> None:
 def ingest_events(channel, events) -> dict:
     """Aplica uma lista de `WhatsAppEvent` normalizados. Idempotente: reentrega
     do webhook não duplica (unique clinic+wamid) nem recontagem."""
-    stats = {"inbound": 0, "echo": 0, "status": 0, "preference": 0, "ignored": 0}
+    stats = {
+        "inbound": 0,
+        "echo": 0,
+        "status": 0,
+        "preference": 0,
+        "contact_sync": 0,
+        "ignored": 0,
+    }
     for event in events:
         if event.kind == WhatsAppEventKind.INBOUND:
             stats["inbound"] += bool(_ingest_message(channel, event, SenderKind.CONTACT))
@@ -118,9 +125,38 @@ def ingest_events(channel, events) -> dict:
             stats["status"] += bool(_apply_status(channel, event))
         elif event.kind == WhatsAppEventKind.PREFERENCE:
             stats["preference"] += bool(_apply_preference(channel, event))
+        elif event.kind == WhatsAppEventKind.CONTACT_SYNC:
+            stats["contact_sync"] += bool(_sincronizar_contato(channel, event))
         else:
             stats["ignored"] += 1
     return stats
+
+
+def _sincronizar_contato(channel, event) -> bool:
+    """
+    Contato da agenda do celular da clínica (RF-CON-5.3).
+
+    ⚠️ **Remover é IGNORADO de propósito**, e este é um desvio consciente do
+    whatomate, que apaga o contato. Aqui o contato carrega vínculo com paciente,
+    conversas e histórico: tirar um número da agenda do aparelho não é ordem de
+    apagar o prontuário de alguém. O payload cru fica no WebhookEvent.
+
+    ⚠️ O nome só é gravado quando o contato NASCE ou quando ele ainda não tem
+    nome. O nome do WhatsApp (que o próprio paciente escolheu) e o da recepção
+    valem mais que o apelido na agenda do celular do dono da clínica, onde a
+    mesma pessoa pode estar como "Maria Recepção".
+    """
+    if event.sync_action == "remove" or not event.wa_id:
+        return False
+
+    # `_resolver_contato` cria quando não existe, já com o nome da agenda, e
+    # traz junto a autocura do nono dígito: número salvo sem o 9 no celular do
+    # dono não pode virar um contato paralelo do mesmo paciente.
+    contato = _resolver_contato(channel.clinic, event)
+    if not contato.display_name and event.contact_name:
+        contato.display_name = event.contact_name[:160]
+        contato.save(update_fields=["display_name", "updated_at"])
+    return True
 
 
 def _apply_preference(channel, event) -> bool:
@@ -153,24 +189,71 @@ def _resolver_contato(clinic, event):
     histórico e vínculos ficam intactos porque a FK não muda. É o que fecha o
     ciclo do outbound-first: criamos com 9 por palpite e a primeira resposta
     do paciente corrige o palpite sozinha.
+
+    ⚠️ **O telefone continua sendo o caminho principal** (RF-CON-6.2): é por ele
+    que o contato se liga à ficha do paciente. O identificador da Meta entra
+    como SEGUNDO caminho, para o caso que a F2.7 veio resolver — a pessoa adotou
+    nome de usuário e o telefone não vem mais no webhook. Inverter a ordem
+    quebraria o vínculo com o prontuário.
     """
     from apps.patients.models import Contact
     from apps.patients.phone import grafia_alternativa
 
-    contact = Contact.objects.filter(clinic=clinic, wa_id=event.wa_id).first()
+    contact = None
+    if event.wa_id:
+        contact = Contact.objects.filter(clinic=clinic, wa_id=event.wa_id).first()
+        if contact is None:
+            alternativa = grafia_alternativa(event.wa_id)
+            if alternativa:
+                contact = Contact.objects.filter(clinic=clinic, wa_id=alternativa).first()
+                if contact is not None:
+                    contact.wa_id = event.wa_id
+                    contact.save(update_fields=["wa_id", "updated_at"])
+
+    # Sem telefone (ou telefone que não conhecemos), o identificador da Meta é
+    # quem diz de quem é a conversa.
+    if contact is None and event.user_id:
+        contact = Contact.objects.filter(clinic=clinic, user_id=event.user_id).first()
+        if contact is not None and event.wa_id and not contact.wa_id:
+            # O telefone VOLTOU a aparecer para quem entrou só pelo
+            # identificador: guardá-lo é o que permite achar a ficha do
+            # paciente depois.
+            contact.wa_id = event.wa_id
+            contact.save(update_fields=["wa_id", "updated_at"])
+
     if contact is None:
-        alternativa = grafia_alternativa(event.wa_id)
-        if alternativa:
-            contact = Contact.objects.filter(clinic=clinic, wa_id=alternativa).first()
-            if contact is not None:
-                contact.wa_id = event.wa_id
-                contact.save(update_fields=["wa_id", "updated_at"])
-    if contact is None:
-        contact, _ = Contact.objects.get_or_create(
+        contact = Contact.objects.create(
             clinic=clinic,
             wa_id=event.wa_id,
-            defaults={"display_name": event.contact_name[:160]},
+            user_id=event.user_id,
+            display_name=event.contact_name[:160],
         )
+    elif event.user_id and contact.user_id != event.user_id:
+        # ⚠️ O identificador é REGENERADO quando a pessoa troca de telefone, e
+        # a Meta manda o novo no webhook seguinte. Guardar o mais recente é o
+        # que impede de responder para um identificador morto.
+        #
+        # ⚠️ Mas só quando ele estiver LIVRE: se outro contato já o tem, os dois
+        # são a mesma pessoa em duas linhas (ela apareceu primeiro sem telefone
+        # e depois com ele). Roubar o identificador estouraria a unicidade e
+        # derrubaria a ingestão da mensagem; juntar os dois é fusão de contato,
+        # que é decisão de quem atende e não deste caminho.
+        tomado = (
+            Contact.objects.filter(clinic=clinic, user_id=event.user_id)
+            .exclude(pk=contact.pk)
+            .exists()
+        )
+        if tomado:
+            logger.warning(
+                "Identificador da Meta %s já pertence a outro contato da clínica "
+                "%s; o contato %s ficou sem ele. Provável contato duplicado.",
+                event.user_id,
+                clinic.pk,
+                contact.pk,
+            )
+        else:
+            contact.user_id = event.user_id
+            contact.save(update_fields=["user_id", "updated_at"])
     return contact
 
 
@@ -473,11 +556,18 @@ def _ingest_message(channel, event, sender_kind) -> bool:
     if not event.provider_message_id:
         return False
 
-    existing = Message.objects.filter(
+    # ⚠️ `all_objects`, e não `objects`: a mensagem APAGADA continua ocupando o
+    # wamid (a `uniq_message_wamid` não dispensa registro soft-deletado), então
+    # procurar só entre as vivas fazia a reentrega tentar criar de novo e
+    # estourar IntegrityError. E como a task levanta, o LOTE INTEIRO do webhook
+    # se perdia junto: a mensagem nova que viesse no mesmo payload nunca era
+    # gravada. Reconhecer a apagada como já ingerida é o que este `return False`
+    # sempre prometeu.
+    existing = Message.all_objects.filter(
         clinic=channel.clinic, provider_message_id=event.provider_message_id
     ).first()
     if existing is not None:
-        return False  # reentrega - idempotente
+        return False  # reentrega - idempotente, inclusive da que foi apagada
 
     conversation, conversa_nasceu = _get_or_create_conversation(channel, event)
 
@@ -503,6 +593,7 @@ def _ingest_message(channel, event, sender_kind) -> bool:
         reply_to_provider_id=event.reply_to_provider_id,
         wa_timestamp=event.wa_timestamp or timezone.now(),
         raw_payload=event.raw,
+        from_phone=event.kind == WhatsAppEventKind.ECHO,
     )
 
     if media is not None:
@@ -518,6 +609,14 @@ def _ingest_message(channel, event, sender_kind) -> bool:
     )
 
     conversation.refresh_from_db()
+    # A clínica respondeu pelo celular (RF-CON-5.2). Depois do refresh, porque
+    # o signal da mensagem acabou de mexer na mesma linha, e ANTES dos eventos
+    # de tempo real, para a tela receber o estado já corrigido em vez de
+    # piscar "Aguardando" e mudar no evento seguinte.
+    if event.kind == WhatsAppEventKind.ECHO:
+        from apps.inbox.attendance import atendida_pelo_celular
+
+        atendida_pelo_celular(conversation)
     notify_message_new(message)
     # ⚠️ Conversa que NASCEU agora pede o evento de nova, não o de atualizada:
     # o cliente só sabe mexer no que já tem na lista, e ninguém tem uma que
@@ -791,6 +890,25 @@ def reagir(message, user, emoji: str) -> None:
     send_whatsapp_reaction.delay(message.pk, emoji)
 
 
+def canal_da_clinica(clinic):
+    """
+    O canal REAL da clínica, e nunca o do modo de teste (RF-FLW-25.5).
+
+    ⚠️ Existe porque `Channel.objects.filter(clinic=...).first()` estava
+    espalhado pelo código, e a clínica que já usou o modo de teste tem DOIS
+    canais: o de verdade e um FAKE. Sem ordem nem filtro, qual dos dois vem é
+    indefinido, e o fake responde SEMPRE que está tudo bem. O estrago concreto:
+    o "Já reconectei" sondava o canal fake, dizia que a conexão voltou e o
+    número de verdade continuava mudo.
+
+    Aceita `clinic` ou o id dela, porque os dois aparecem nos chamadores.
+    """
+    from apps.inbox.models import Channel
+
+    campo = "clinic_id" if isinstance(clinic, int) else "clinic"
+    return Channel.objects.filter(**{campo: clinic, "is_test": False}).first()
+
+
 def mensagens_para_reenviar(clinic):
     """
     O que não saiu e ainda dá para tentar de novo.
@@ -977,7 +1095,10 @@ def send_message(message) -> None:
 
     conversation = message.conversation
     provider = get_whatsapp_provider(conversation.channel)
-    to = conversation.contact.wa_id
+    # Telefone quando existe, identificador da Meta quando não (RF-CON-6.3). O
+    # adapter reconhece o formato `BR.1234...` e o manda no campo certo, então
+    # este é o ÚNICO lugar que decide por qual dos dois se fala.
+    to = conversation.contact.destino
 
     # ⚠️ Carimba a TENTATIVA antes de falar com a Meta, e num save próprio.
     #

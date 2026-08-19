@@ -118,6 +118,7 @@ class MessageSerializer(ModelSerializer):
             "sender_kind",
             "sent_by",
             "sent_by_name",
+            "from_phone",
             "template_name",
             "edited_at",
             "wa_timestamp",

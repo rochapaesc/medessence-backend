@@ -111,6 +111,14 @@ class Message(TenantScopedModel):
         default=False,
         help_text="Anotação da equipe: NUNCA é enviada ao paciente (RF-ATD-3).",
     )
+    # Coexistência (RF-CON-5.1): saiu do app do WhatsApp no celular da clínica,
+    # não daqui. Campo PRÓPRIO em vez de deduzir por "é de agente e não tem
+    # autor": envio por comando de manutenção também não tem autor, e a tela
+    # passaria a dizer que ele veio do celular.
+    from_phone = BooleanField(
+        verbose_name="Enviada pelo celular",
+        default=False,
+    )
     activity_type = CharField(
         verbose_name="Tipo de evento",
         max_length=16,

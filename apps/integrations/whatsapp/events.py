@@ -55,13 +55,41 @@ def _ts(value) -> datetime | None:
 
 
 def _names_by_wa_id(value: dict) -> dict:
+    """
+    Nome do perfil, indexado pelo telefone E pelo identificador da Meta.
+
+    ⚠️ As duas chaves são necessárias desde a F2.7: quem adota nome de usuário
+    chega SEM telefone, e indexar só por `wa_id` fazia o contato nascer sem
+    nome nenhum. A fila mostrava "Contato sem número" para alguém cujo nome a
+    Meta tinha acabado de mandar. Achado rodando o `ensaio_de_coexistencia`.
+    """
     names = {}
     for contact in value.get("contacts", []) or []:
-        wa_id = contact.get("wa_id", "")
         name = (contact.get("profile") or {}).get("name", "")
-        if wa_id:
-            names[wa_id] = name
+        if not name:
+            continue
+        for chave in (contact.get("wa_id", ""), contact.get("user_id", "")):
+            if chave:
+                names[chave] = name
     return names
+
+
+def _user_ids(value: dict) -> dict:
+    """
+    O identificador da Meta de cada contato do bloco (RF-CON-6).
+
+    ⚠️ Ele vem em `contacts[].user_id` **sempre**, mesmo para quem não usa nome
+    de usuário. É por aqui que o contato ganha o identificador ANTES de o
+    telefone sumir, e é isso que torna possível continuar falando com a pessoa
+    quando ele sumir.
+    """
+    ids = {}
+    for contact in value.get("contacts", []) or []:
+        wa_id = contact.get("wa_id", "")
+        user_id = contact.get("user_id", "")
+        if wa_id and user_id:
+            ids[wa_id] = user_id
+    return ids
 
 
 def _contatos(cartoes: list) -> list[dict]:
@@ -117,7 +145,9 @@ def _resposta_interativa(interativa: dict) -> tuple[str, str]:
     return resposta.get("title", ""), resposta.get("id", "")
 
 
-def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> WhatsAppEvent:
+def _parse_message(
+    message: dict, *, kind: str, wa_id: str, names: dict, user_ids: dict | None = None
+) -> WhatsAppEvent:
     meta_type = message.get("type", "")
     message_kind = KIND_MAP.get(meta_type, MessageKind.UNSUPPORTED)
 
@@ -157,10 +187,22 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
         body = botao.get("text", "")
         content_data = {"interactive_id": botao.get("payload", "")}
 
+    # No inbound o identificador vem em `from_user_id`; no eco, em
+    # `to_user_id`, porque ali quem manda é a clínica. O bloco `contacts[]` é o
+    # terceiro caminho e o mais confiável, então ele desempata.
+    do_bloco = (user_ids or {}).get(wa_id, "")
+    user_id = (
+        do_bloco
+        or message.get("from_user_id", "")
+        or message.get("to_user_id", "")
+        or ""
+    )
+
     return WhatsAppEvent(
         kind=kind,
         provider_message_id=message.get("id", ""),
         wa_id=wa_id,
+        user_id=user_id,
         message_kind=message_kind,
         body=body,
         caption=caption,
@@ -172,8 +214,30 @@ def _parse_message(message: dict, *, kind: str, wa_id: str, names: dict) -> What
         reaction_to=reaction_to,
         reply_to_provider_id=(message.get("context") or {}).get("id", ""),
         wa_timestamp=_ts(message.get("timestamp")),
-        contact_name=names.get(wa_id, ""),
+        # Pelo telefone quando ele existe, pelo identificador quando não.
+        contact_name=names.get(wa_id) or names.get(user_id, ""),
         raw=message,
+    )
+
+
+def _sincronizacao_de_contato(value: dict) -> WhatsAppEvent | None:
+    """
+    Contato da agenda do celular (RF-CON-5.3, campo `smb_app_state_sync`).
+
+    ⚠️ Este evento NÃO segue o formato dos outros: não há lista de mensagens
+    nem `contacts[]`, e os dados vêm soltos na raiz do `value`. Por isso ele é
+    o único que precisa saber em que `field` está.
+    """
+    telefone = (value.get("contact_phone_number") or "").lstrip("+")
+    if not telefone:
+        return None
+    nome = value.get("contact_name") or value.get("contact_first_name") or ""
+    return WhatsAppEvent(
+        kind=WhatsAppEventKind.CONTACT_SYNC,
+        wa_id=telefone,
+        contact_name=nome,
+        sync_action=(value.get("action") or "").lower(),
+        raw=value,
     )
 
 
@@ -183,6 +247,15 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
         for change in entry.get("changes", []) or []:
             value = change.get("value", {}) or {}
             names = _names_by_wa_id(value)
+            user_ids = _user_ids(value)
+
+            # ⚠️ O nome do EVENTO e o nome do CAMPO são diferentes: o evento é
+            # `smb_app_state_sync` e o conteúdo dele vem solto no `value`.
+            if change.get("field") == "smb_app_state_sync":
+                sincronia = _sincronizacao_de_contato(value)
+                if sincronia is not None:
+                    events.append(sincronia)
+                continue
 
             for message in value.get("messages", []) or []:
                 if message.get("type") in IGNORED_KINDS:
@@ -193,9 +266,14 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
                         kind=WhatsAppEventKind.INBOUND,
                         wa_id=message.get("from", ""),
                         names=names,
+                        user_ids=user_ids,
                     )
                 )
 
+            # ⚠️ O evento se chama `smb_message_echoes` e a chave do payload é
+            # `message_echoes`. Procurar o nome do evento dentro do corpo não
+            # acha nada (RF-CON-5). A chave é lida sem olhar o `field` porque
+            # ela já é única no payload.
             for echo in value.get("message_echoes", []) or []:
                 if echo.get("type") in IGNORED_KINDS:
                     continue
@@ -205,6 +283,7 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
                         kind=WhatsAppEventKind.ECHO,
                         wa_id=echo.get("to", ""),
                         names=names,
+                        user_ids=user_ids,
                     )
                 )
 
@@ -217,6 +296,7 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
                     WhatsAppEvent(
                         kind=WhatsAppEventKind.PREFERENCE,
                         wa_id=pref.get("wa_id", ""),
+                        user_id=pref.get("user_id", ""),
                         marketing_opt_out=pref.get("value") == "stop",
                         wa_timestamp=_ts(pref.get("timestamp")),
                         raw=pref,
@@ -229,6 +309,7 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
                         kind=WhatsAppEventKind.STATUS,
                         provider_message_id=status.get("id", ""),
                         wa_id=status.get("recipient_id", ""),
+                        user_id=status.get("recipient_user_id", ""),
                         status=STATUS_MAP.get(status.get("status", ""), ""),
                         status_error=_status_error(status),
                         wa_timestamp=_ts(status.get("timestamp")),

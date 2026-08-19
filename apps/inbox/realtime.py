@@ -120,6 +120,11 @@ def _message_min(message) -> dict:
         "is_internal": message.is_internal,
         "activity_type": message.activity_type,
         "activity_data": message.activity_data,
+        # Coexistência (RF-CON-5.1): o balão precisa nascer sabendo que a
+        # resposta saiu do celular. Sem isto ele chega pelo socket sem a
+        # assinatura e ganha assinatura só depois de um F5, que é a mesma
+        # divergência que a janela de 24h já causou.
+        "from_phone": message.from_phone,
         "sent_by_name": (
             (message.sent_by.get_full_name() or message.sent_by.email)
             if message.sent_by_id

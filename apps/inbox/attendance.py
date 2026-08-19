@@ -413,6 +413,47 @@ def _nome(user) -> str:
     return user.get_full_name() or user.email
 
 
+def atendida_pelo_celular(conversation) -> bool:
+    """
+    Alguém respondeu por esta conversa pelo app do WhatsApp no celular
+    (RF-CON-5.2, coexistência). Devolve True quando algo mudou.
+
+    Tira da fila de espera e zera as não lidas: quem digitou a resposta no
+    aparelho leu a mensagem do paciente, e deixar a conversa cobrando a
+    recepção faria duas pessoas responderem a mesma pergunta, que é o caso mais
+    comum de todos numa clínica com celular no balcão.
+
+    ⚠️ **NÃO mexe na posse.** O eco não diz QUEM respondeu (a Meta manda o
+    número da clínica, não a pessoa), então atribuir a conversa a alguém seria
+    inventar um dono. Ela fica ABERTA e sem responsável, que é honesto: está
+    sendo cuidada, mas por fora do sistema.
+    Consequência aceita: nesse estado ela não entra em nenhum dos três botões
+    de recorte (Atendendo, Aguardando, IA), e aparece na lista padrão, que é
+    onde a recepção trabalha o dia todo.
+
+    ⚠️ Conversa dormente (encerrada ou adiada) fica como está: a clínica pode
+    ter mandado um último aviso pelo celular depois de encerrar, e ressuscitar
+    a conversa por causa disso encheria a fila de assunto já resolvido. Quem
+    reabre continua sendo o paciente (RF-ATD-2).
+    """
+    if conversation.status in DORMANT_STATUSES:
+        return False
+
+    campos = []
+    if conversation.status == ConversationStatus.WAITING:
+        conversation.status = ConversationStatus.OPEN
+        conversation.waiting_since = None
+        campos += ["status", "waiting_since"]
+    if conversation.unread_count:
+        conversation.unread_count = 0
+        campos.append("unread_count")
+
+    if not campos:
+        return False
+    conversation.save(update_fields=[*campos, "updated_at"])
+    return True
+
+
 def mark_waiting(conversation, user=None):
     """Devolve para a fila: perde o responsável (RF-ATD-1)."""
     conversation.status = ConversationStatus.WAITING
