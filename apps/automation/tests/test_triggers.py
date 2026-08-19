@@ -367,3 +367,129 @@ class TestLigacaoComAIngestao:
         assert Message.objects.filter(
             conversation=inbox["conversation"], sender_kind=SenderKind.CONTACT
         ).exists()
+
+
+# ---- a cota do repique não é gasta pela sequência (18/08/2026) ----
+
+
+class TestCotaDoRepique:
+    """
+    ⚠️ Achado ao vivo: seis passos de sequência em vinte minutos gastaram a cota
+    do contato, e a palavra-chave foi recusada duas vezes seguidas. Quem estava
+    testando achou que o gatilho tinha quebrado.
+
+    A trava é contra o repique do PACIENTE em conversa. Passo agendado pela
+    clínica é calendário, e calendário não repica.
+    """
+
+    def _execucoes(self, clinic, conversation, quantas, *, de_sequencia):
+        """Cria execuções para o contato, de sequência ou de conversa."""
+        from datetime import time as hora
+
+        from django.utils import timezone
+
+        from apps.automation.choices import SequenceDispatchStatus
+        from apps.automation.models import (
+            FlowRun,
+            Sequence,
+            SequenceDispatch,
+            SequenceEnrollment,
+            SequenceStep,
+        )
+        from apps.automation.tests.conftest import make_flow
+
+        flow = make_flow(clinic, name=f"Fluxo {de_sequencia}", status=FlowStatus.ACTIVE)
+        criadas = []
+        for i in range(quantas):
+            # CONCLUÍDAS: a trava do banco (RF-FLW-6) só deixa UMA ativa
+            # por contato, e o estado real depois de um passo é este - o fluxo
+            # termina e a conversa volta para a fila.
+            run = FlowRun.objects.create(
+                clinic=clinic,
+                flow=flow,
+                version=flow.current_version,
+                contact=conversation.contact,
+                conversation=conversation,
+                current_node="n1",
+                status=FlowRunStatus.COMPLETED,
+            )
+            criadas.append(run)
+            if not de_sequencia:
+                continue
+            trilha = Sequence.objects.create(clinic=clinic, name=f"Trilha {i}")
+            passo = SequenceStep.objects.create(
+                sequence=trilha, order=1, offset_days=0, send_time=hora(9, 0), flow=flow
+            )
+            inscricao = SequenceEnrollment.objects.create(
+                clinic=clinic,
+                sequence=trilha,
+                contact=conversation.contact,
+                anchor_at=timezone.now(),
+            )
+            SequenceDispatch.objects.create(
+                enrollment=inscricao,
+                step=passo,
+                scheduled_for=timezone.now(),
+                resolved_at=timezone.now(),
+                status=SequenceDispatchStatus.STARTED,
+                flow_run=run,
+            )
+        return criadas
+
+    def test_passos_de_sequencia_nao_gastam_a_cota(self, clinic_a):
+        from apps.automation.triggers import _repicou_demais
+
+        inbox = make_inbox(clinic_a)
+        conversa = inbox["conversation"]
+        self._execucoes(clinic_a, conversa, 6, de_sequencia=True)
+
+        assert _repicou_demais(conversa) is False, (
+            "seis passos de trilha não podem impedir o paciente de usar uma "
+            "palavra-chave"
+        )
+
+    def test_conversas_automaticas_de_verdade_ainda_travam(self, clinic_a):
+        """A trava continua existindo: ela é contra robô do outro lado."""
+        from apps.automation.triggers import _repicou_demais
+
+        inbox = make_inbox(clinic_a)
+        conversa = inbox["conversation"]
+        self._execucoes(clinic_a, conversa, 3, de_sequencia=False)
+
+        assert _repicou_demais(conversa) is True
+
+    def test_a_trava_deixa_nota_interna_para_quem_atende(self, clinic_a):
+        """
+        Antes, a recusa vivia só no log: quem estava com a conversa aberta via o
+        paciente escrever, o robô calar, e concluía que a mensagem tinha sumido.
+        """
+        from apps.inbox.models import Message
+        from apps.automation.triggers import _repicou_demais
+
+        inbox = make_inbox(clinic_a)
+        conversa = inbox["conversation"]
+        self._execucoes(clinic_a, conversa, 3, de_sequencia=False)
+
+        _repicou_demais(conversa)
+
+        nota = Message.objects.filter(conversation=conversa, is_internal=True).first()
+        assert nota is not None
+        assert "trava contra repetição" in nota.body
+        # Nunca sai para o paciente.
+        assert nota.is_internal is True
+        assert nota.provider_message_id == ""
+
+    def test_a_nota_nao_se_repete_a_cada_mensagem(self, clinic_a):
+        """Quem repica manda várias seguidas; uma nota por mensagem entulharia
+        a conversa com o aviso de que ela está entulhada."""
+        from apps.inbox.models import Message
+        from apps.automation.triggers import _repicou_demais
+
+        inbox = make_inbox(clinic_a)
+        conversa = inbox["conversation"]
+        self._execucoes(clinic_a, conversa, 3, de_sequencia=False)
+
+        for _ in range(4):
+            _repicou_demais(conversa)
+
+        assert Message.objects.filter(conversation=conversa, is_internal=True).count() == 1

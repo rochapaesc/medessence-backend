@@ -71,20 +71,42 @@ def _repicou_demais(conversation) -> bool:
     que é o que um robô do outro lado produziria.
 
     Três por hora deixa passar o paciente que errou e tentou de novo.
+
+    ⚠️ **Disparo de SEQUÊNCIA não entra na conta** (18/08/2026, decisão do
+    usuário depois de bater nisto ao vivo). Cada passo de trilha é uma execução
+    de fluxo, então uma campanha de três passos consumia a cota inteira do
+    contato e a pessoa ficava sem conseguir usar palavra-chave nenhuma pela
+    hora seguinte. Aconteceu exatamente assim: seis passos de sequência em
+    vinte minutos e o "agendar teste" recusado duas vezes em seguida.
+
+    A trava é contra o repique do PACIENTE em conversa; passo agendado pela
+    clínica é calendário, e calendário não repica.
     """
     from django.utils import timezone
 
-    from apps.automation.models import FlowRun
+    from apps.automation.models import FlowRun, SequenceDispatch
 
     if conversation.contact_id is None:
         return False
     desde = timezone.now() - timedelta(hours=1)
-    quantas = FlowRun.objects.filter(
-        clinic=conversation.clinic,
-        contact_id=conversation.contact_id,
-        created_at__gte=desde,
-        deleted_at__isnull=True,
-    ).count()
+
+    # O vínculo já existe e é o do painel (RF-SEQ-11.3): o disparo guarda a
+    # execução que gerou. Recortado pela mesma janela para a subconsulta não
+    # crescer com o histórico da clínica.
+    de_sequencia = SequenceDispatch.objects.filter(
+        flow_run__isnull=False, resolved_at__gte=desde
+    ).values("flow_run_id")
+
+    quantas = (
+        FlowRun.objects.filter(
+            clinic=conversation.clinic,
+            contact_id=conversation.contact_id,
+            created_at__gte=desde,
+            deleted_at__isnull=True,
+        )
+        .exclude(pk__in=de_sequencia)
+        .count()
+    )
     if quantas < MAX_RUNS_POR_HORA:
         return False
     logger.warning(
@@ -93,7 +115,53 @@ def _repicou_demais(conversation) -> bool:
         conversation.contact_id,
         quantas,
     )
+    _avisar_que_o_robo_se_conteve(conversation, quantas)
     return True
+
+
+def _avisar_que_o_robo_se_conteve(conversation, quantas: int) -> None:
+    """
+    Deixa uma NOTA INTERNA quando a trava recusa (18/08/2026).
+
+    Sem isto a recusa vivia só no log do servidor: quem está com a conversa
+    aberta via o paciente escrever e o robô não responder, e concluía que o
+    sistema tinha engolido a mensagem. Nota interna não sai para o paciente
+    (RF-ATD-3) e aparece na thread de quem atende, que é exatamente onde a
+    dúvida nasce.
+
+    ⚠️ UMA por hora, no máximo. O paciente que repica manda várias mensagens
+    seguidas, e uma nota por mensagem entulharia a conversa com o aviso de que
+    a conversa está entulhada.
+    """
+    from django.utils import timezone
+
+    from apps.inbox.choices import MessageKind, SenderKind
+    from apps.inbox.models import Message
+
+    marca = "[robô contido]"
+    desde = timezone.now() - timedelta(hours=1)
+    if Message.objects.filter(
+        conversation=conversation,
+        is_internal=True,
+        body__startswith=marca,
+        created_at__gte=desde,
+    ).exists():
+        return
+
+    Message.objects.create(
+        clinic=conversation.clinic,
+        conversation=conversation,
+        kind=MessageKind.TEXT,
+        sender_kind=SenderKind.BOT,
+        is_internal=True,
+        body=(
+            f"{marca} O atendimento automático não respondeu esta mensagem "
+            f"porque já houve {quantas} conversas automáticas com este contato "
+            "na última hora. É uma trava contra repetição. A conversa fica com "
+            "a recepção."
+        ),
+        wa_timestamp=timezone.now(),
+    )
 
 
 def pick_flow(conversation, message) -> Flow | None:
