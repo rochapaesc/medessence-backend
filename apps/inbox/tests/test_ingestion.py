@@ -326,3 +326,136 @@ def test_grafia_exata_existente_nao_renomeia_nada(clinic_a, inbox_a):
     assert zumbi.wa_id == "5585988765432"  # intocado
     mensagem = Message.objects.get(clinic=clinic_a, body="oi")
     assert mensagem.conversation.contact_id == exato.pk
+
+
+# --------------------------------------------------------------------- #
+# Reentrega de mensagem APAGADA (achado em 19/08/2026)
+# --------------------------------------------------------------------- #
+#
+# A `uniq_message_wamid` não dispensa registro soft-deletado, então a mensagem
+# apagada continua ocupando o wamid. A ingestão procurava só entre as vivas,
+# tentava criar de novo e estourava IntegrityError — e como a task levanta, o
+# LOTE INTEIRO do webhook se perdia. Quem chega nesse estado é o admin do
+# Django (a tela do Inbox recusa apagar mensagem já entregue).
+
+
+def _payload_com_duas(wa_id, wamid_repetido):
+    """Um webhook com a mensagem repetida e uma nova, como a Meta reentrega."""
+    return {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": "PID"},
+                            "contacts": [{"wa_id": wa_id, "profile": {"name": "P"}}],
+                            "messages": [
+                                {
+                                    "from": wa_id,
+                                    "id": wamid_repetido,
+                                    "timestamp": "1755600000",
+                                    "type": "text",
+                                    "text": {"body": "a que foi apagada"},
+                                },
+                                {
+                                    "from": wa_id,
+                                    "id": "wamid.NOVA-DO-LOTE",
+                                    "timestamp": "1755600100",
+                                    "type": "text",
+                                    "text": {"body": "esta nunca chegou antes"},
+                                },
+                            ],
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def test_reentrega_de_mensagem_apagada_nao_derruba_o_lote(clinic_a, inbox_a):
+    """
+    O que se perdia era a mensagem NOVA do mesmo webhook, e não a repetida:
+    um paciente escrevendo naquele instante simplesmente não aparecia no Inbox.
+    """
+    channel = inbox_a["channel"]
+    wa_id = inbox_a["contact"].wa_id
+    ingest_events(
+        channel, parse_meta_webhook(build_inbound_payload(wa_id=wa_id, body="original"))
+    )
+    apagada = Message.objects.get(clinic=clinic_a, body="original")
+    apagada.delete()  # soft, como o admin fazia
+
+    stats = ingest_events(
+        channel, parse_meta_webhook(_payload_com_duas(wa_id, apagada.provider_message_id))
+    )
+
+    assert stats["inbound"] == 1, "só a nova conta; a repetida é reentrega"
+    assert Message.objects.filter(clinic=clinic_a, body="esta nunca chegou antes").exists()
+
+
+def test_a_mensagem_apagada_NAO_ressuscita(clinic_a, inbox_a):
+    """
+    A alternativa (afrouxar a constraint) faria a reentrega recriar o que
+    alguém apagou de propósito. Aqui a exclusão fica de pé.
+    """
+    channel = inbox_a["channel"]
+    wa_id = inbox_a["contact"].wa_id
+    ingest_events(
+        channel, parse_meta_webhook(build_inbound_payload(wa_id=wa_id, body="original"))
+    )
+    apagada = Message.objects.get(clinic=clinic_a, body="original")
+    apagada.delete()
+
+    ingest_events(
+        channel, parse_meta_webhook(_payload_com_duas(wa_id, apagada.provider_message_id))
+    )
+
+    assert not Message.objects.filter(pk=apagada.pk).exists(), "continua fora da thread"
+    assert Message.all_objects.filter(pk=apagada.pk).count() == 1, "e não virou duplicata"
+
+
+def test_o_admin_apaga_mensagem_DE_VERDADE(clinic_a, inbox_a):
+    """
+    Fecha a porta de entrada do estado: sem isto o admin cria mensagens
+    invisíveis que seguem ocupando o wamid.
+    """
+    from django.contrib.admin.sites import site
+
+    from apps.inbox.admin import MessageAdmin
+
+    channel = inbox_a["channel"]
+    ingest_events(
+        channel,
+        parse_meta_webhook(
+            build_inbound_payload(wa_id=inbox_a["contact"].wa_id, body="pelo admin")
+        ),
+    )
+    mensagem = Message.objects.get(clinic=clinic_a, body="pelo admin")
+
+    admin = MessageAdmin(Message, site)
+    admin.delete_model(None, mensagem)
+
+    assert not Message.all_objects.filter(pk=mensagem.pk).exists()
+
+
+def test_o_admin_apaga_em_LOTE_de_verdade(clinic_a, inbox_a):
+    """A ação "excluir selecionados" é o caminho mais usado da lista."""
+    from django.contrib.admin.sites import site
+
+    from apps.inbox.admin import MessageAdmin
+
+    channel = inbox_a["channel"]
+    for texto in ("uma", "outra"):
+        ingest_events(
+            channel,
+            parse_meta_webhook(
+                build_inbound_payload(wa_id=inbox_a["contact"].wa_id, body=texto)
+            ),
+        )
+
+    admin = MessageAdmin(Message, site)
+    admin.delete_queryset(None, Message.objects.filter(clinic=clinic_a))
+
+    assert Message.all_objects.filter(clinic=clinic_a).count() == 0
