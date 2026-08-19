@@ -342,6 +342,21 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
             "hosts": [f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/1"],
+            # Validade da INSCRIÇÃO no grupo, não da conexão. O padrão do
+            # channels_redis é 24h e não estava declarado aqui: toda publicação
+            # apaga antes quem está inscrito há mais que isso, então a aba da
+            # recepção passava a noite aberta e de manhã parava de receber, com
+            # o socket vivo e sem erro nenhum (19/08/2026).
+            #
+            # Quem CONSERTA isso é a renovação a cada ping (ver
+            # `apps/inbox/consumers.py`). Este prazo é a segunda camada, para a
+            # aba que o navegador CONGELA em segundo plano e que por isso deixa
+            # de pingar.
+            #
+            # ⚠️ Não subir muito mais: o prazo existe para faxinar inscrição de
+            # processo que morreu sem se despedir, e quanto maior ele for, mais
+            # tempo esses fantasmas recebem publicação à toa.
+            "group_expiry": 60 * 60 * 24 * 7,
         },
     },
 }

@@ -225,6 +225,73 @@ def test_consumer_diz_hello_e_responde_ping(manager_single_clinic, clinic_a):
     async_to_sync(cenario)()
 
 
+def test_ping_renova_a_inscricao_e_a_aba_de_ontem_segue_recebendo(
+    manager_single_clinic, clinic_a, monkeypatch
+):
+    """
+    Regressão do defeito achado EM PRODUÇÃO em 19/08/2026: a aba aberta havia
+    mais de 24h parava de receber, calada.
+
+    `group_add` só acontecia no connect e grava a HORA da inscrição; toda
+    publicação apaga antes quem passou de `group_expiry` (padrão de 24h, e o
+    canal de mentira da suíte tem a MESMA regra). O socket seguia vivo, porque
+    o pong é respondido pelo próprio consumer sem tocar no grupo, a tela seguia
+    "online" sem faixa nenhuma, e nada mais chegava até alguém recarregar.
+
+    O teste envelhece a inscrição SEM MEXER na conexão, manda o ping que o
+    cliente já manda a cada 25s e exige que a publicação seguinte chegue.
+    """
+    import json
+    import time
+
+    from asgiref.testing import ApplicationCommunicator
+
+    from apps.accounts.models import Membership
+    from apps.inbox.consumers import InboxConsumer
+
+    # O consumer renova no máximo uma vez a cada 15s para que o ritmo do
+    # cliente não vire escrita em rajada. Aqui o ping chega milissegundos
+    # depois do connect, então sem zerar a trava não haveria renovação para
+    # observar.
+    monkeypatch.setattr(InboxConsumer, "INTERVALO_DE_RENOVACAO", 0)
+
+    membership = Membership.objects.get(user=manager_single_clinic, clinic=clinic_a)
+    grupo = f"inbox_clinic_{clinic_a.id}"
+
+    async def cenario():
+        layer = get_channel_layer()
+        # O canal de mentira é global na suíte e outros testes deixam inscritos
+        # neste mesmo grupo: o nosso é a diferença antes/depois do connect.
+        antes = set(layer.groups.get(grupo, {}))
+
+        comm = ApplicationCommunicator(
+            InboxConsumer.as_asgi(),
+            {"type": "websocket", "path": "/ws/inbox/", "headers": [], "membership": membership},
+        )
+        await comm.send_input({"type": "websocket.connect"})
+        await comm.receive_output(1)  # accept
+        await comm.receive_output(1)  # hello
+
+        (canal,) = set(layer.groups[grupo]) - antes
+
+        # A aba passou a noite aberta. Nada na conexão muda: é exatamente o
+        # estado que o defeito produzia.
+        layer.groups[grupo][canal] = time.time() - 90_000
+
+        await comm.send_input({"type": "websocket.receive", "text": '{"event": "ping"}'})
+        pong = json.loads((await comm.receive_output(1))["text"])
+        assert pong == {"event": "pong"}
+
+        await layer.group_send(grupo, {"type": "inbox.event", "data": {"event": "message:new"}})
+        entregue = json.loads((await comm.receive_output(1))["text"])
+        assert entregue == {"event": "message:new"}
+
+        await comm.send_input({"type": "websocket.disconnect", "code": 1000})
+        await comm.wait(1)
+
+    async_to_sync(cenario)()
+
+
 def test_envio_do_atendente_emite_conversation_updated(
     api_client, manager_single_clinic, inbox_a, django_capture_on_commit_callbacks
 ):
