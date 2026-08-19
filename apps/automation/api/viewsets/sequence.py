@@ -17,6 +17,7 @@ from apps.automation.choices import (
     EnrollmentEndReason,
     EnrollmentSource,
     FlowRunEventType,
+    FlowStatus,
     FlowTrigger,
     SequenceDispatchStatus,
     SequenceEnrollmentStatus,
@@ -703,12 +704,49 @@ class SequenceViewSet(AuditMixin, ClinicScopedModelViewSet):
 
         Sem isto as inscrições ficariam apontando para uma trilha que não
         existe mais, vivas para sempre e invisíveis na tela.
+
+        Com `?apagar_fluxos=1`, leva junto os fluxos dos passos (RF-SEQ-12.2).
+        Eles nascem com a trilha quando ela vem de um modelo, um por passo, e
+        antes ficavam para trás: duas trilhas apagadas já tinham deixado oito
+        rascunhos órfãos na lista de Fluxos, sem nada dizendo de onde vieram.
         """
+        levar = str(self.request.query_params.get("apagar_fluxos", "")).lower() in (
+            "1",
+            "true",
+        )
+        orfaos = self._fluxos_so_desta_trilha(instance) if levar else []
+
         for enrollment in instance.enrollments.filter(
             status=SequenceEnrollmentStatus.ACTIVE
         ):
             remover(enrollment, reason=EnrollmentEndReason.SEQUENCE_RETIRED)
         super().perform_destroy(instance)
+
+        for flow in orfaos:
+            flow.delete()
+
+    def _fluxos_so_desta_trilha(self, sequence):
+        """
+        Os fluxos que morrem com a trilha, e só eles.
+
+        Duas guardas, e nenhuma é zelo: fluxo PUBLICADO fica (pode estar
+        atendendo paciente agora, e o destroy do próprio Flow já o recusa), e
+        fluxo que também é passo de OUTRA trilha fica (apagá-lo derrubaria uma
+        sequência que ninguém mandou apagar).
+        """
+        from apps.automation.models import Flow
+
+        ids = set(sequence.steps.values_list("flow_id", flat=True))
+        if not ids:
+            return []
+        de_outras = set(
+            SequenceStep.objects.filter(flow_id__in=ids)
+            .exclude(sequence=sequence)
+            .values_list("flow_id", flat=True)
+        )
+        return list(
+            Flow.objects.filter(pk__in=ids - de_outras, status=FlowStatus.DRAFT)
+        )
 
 
 class SequenceStepViewSet(AuditMixin, ClinicScopedModelViewSet):

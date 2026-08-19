@@ -204,3 +204,92 @@ def test_passo_avisa_quando_o_fluxo_esta_em_rascunho(
 
     passos = {p["order"]: p["flow_published"] for p in response.data["steps"]}
     assert passos == {1: True, 2: False}
+
+
+# ---- apagar a trilha e os fluxos dos passos (RF-SEQ-12.2) ----
+
+
+def _trilha_de_modelo(clinic, nome="Vinda de modelo"):
+    """Como um modelo cria: um fluxo em RASCUNHO por passo."""
+    from apps.automation.models import Flow
+
+    sequence = Sequence.objects.create(clinic=clinic, name=nome)
+    fluxos = []
+    for ordem in (1, 2):
+        flow = Flow.objects.create(clinic=clinic, name=f"{nome}: passo {ordem}")
+        SequenceStep.objects.create(
+            sequence=sequence,
+            order=ordem,
+            offset_days=ordem,
+            send_time=time(9, 0),
+            flow=flow,
+        )
+        fluxos.append(flow)
+    return sequence, fluxos
+
+
+def test_apagar_leva_os_fluxos_dos_passos_quando_pedido(
+    api_client, manager_single_clinic, clinic_a
+):
+    """
+    Duas trilhas apagadas deixaram OITO rascunhos órfãos na lista de Fluxos da
+    clínica real, sem nada dizendo de onde vinham.
+    """
+    from apps.automation.models import Flow
+
+    sequence, fluxos = _trilha_de_modelo(clinic_a)
+    api_client.force_authenticate(manager_single_clinic)
+
+    resposta = api_client.delete(f"{URL}{sequence.pk}/?apagar_fluxos=1")
+
+    assert resposta.status_code == 204
+    assert not Flow.objects.filter(pk__in=[f.pk for f in fluxos]).exists()
+
+
+def test_sem_pedir_os_fluxos_ficam(api_client, manager_single_clinic, clinic_a):
+    from apps.automation.models import Flow
+
+    sequence, fluxos = _trilha_de_modelo(clinic_a)
+    api_client.force_authenticate(manager_single_clinic)
+
+    api_client.delete(f"{URL}{sequence.pk}/")
+
+    assert Flow.objects.filter(pk__in=[f.pk for f in fluxos]).count() == 2
+
+
+def test_fluxo_publicado_nao_e_apagado(
+    api_client, manager_single_clinic, clinic_a
+):
+    """Publicado pode estar atendendo alguém agora."""
+    from apps.automation.choices import FlowStatus
+    from apps.automation.models import Flow
+
+    sequence, fluxos = _trilha_de_modelo(clinic_a)
+    publicado = fluxos[0]
+    publicado.status = FlowStatus.ACTIVE
+    publicado.save(update_fields=["status"])
+
+    api_client.force_authenticate(manager_single_clinic)
+    api_client.delete(f"{URL}{sequence.pk}/?apagar_fluxos=1")
+
+    assert Flow.objects.filter(pk=publicado.pk).exists()
+    assert not Flow.objects.filter(pk=fluxos[1].pk).exists()
+
+
+def test_fluxo_de_outra_trilha_tambem_nao_e_apagado(
+    api_client, manager_single_clinic, clinic_a
+):
+    """Apagá-lo derrubaria uma sequência que ninguém mandou apagar."""
+    from apps.automation.models import Flow
+
+    sequence, fluxos = _trilha_de_modelo(clinic_a)
+    vizinha = Sequence.objects.create(clinic=clinic_a, name="A vizinha")
+    SequenceStep.objects.create(
+        sequence=vizinha, order=1, offset_days=1, send_time=time(9, 0), flow=fluxos[0]
+    )
+
+    api_client.force_authenticate(manager_single_clinic)
+    api_client.delete(f"{URL}{sequence.pk}/?apagar_fluxos=1")
+
+    assert Flow.objects.filter(pk=fluxos[0].pk).exists()
+    assert not Flow.objects.filter(pk=fluxos[1].pk).exists()
