@@ -259,3 +259,62 @@ def test_tirar_inscricao_de_outra_trilha_nao_derruba_nada(
     assert response.status_code == 200
     de_outra.refresh_from_db()
     assert de_outra.status == SequenceEnrollmentStatus.ACTIVE
+
+
+def test_a_busca_recorta_as_CONTAGENS_tambem(
+    api_client, manager_single_clinic, clinic_a, trilha
+):
+    """
+    ⚠️ Conserto de 20/08/2026. As três contagens eram calculadas sobre a
+    trilha INTEIRA enquanto a lista mostrava o resultado da busca: procurar por
+    alguém deixava os botões dizendo "14 parados" com uma linha na tela.
+
+    É a mesma família dos contadores de Pacientes: duas partes da tela
+    respondendo perguntas diferentes sem dizer isso.
+    """
+    api_client.force_authenticate(manager_single_clinic)
+    procurada, c1 = com_ficha(clinic_a, "Marcia Reijane", "5585900001010")
+    inscrever(trilha, c1, source=EnrollmentSource.BATCH, patient=procurada)
+
+    outra, c2 = com_ficha(clinic_a, "Joana Prado", "5585900001011")
+    e2 = inscrever(trilha, c2, source=EnrollmentSource.BATCH, patient=outra)
+    e2.held_since = timezone.now()
+    e2.hold_reason = "no_window"
+    e2.save(update_fields=["held_since", "hold_reason"])
+
+    terceira, c3 = com_ficha(clinic_a, "Joana Ribeiro", "5585900001012")
+    remover(
+        inscrever(trilha, c3, source=EnrollmentSource.BATCH, patient=terceira),
+        reason=EnrollmentEndReason.MANUAL,
+    )
+
+    inteiro = api_client.get(f"{URL}{trilha.pk}/enrollments/")
+    assert inteiro.data["contagens"] == {"correndo": 1, "parados": 1, "sairam": 1}
+
+    # Procurando "Marcia": só ela existe, e é uma que está CORRENDO.
+    achou = api_client.get(f"{URL}{trilha.pk}/enrollments/", {"search": "Marcia"})
+    assert achou.data["contagens"] == {"correndo": 1, "parados": 0, "sairam": 0}
+    assert [r["quem"] for r in achou.data["resultados"]] == ["Marcia Reijane"]
+
+    # E "Joana" pega duas, em recortes diferentes: uma parada e uma que saiu.
+    joanas = api_client.get(f"{URL}{trilha.pk}/enrollments/", {"search": "Joana"})
+    assert joanas.data["contagens"] == {"correndo": 0, "parados": 1, "sairam": 1}
+
+
+def test_a_busca_pelo_NUMERO_tambem_recorta_as_contagens(
+    api_client, manager_single_clinic, clinic_a, trilha
+):
+    # A busca olha nome da ficha, nome do WhatsApp e número; a contagem tem de
+    # acompanhar os três, senão ela recorta por um e a lista por outro.
+    api_client.force_authenticate(manager_single_clinic)
+    quem, contact = com_ficha(clinic_a, "Pelo Numero", "5585900001020")
+    inscrever(trilha, contact, source=EnrollmentSource.BATCH, patient=quem)
+    outro, c2 = com_ficha(clinic_a, "Outro Qualquer", "5585900001021")
+    inscrever(trilha, c2, source=EnrollmentSource.BATCH, patient=outro)
+
+    resposta = api_client.get(
+        f"{URL}{trilha.pk}/enrollments/", {"search": "5585900001020"}
+    )
+
+    assert resposta.data["contagens"]["correndo"] == 1
+    assert [r["quem"] for r in resposta.data["resultados"]] == ["Pelo Numero"]

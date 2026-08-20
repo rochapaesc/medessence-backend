@@ -192,6 +192,24 @@ class SequenceViewSet(AuditMixin, ClinicScopedModelViewSet):
             raise ValidationError({"estado": f"Use um de {', '.join(self.RECORTES)}."})
 
         base = SequenceEnrollment.objects.filter(sequence=sequence)
+
+        # ⚠️ A BUSCA entra ANTES das contagens, e é o conserto de 20/08/2026.
+        # Elas eram calculadas sobre a trilha inteira enquanto a lista mostrava
+        # o resultado da busca: procurar por alguém deixava os três botões
+        # dizendo "14 parados" com uma linha na tela. Contador que responde
+        # outra pergunta que a lista embaixo é a mesma família de defeito que
+        # os contadores de Pacientes tinham.
+        busca = (request.query_params.get("search") or "").strip()
+        if busca:
+            # Pelo nome da ficha, pelo nome salvo no WhatsApp ou pelo número.
+            # ⚠️ As três, porque a lista mostra linha SEM ficha: procurar só em
+            # `patient__name` faria a busca não achar quem a tela exibe.
+            base = base.filter(
+                Q(patient__name__icontains=busca)
+                | Q(contact__display_name__icontains=busca)
+                | Q(contact__wa_id__icontains=so_digitos(busca) or busca)
+            )
+
         contagens = {
             "correndo": base.filter(
                 status=SequenceEnrollmentStatus.ACTIVE, held_since__isnull=True
@@ -213,17 +231,6 @@ class SequenceViewSet(AuditMixin, ClinicScopedModelViewSet):
         else:
             linhas = base.exclude(status=SequenceEnrollmentStatus.ACTIVE).order_by(
                 "-updated_at"
-            )
-
-        busca = (request.query_params.get("search") or "").strip()
-        if busca:
-            # Pelo nome da ficha, pelo nome salvo no WhatsApp ou pelo número.
-            # ⚠️ As três, porque a lista mostra linha SEM ficha: procurar só em
-            # `patient__name` faria a busca não achar quem a tela exibe.
-            linhas = linhas.filter(
-                Q(patient__name__icontains=busca)
-                | Q(contact__display_name__icontains=busca)
-                | Q(contact__wa_id__icontains=so_digitos(busca) or busca)
             )
 
         total = linhas.count()
