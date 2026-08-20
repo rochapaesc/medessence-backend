@@ -1,5 +1,6 @@
 from apps.automation.choices.flow import (
     AWAITING_NODE_TYPES,
+    BRANCHING_NODE_TYPES,
     EDGE_BUTTON_PREFIX,
     EDGE_DEFAULT,
     EDGE_FALSE,
@@ -29,6 +30,7 @@ from apps.automation.choices.sequence import (
 )
 
 __all__ = [
+    "BRANCHING_NODE_TYPES",
     "AWAITING_NODE_TYPES",
     "EDGE_BUTTON_PREFIX",
     "EDGE_DEFAULT",

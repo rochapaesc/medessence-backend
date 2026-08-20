@@ -191,3 +191,79 @@ def test_importar_NAO_alcanca_outra_clinica(clinic_a, clinic_b, fluxo_da_origem)
     importar(clinic_b, exportar(flow))
 
     assert Flow.objects.filter(clinic=clinic_a).count() == antes
+
+
+class TestDestinoHttp:
+    """
+    RF-FLW-16.1 + RF-FLW-24.1: o destino é a TERCEIRA referência do mapa, e a
+    mais perigosa de esquecer.
+
+    ⚠️ Um `destination_id` cru atravessando não seria só inútil: o mesmo
+    número na clínica de destino pode existir apontando para o endpoint de
+    OUTRA empresa, e aí o fluxo manda dado de paciente para quem não devia.
+    """
+
+    def test_o_id_do_destino_nao_atravessa(self, clinic_a):
+        from apps.automation.models import HttpDestination
+
+        destino = HttpDestination.objects.create(
+            clinic=clinic_a, name="ERP da recepção", url="https://erp.exemplo.com/hook"
+        )
+        flow = make_flow(clinic_a, graph=_grafo_com_destino(destino.pk))
+
+        arquivo = exportar(flow)
+
+        nos = {n["id"]: n["config"] for n in arquivo["grafo"]["nodes"]}
+        assert nos["http"]["destination_name"] == "ERP da recepção"
+        assert "destination_id" not in nos["http"]
+
+    def test_importar_resolve_o_destino_da_clinica_de_DESTINO(self, clinic_a, clinic_b):
+        # A prova que importa: os dois lados têm um destino de MESMO NOME e
+        # ids diferentes, e o importado tem de apontar para o de casa.
+        from apps.automation.models import HttpDestination
+
+        daqui = HttpDestination.objects.create(
+            clinic=clinic_a, name="ERP", url="https://a.exemplo.com/hook"
+        )
+        de_la = HttpDestination.objects.create(
+            clinic=clinic_b, name="ERP", url="https://b.exemplo.com/hook"
+        )
+        assert daqui.pk != de_la.pk
+
+        arquivo = exportar(make_flow(clinic_a, graph=_grafo_com_destino(daqui.pk)))
+        novo, pendencias = importar(clinic_b, arquivo)
+
+        nos = {n["id"]: n["config"] for n in _grafo_do(novo)["nodes"]}
+        assert nos["http"]["destination_id"] == de_la.pk
+        assert pendencias == []
+
+    def test_destino_que_nao_existe_la_vira_pendencia(self, clinic_a, clinic_b):
+        from apps.automation.models import HttpDestination
+
+        destino = HttpDestination.objects.create(
+            clinic=clinic_a, name="ERP só nosso", url="https://erp.exemplo.com/hook"
+        )
+        arquivo = exportar(make_flow(clinic_a, graph=_grafo_com_destino(destino.pk)))
+
+        novo, pendencias = importar(clinic_b, arquivo)
+
+        assert novo.status == FlowStatus.DRAFT
+        assert any("ERP só nosso" in p and "destino" in p for p in pendencias)
+        nos = {n["id"]: n["config"] for n in _grafo_do(novo)["nodes"]}
+        assert "destination_id" not in nos["http"]
+
+
+def _grafo_com_destino(destination_id):
+    return {
+        "entry_node": "n1",
+        "nodes": [
+            {"id": "n1", "type": FlowNodeType.START, "label": "Início", "config": {}},
+            {
+                "id": "http",
+                "type": FlowNodeType.HTTP_REQUEST,
+                "label": "Avisar o ERP",
+                "config": {"destination_id": destination_id},
+            },
+        ],
+        "edges": [],
+    }

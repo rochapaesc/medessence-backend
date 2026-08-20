@@ -24,14 +24,21 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from apps.automation.choices import FlowNodeType, FlowStatus, FlowTrigger
+from apps.automation.choices import (
+    EDGE_FALSE,
+    EDGE_TRUE,
+    FlowNodeType,
+    FlowStatus,
+    FlowTrigger,
+)
 from apps.automation.graph import validate_graph
-from apps.automation.models import Flow, FlowVersion, Sequence
+from apps.automation.models import Flow, FlowVersion, HttpDestination, Sequence
 from apps.inbox.models import ConversationLabel
 from apps.tenants.models import Clinic
 
 NOME = "Agendamento (demonstração)"
 NOME_COMPLETO = "Validação completa (todos os passos)"
+DESTINO = "Sistema da clínica (exemplo)"
 NOME_SIMPLES = "Teste rápido"
 ETIQUETA = "Agendamento"
 # Alvo dos nós de sequência no fluxo de validação (RF-SEQ-3.1).
@@ -244,9 +251,9 @@ def montar_grafo_simples(label_id):
     return {"entry_node": "inicio", "nodes": nodes, "edges": edges}
 
 
-def montar_grafo_completo(label_id, sequence_id=None):
+def montar_grafo_completo(label_id, sequence_id=None, destination_id=None):
     """
-    Fluxo de validação: usa os QUATORZE tipos de nó, cada um pelo menos uma
+    Fluxo de validação: usa os QUINZE tipos de nó, cada um pelo menos uma
     vez, com ramificação de verdade.
 
     Serve para exercitar o canvas inteiro (todo tipo de cartão, toda forma de
@@ -383,15 +390,29 @@ def montar_grafo_completo(label_id, sequence_id=None):
         ),
         # F3 (RF-SEQ-3.1): quem marcou consulta entra na trilha de pós-consulta;
         # quem só queria o preparo sai dela, se estava dentro.
+        # RF-FLW-16: avisa o sistema da clínica que houve marcação. As DUAS
+        # saídas estão ligadas de propósito - é o que o nó tem de diferente,
+        # e um fluxo de validação que só desenhasse o caminho feliz não
+        # provaria a porta de falha.
+        _no(
+            "avisa_o_erp",
+            FlowNodeType.HTTP_REQUEST,
+            "Avisar o sistema da clínica",
+            3740,
+            360,
+            destination_id=destination_id,
+            send=["especialidade", "melhor_dia"],
+            save={"protocolo": "protocolo"},
+        ),
         _no(
             "entra_na_trilha",
             FlowNodeType.ENROLL_SEQUENCE,
             "Inscrever no pós-consulta",
-            3740,
-            360,
+            4100,
+            300,
             sequence_id=sequence_id,
         ),
-        _no("fim_agendamento", FlowNodeType.END, "Fim", 4100, 360),
+        _no("fim_agendamento", FlowNodeType.END, "Fim", 4460, 360),
         _no(
             "preparo",
             FlowNodeType.SEND_MEDIA,
@@ -436,7 +457,11 @@ def montar_grafo_completo(label_id, sequence_id=None):
         _liga("marca", "confirma"),
         _liga("confirma", "espera"),
         _liga("espera", "lembrete"),
-        _liga("lembrete", "entra_na_trilha"),
+        _liga("lembrete", "avisa_o_erp"),
+        # As duas saídas ligadas: deu certo, entra na trilha; não deu, o
+        # paciente ainda assim não fica sem resposta (RF-FLW-16.1 item i).
+        _liga("avisa_o_erp", "entra_na_trilha", EDGE_TRUE),
+        _liga("avisa_o_erp", "atendente", EDGE_FALSE),
         _liga("entra_na_trilha", "fim_agendamento"),
         _liga("preparo", "sai_da_trilha"),
         _liga("sai_da_trilha", "fim_exames"),
@@ -491,7 +516,19 @@ class Command(BaseCommand):
             trilha, _ = Sequence.objects.get_or_create(
                 clinic=clinic, name=SEQUENCIA, defaults={"is_active": False}
             )
-            graph = montar_grafo_completo(etiqueta.pk, trilha.pk)
+            # O nó HTTP aponta para um CADASTRO, nunca para uma URL digitada
+            # (RF-FLW-16.1). O destino de exemplo nasce DESLIGADO: ele não
+            # existe de verdade, e um fluxo semeado que chamasse um endereço
+            # inventado a cada agendamento seria ruído no log da clínica.
+            destino, _ = HttpDestination.objects.get_or_create(
+                clinic=clinic,
+                name=DESTINO,
+                defaults={
+                    "url": "https://exemplo.com/medessence/agendamentos",
+                    "is_active": False,
+                },
+            )
+            graph = montar_grafo_completo(etiqueta.pk, trilha.pk, destino.pk)
         elif simples:
             graph = montar_grafo_simples(etiqueta.pk)
         else:

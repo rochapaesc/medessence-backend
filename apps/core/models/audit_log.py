@@ -22,6 +22,11 @@ class AuditAction(TextChoices):
     # responder "quem viu o CPF de quem, e quando" sem garimpar no meio dos
     # acessos comuns à ficha. O valor do documento NUNCA entra no payload.
     READ_CPF = "READ_CPF", "Leitura de CPF"
+    # Chamada que SAIU do nosso servidor para um sistema da clínica
+    # (RF-FLW-16.1 item h). Sem este registro não há como responder ao
+    # titular o que foi compartilhado sobre ele, e com quem. ⚠️ O payload
+    # guarda as CHAVES enviadas, nunca os valores.
+    HTTP_CALL = "HTTP_CALL", "Chamada a sistema externo"
     LOGIN = "LOGIN", "Login"
     LOGIN_FAILED = "LOGIN_FAILED", "Login falhou"
     LOGOUT = "LOGOUT", "Logout"

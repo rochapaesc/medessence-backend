@@ -27,6 +27,7 @@ from apps.automation.choices import (
     EDGE_FALSE,
     EDGE_ROW_PREFIX,
     EDGE_TRUE,
+    BRANCHING_NODE_TYPES,
     MAX_BUTTONS,
     MAX_LIST_ROWS,
     OPERATORS_WITH_VALUE,
@@ -151,7 +152,7 @@ def required_conditions(node: Node) -> set[str]:
     """
     if node.is_terminal:
         return set()
-    if node.type == FlowNodeType.CONDITION:
+    if node.type in BRANCHING_NODE_TYPES:
         return {EDGE_TRUE, EDGE_FALSE}
     if node.type == FlowNodeType.SEND_BUTTONS:
         return {
@@ -306,6 +307,9 @@ def _check_config(node: Node, clinic=None) -> list[str]:
     elif node.type in (FlowNodeType.ENROLL_SEQUENCE, FlowNodeType.UNENROLL_SEQUENCE):
         problems.extend(_problemas_da_sequencia(cfg, onde, clinic))
 
+    elif node.type == FlowNodeType.HTTP_REQUEST:
+        problems.extend(_problemas_do_destino(cfg, onde, clinic))
+
     return problems
 
 
@@ -326,6 +330,30 @@ def _problemas_da_sequencia(cfg: dict, onde: str, clinic) -> list[str]:
         return []
     if not Sequence.objects.filter(pk=sequence_id, clinic=clinic).exists():
         return [f"{onde} aponta para uma sequência que não existe nesta clínica."]
+    return []
+
+
+def _problemas_do_destino(cfg: dict, onde: str, clinic) -> list[str]:
+    """
+    O nó aponta para um destino CADASTRADO e ativo nesta clínica?
+
+    ⚠️ A pergunta é essa, e não "a URL está certa": a URL não mora no nó
+    (RF-FLW-16.1 item a). Cobrar aqui, na ativação, é o mesmo motivo do nó de
+    template e do de sequência - erro que só aparece com o paciente do outro
+    lado é erro que a clínica descobre tarde.
+    """
+    from apps.automation.models import HttpDestination
+
+    destination_id = cfg.get("destination_id")
+    if not destination_id:
+        return [f"{onde} não tem destino escolhido."]
+    if clinic is None:
+        return []
+    destino = HttpDestination.objects.filter(pk=destination_id, clinic=clinic).first()
+    if destino is None:
+        return [f"{onde} aponta para um destino que não existe nesta clínica."]
+    if not destino.is_active:
+        return [f'{onde} usa o destino "{destino.name}", que está desligado.']
     return []
 
 

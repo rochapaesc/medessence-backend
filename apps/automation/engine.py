@@ -457,6 +457,14 @@ def _execute(node, run, conversation):
         _apply_sequence(node, run, conversation)
         return EDGE_DEFAULT
 
+    if node.type == FlowNodeType.HTTP_REQUEST:
+        from apps.automation.http_call import chamar
+
+        # Duas saídas, e a de falha não é enfeite (RF-FLW-16.1 item i):
+        # sistema externo cai, e o paciente não pode ficar sem resposta por
+        # causa disso. O `chamar` nunca estoura - ele devolve False.
+        return EDGE_TRUE if chamar(node, run, conversation) else EDGE_FALSE
+
     if node.type == FlowNodeType.WAIT:
         run.wake_at = _wake_at(cfg)
         return WAIT_FOR_CONTACT

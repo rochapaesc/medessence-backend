@@ -3,6 +3,7 @@ from apps.automation.api.serializers.flow import (
     FlowSerializer,
     FlowVersionSerializer,
 )
+from apps.automation.api.serializers.http_destination import HttpDestinationSerializer
 from apps.automation.api.serializers.sequence import (
     ProximoDisparoSerializer,
     SequenceDispatchSerializer,
@@ -13,6 +14,7 @@ from apps.automation.api.serializers.sequence import (
 
 __all__ = [
     "FlowRunSerializer",
+    "HttpDestinationSerializer",
     "FlowSerializer",
     "FlowVersionSerializer",
     "ProximoDisparoSerializer",

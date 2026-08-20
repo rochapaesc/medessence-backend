@@ -33,6 +33,10 @@ REFERENCIAS = {
     FlowNodeType.SET_LABEL: ("label_id", "label_name", "etiqueta"),
     FlowNodeType.ENROLL_SEQUENCE: ("sequence_id", "sequence_name", "sequência"),
     FlowNodeType.UNENROLL_SEQUENCE: ("sequence_id", "sequence_name", "sequência"),
+    # RF-FLW-16.1: o destino é um cadastro da clínica, e o de lá é outro. Pior
+    # do que inútil: um id que existe no destino apontaria para o endpoint de
+    # OUTRA clínica, mandando dado de paciente para a empresa errada.
+    FlowNodeType.HTTP_REQUEST: ("destination_id", "destination_name", "destino"),
 }
 
 
@@ -42,7 +46,7 @@ def _nomes_de(clinic) -> dict:
     config que os usa. Voltar por chave (e não por posição) é o que permite
     acrescentar referência nova sem mexer em quem chama.
     """
-    from apps.automation.models import Sequence
+    from apps.automation.models import HttpDestination, Sequence
     from apps.inbox.models import ConversationLabel
 
     return {
@@ -52,6 +56,10 @@ def _nomes_de(clinic) -> dict:
         "label_id": {
             e.pk: e.name
             for e in ConversationLabel.objects.filter(clinic=clinic).only("id", "name")
+        },
+        "destination_id": {
+            d.pk: d.name
+            for d in HttpDestination.objects.filter(clinic=clinic).only("id", "name")
         },
     }
 
@@ -112,7 +120,7 @@ def importar(clinic, arquivo: dict, *, nome: str = "") -> tuple:
     ar um fluxo que fala com paciente sem alguém ter olhado. As pendências são
     devolvidas para a tela dizer o que falta.
     """
-    from apps.automation.models import Flow, FlowVersion, Sequence
+    from apps.automation.models import Flow, FlowVersion, HttpDestination, Sequence
     from apps.inbox.models import ConversationLabel
 
     if not isinstance(arquivo, dict) or "grafo" not in arquivo:
@@ -138,6 +146,10 @@ def importar(clinic, arquivo: dict, *, nome: str = "") -> tuple:
         "label_id": {
             e.name.casefold(): e.pk
             for e in ConversationLabel.objects.filter(clinic=clinic).only("id", "name")
+        },
+        "destination_id": {
+            d.name.casefold(): d.pk
+            for d in HttpDestination.objects.filter(clinic=clinic).only("id", "name")
         },
     }
 

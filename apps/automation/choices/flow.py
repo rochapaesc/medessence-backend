@@ -68,13 +68,17 @@ FINISHED_RUN_STATUSES = (
 
 class FlowNodeType(TextChoices):
     """
-    Catálogo de nós da v1 (RF-FLW-13). Doze, e NENHUM com IA.
+    Catálogo de nós (RF-FLW-13). Quinze, e NENHUM com IA.
 
     O protótipo trazia dezesseis. Ficaram de fora: LLM_AGENT e
     TRANSCRIBE_AUDIO (P14 - conversa e áudio de paciente para operador no
-    exterior), HTTP_REQUEST (P15 - dado de paciente para qualquer URL que o
-    autor digitar) e MESSAGE_ROUTER, que só existia para desviar áudio à
+    exterior) e MESSAGE_ROUTER, que só existia para desviar áudio à
     transcrição e sem ela não tem para onde desviar.
+
+    HTTP_REQUEST entrou em 20/08/2026, depois de a cerca do RF-FLW-16.1 ser
+    aprovada. O que ele NÃO é: um nó com campo de URL. O endereço vem de um
+    cadastro da clínica que passou pela checagem de SSRF - sem isso ele seria
+    a P15 aberta, que é dado de paciente indo para qualquer lugar.
 
     ⚠️ SET_LABEL, não "set_tag": a `patients.Tag` SINCRONIZA COM A vSAÚDE, e
     um fluxo marcando "lead-quente" tentaria escrever no prontuário. Aqui é
@@ -98,11 +102,20 @@ class FlowNodeType(TextChoices):
     # trilha depois de entender o que a pessoa quer.
     ENROLL_SEQUENCE = "enroll_sequence", "Inscrever na sequência"
     UNENROLL_SEQUENCE = "unenroll_sequence", "Remover da sequência"
+    # RF-FLW-16, destravado em 20/08/2026 com a cerca do RF-FLW-16.1 aprovada
+    # pelo usuário. ⚠️ O endereço NÃO mora na config: o nó guarda o id de um
+    # `HttpDestination` da clínica, e é o cadastro que passou pela cerca.
+    HTTP_REQUEST = "http_request", "Chamar sistema externo"
 
 
 # Nós que encerram o ramo: não têm saída, e aresta partindo deles é defeito
 # de montagem que o validador recusa (RF-FLW-4).
 TERMINAL_NODE_TYPES = (FlowNodeType.HANDOFF, FlowNodeType.END)
+
+# Nós com DUAS saídas fixas, `true` e `false`. O HTTP entra aqui porque
+# sistema externo cai (RF-FLW-16.1 item i): sem a saída de falha, o endpoint
+# fora do ar mataria a conversa do paciente no meio.
+BRANCHING_NODE_TYPES = (FlowNodeType.CONDITION, FlowNodeType.HTTP_REQUEST)
 
 # Nós que PARAM e esperam o paciente falar. Um ciclo que só passa por nós
 # fora desta lista gira sozinho e manda mensagem em rajada - é exatamente o

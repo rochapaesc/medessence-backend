@@ -32,10 +32,33 @@ def test_usa_os_doze_tipos_do_catalogo(grafo_completo):
 
 
 def test_nao_tem_nenhum_no_travado_por_pendencia(grafo_completo):
-    """P14 (IA) e P15 (HTTP): nem de propósito num fluxo de teste."""
+    """
+    P14 (IA): nem de propósito num fluxo de teste.
+
+    ⚠️ `http_request` SAIU desta lista em 20/08/2026, quando o usuário
+    aprovou a cerca do RF-FLW-16.1 e a P15 deixou de bloquear. Os de IA
+    continuam: a P14 é base legal e contrato de operador, e nada aqui a
+    resolve.
+    """
     usados = {n["type"] for n in grafo_completo["nodes"]}
 
-    assert not usados & {"llm_agent", "transcribe_audio", "http_request"}
+    assert not usados & {"llm_agent", "transcribe_audio"}
+
+
+def test_o_no_http_do_seed_aponta_para_um_cadastro_desligado(grafo_completo):
+    """
+    ⚠️ O nó de exemplo não pode sair chamando endereço nenhum.
+
+    O destino semeado é inventado (`exemplo.com`), e um fluxo de demonstração
+    que o chamasse a cada agendamento encheria o log da clínica de falha de
+    rede - além de ser uma chamada de saída que ninguém pediu.
+    """
+    from apps.automation.models import HttpDestination
+
+    no = next(n for n in grafo_completo["nodes"] if n["type"] == "http_request")
+    destino = HttpDestination.objects.get(pk=no["config"]["destination_id"])
+
+    assert destino.is_active is False
 
 
 def test_passa_no_validador(grafo_completo):

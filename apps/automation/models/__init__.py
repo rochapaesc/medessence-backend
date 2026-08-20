@@ -1,4 +1,5 @@
 from apps.automation.models.flow import Flow, FlowRun, FlowRunEvent, FlowVersion
+from apps.automation.models.http_destination import HttpDestination
 from apps.automation.models.sequence import (
     DEFAULT_CONVERSION_DAYS,
     DEFAULT_EXPIRE_HOURS,
@@ -17,6 +18,7 @@ __all__ = [
     "FlowRun",
     "FlowRunEvent",
     "FlowVersion",
+    "HttpDestination",
     "Sequence",
     "SequenceDispatch",
     "SequenceEnrollment",
