@@ -3,7 +3,7 @@ from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
-from rest_framework.status import HTTP_400_BAD_REQUEST
+from rest_framework.status import HTTP_201_CREATED, HTTP_400_BAD_REQUEST
 
 from apps.automation.api.serializers import FlowRunSerializer, FlowSerializer, FlowVersionSerializer
 from apps.automation.choices import FlowRunStatus, FlowStatus
@@ -54,6 +54,50 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
                 )
             )
             .order_by("priority", "name")
+        )
+
+    @action(detail=True, methods=["get"], url_path="export")
+    def export(self, request, pk=None):
+        """
+        O fluxo em um arquivo, para levar a outra clínica (RF-FLW-24).
+
+        ⚠️ O que sai NÃO tem id de sequência nem de etiqueta: eles viram nome.
+        Id de outra clínica não é só inútil, é perigoso — o mesmo número existe
+        lá apontando para outra coisa, e o fluxo importado marcaria a etiqueta
+        errada no paciente errado.
+        """
+        from apps.automation.portability import exportar
+
+        return Response(exportar(self.get_object()))
+
+    @action(detail=False, methods=["post"], url_path="import")
+    def importar_fluxo(self, request):
+        """
+        Cria aqui o fluxo exportado de outra clínica (RF-FLW-24.1).
+
+        Nasce em RASCUNHO com a lista do que não existe nesta clínica: publicar
+        sozinho poria no ar um fluxo que fala com paciente sem ninguém ter
+        olhado, e o arquivo pode citar sequência e modelo que só existem lá.
+        """
+        from apps.automation.portability import ArquivoInvalido, importar
+
+        arquivo = request.data.get("arquivo")
+        if arquivo is None:
+            raise ValidationError({"arquivo": "Envie o arquivo do fluxo."})
+        try:
+            flow, pendencias = importar(
+                self.clinic, arquivo, nome=request.data.get("nome", "")
+            )
+        except ArquivoInvalido as exc:
+            raise ValidationError({"arquivo": str(exc)}) from exc
+
+        return Response(
+            {
+                **self.get_serializer(flow).data,
+                # A tela mostra isto ANTES de a pessoa procurar o que quebrou.
+                "pendencias": pendencias,
+            },
+            status=HTTP_201_CREATED,
         )
 
     def perform_destroy(self, instance):
