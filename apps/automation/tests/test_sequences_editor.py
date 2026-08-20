@@ -360,7 +360,7 @@ def test_fluxo_publicado_nao_se_apaga(api_client, manager_single_clinic, clinic_
     response = api_client.delete(f"/api/v1/flows/{flow.pk}/")
 
     assert response.status_code == 400
-    assert "Despublique" in str(response.data)
+    assert "Desative" in str(response.data)
     flow.refresh_from_db()
     assert flow.deleted_at is None
 

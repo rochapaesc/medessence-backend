@@ -61,14 +61,14 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
         Apagar um fluxo tem duas guardas, e as duas falam (RF-FLW-26).
 
         Ativo não se apaga: tem paciente podendo cair nele agora, e sumir com
-        o fluxo no meio é o robô mudo sem aviso. Despublicar primeiro é o ato
+        o fluxo no meio é o robô mudo sem aviso. Desativar primeiro é o ato
         consciente. E fluxo que é passo de sequência não se apaga: o RESTRICT
         do banco estouraria um 500, e a mensagem de banco não diz à clínica
         QUAL sequência segura o fluxo.
         """
         if instance.status == FlowStatus.ACTIVE:
             raise ValidationError(
-                {"detail": "Este fluxo está publicado. Despublique antes de apagar."}
+                {"detail": "Este fluxo está ativo. Desative antes de apagar."}
             )
         donos = list(
             SequenceStep.objects.filter(flow=instance)
