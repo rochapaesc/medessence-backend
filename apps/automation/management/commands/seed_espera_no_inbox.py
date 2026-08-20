@@ -77,6 +77,14 @@ class Command(BaseCommand):
         # ⚠️ A trava olha o canal que a conversa USARIA, não "a clínica tem
         # algum canal fake": a clínica real TEM um fake, o do modo de teste, e
         # o disparo nunca escolhe aquele.
+        # ⚠️ LIMPAR vem ANTES da trava, e a ordem importa. A trava existe para
+        # proteger contra ESCREVER lixo no Inbox de quem trabalha; exigir
+        # `--confirmo` para REMOVER esse mesmo lixo é pedir "sim, quero criar
+        # conversa falsa" a quem está tentando desfazer. Estava assim, e foi o
+        # que atrapalhou a limpeza da clínica 3 em 20/08/2026.
+        if opts["limpar"]:
+            return self._limpar(clinic)
+
         if not self._e_fake(channel) and not opts["confirmo"]:
             raise CommandError(
                 f"O canal da clínica {clinic.pk} ({channel.display_number}) é de "
@@ -85,11 +93,8 @@ class Command(BaseCommand):
                 "Se é isso mesmo, repita com --confirmo. Os números usados são "
                 f"do prefixo {PREFIXO} (DDD 00 não existe, ninguém recebe nada) "
                 "e a inscrição nasce impossível de disparar. Para desfazer: "
-                "--limpar."
+                "--limpar, que não pede confirmação nenhuma."
             )
-
-        if opts["limpar"]:
-            return self._limpar(clinic)
 
         for wa_id, nome, trilhas, horas in PESSOAS:
             conversa = self._conversa(clinic, channel, wa_id, nome, atendida=bool(trilhas))
@@ -189,11 +194,57 @@ class Command(BaseCommand):
         return flow
 
     def _limpar(self, clinic):
-        contatos = Contact.objects.filter(clinic=clinic, wa_id__startswith=PREFIXO)
+        """
+        Desfaz o que este comando semeou, e SÓ isso.
+
+        ⚠️ Duas correções de 20/08/2026, as duas achadas com o estrago já
+        feito na clínica REAL:
+
+        1. **As CONVERSAS não eram removidas.** O comando prometia "para
+           desfazer: --limpar" e deixava para trás três conversas de exemplo
+           na fila da recepção, com `attended_by=AGENT` sem dono (que é o que
+           ele usa para demonstrar a sequência segurada). Elas ficaram no
+           Inbox da clínica 3 por um dia, e o usuário as leu como defeito do
+           produto: "conversa em sequência entra como Atendendo".
+
+        2. ⚠️ **Apagava SEQUÊNCIA E FLUXO POR NOME.** "Pré-consulta",
+           "Retorno em 6 meses" e "Pesquisa de satisfação" são nomes que
+           qualquer clínica usa de verdade - a 3 tinha as três. Rodar
+           `--limpar` lá apagaria trilha da clínica que este comando nunca
+           criou. Isso saiu: o comando não tem como distinguir a que ele fez
+           da que já existia, e na dúvida não apaga.
+
+        O que ele apaga agora é só o que carrega a marca dele: os contatos dos
+        números de `PESSOAS`, a conversa de cada um e a inscrição deles.
+        Trilha e fluxo ficam, e o comando DIZ que ficaram.
+        """
+        # ⚠️ Pelos NÚMEROS de `PESSOAS`, e não pelo prefixo `5500`: o prefixo
+        # é compartilhado com outros seeds (o `seed_inbox_demo` tem oito
+        # contatos nele), e um comando que desfaz o dos outros é pior do que
+        # um que não desfaz o próprio. Medido na clínica 3: o prefixo pegava
+        # 11 contatos, e só 3 são deste comando.
+        numeros = [wa_id for wa_id, *_ in PESSOAS]
+        contatos = Contact.objects.filter(clinic=clinic, wa_id__in=numeros)
+        quantos = contatos.count()
+        if not quantos:
+            self.stdout.write("Nada deste comando por aqui.")
+            return
+
         SequenceEnrollment.objects.filter(clinic=clinic, contact__in=contatos).delete()
-        nomes = {t for _, _, trilhas, _ in PESSOAS for t in trilhas}
-        Sequence.objects.filter(clinic=clinic, name__in=nomes).delete()
-        Flow.objects.filter(
-            clinic=clinic, name__in=[f"Aviso de {n}" for n in nomes]
-        ).delete()
-        self.stdout.write(self.style.SUCCESS("Exemplos removidos."))
+        # `all_objects` e `hard_delete`: é lixo de semente, não histórico de
+        # atendimento. Apagado de leve, ele continuaria ocupando a unicidade
+        # do número e reaparecendo em consulta que use `all_objects`.
+        for conversa in Conversation.all_objects.filter(clinic=clinic, contact__in=contatos):
+            conversa.hard_delete()
+        for contato in contatos:
+            contato.hard_delete()
+
+        self.stdout.write(
+            self.style.SUCCESS(f"Removidos {quantos} contatos de exemplo, com as conversas deles.")
+        )
+        nomes = ", ".join(sorted({t for _, _, trilhas, _ in PESSOAS for t in trilhas}))
+        self.stdout.write(
+            f"⚠️ As trilhas ({nomes}) e os fluxos de aviso NÃO foram tocados: "
+            "o nome delas é comum e podem ser da clínica. Confira e apague à mão "
+            "se forem deste comando."
+        )
