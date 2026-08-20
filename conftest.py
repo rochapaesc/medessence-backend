@@ -8,6 +8,19 @@ from apps.tenants.models import Clinic
 PASSWORD = "medessence-teste-123"
 
 
+@pytest.fixture(autouse=True)
+def reset_throttle_cache():
+    """
+    ⚠️ O teto de login (RF-CTA-5) conta no CACHE, que sobrevive entre testes:
+    sem limpar, a suíte inteira dividiria a mesma cota e os testes de login
+    passariam a falhar por ordem de execução em vez de por defeito.
+    """
+    from django.core.cache import cache
+
+    cache.clear()
+    yield
+
+
 @pytest.fixture
 def api_client():
     return APIClient()

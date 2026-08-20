@@ -34,12 +34,19 @@ class JWTClinicMiddleware:
         from rest_framework_simplejwt.exceptions import TokenError
         from rest_framework_simplejwt.tokens import AccessToken
 
+        from apps.accounts.authentication import token_predates_password_change
         from apps.accounts.models import Membership, User
 
         try:
             access = AccessToken(token)
             user = User.objects.get(pk=access["user_id"], is_active=True)
         except (TokenError, KeyError, User.DoesNotExist):
+            return None
+
+        # RF-CTA-3.1: a sessão derrubada pela troca de senha não pode continuar
+        # recebendo conversa em tempo real. Sem esta linha, quem perdeu o acesso
+        # pelo HTTP seguiria vendo a fila inteira pelo socket já aberto.
+        if token_predates_password_change(user, access) or user.must_change_password:
             return None
 
         from apps.accounts.choices import MembershipRole

@@ -1,7 +1,7 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenBlacklistView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenBlacklistView
 
-from apps.accounts.api.views import AuditedTokenObtainPairView
+from apps.accounts.api.views import AuditedTokenObtainPairView, TokenRefreshView
 
 urlpatterns = [
     path("token/", AuditedTokenObtainPairView.as_view(), name="token-obtain"),

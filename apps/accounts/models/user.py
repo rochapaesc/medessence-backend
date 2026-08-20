@@ -25,6 +25,27 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_staff = BooleanField(verbose_name="Membro da equipe", default=False)
     is_active = BooleanField(verbose_name="Ativo", default=True)
     created_at = DateTimeField(verbose_name="Criado em", auto_now_add=True)
+    # ---- §4.12: a clínica administra as próprias contas, e não há e-mail ----
+    must_change_password = BooleanField(
+        verbose_name="Precisa trocar a senha",
+        default=False,
+        help_text=(
+            "Senha temporária em vigor (RF-EQP-7). Enquanto ligado, a API "
+            "recusa toda rota que não seja trocar a senha, ver o perfil ou "
+            "sair."
+        ),
+    )
+    password_changed_at = DateTimeField(
+        verbose_name="Senha trocada em",
+        null=True,
+        blank=True,
+        help_text=(
+            "Invalida token emitido ANTES dele (RF-CTA-3), no HTTP e no "
+            "WebSocket. Sem este carimbo o refresh de 30 dias sobrevive à "
+            "troca de senha e à revogação do vínculo, e quem saiu da clínica "
+            "continua entrando pelo navegador já aberto."
+        ),
+    )
 
     objects = UserManager()
 

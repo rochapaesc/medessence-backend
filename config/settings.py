@@ -53,19 +53,30 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PART_APPS + LOCAL_APPS
 
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "apps.core.api.pagination.DefaultLimitOffsetPagination",
+    # ⚠️ A classe é a NOSSA (apps.accounts.authentication), não a do SimpleJWT:
+    # é ela que recusa token anterior à troca de senha (RF-CTA-3) e barra quem
+    # ainda usa senha temporária (RF-EQP-7). Voltar para a do SimpleJWT desliga
+    # as duas coisas em silêncio.
     "DEFAULT_AUTHENTICATION_CLASSES": (
         [
-            "rest_framework_simplejwt.authentication.JWTAuthentication",
+            "apps.accounts.authentication.JWTAuthentication",
             "rest_framework.authentication.SessionAuthentication",
         ]
         if DEBUG
-        else ["rest_framework_simplejwt.authentication.JWTAuthentication"]
+        else ["apps.accounts.authentication.JWTAuthentication"]
     ),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "PAGE_SIZE": 10,
+    # Teto de tentativas de login (RF-CTA-5). Generoso de propósito: quem erra
+    # a senha três vezes no balcão não pode ficar trancado, e o que se quer
+    # barrar é a repetição automatizada.
+    "DEFAULT_THROTTLE_RATES": {
+        "login_ip": "20/min",
+        "login_email": "10/min",
+    },
 }
 
 SPECTACULAR_SETTINGS = {

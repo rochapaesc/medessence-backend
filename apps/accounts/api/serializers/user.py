@@ -15,8 +15,12 @@ class UserMeSerializer(ModelSerializer):
             "last_name",
             "full_name",
             "is_platform_admin",
+            # A tela precisa saber que a senha é temporária para levar à troca
+            # (RF-EQP-7): o 403 do gate só chega quando ela tenta ir a outro
+            # lugar, e aí a pessoa já viu a tela errada.
+            "must_change_password",
         ]
-        read_only_fields = ["id", "email", "is_platform_admin"]
+        read_only_fields = ["id", "email", "is_platform_admin", "must_change_password"]
 
 
 class UserMeUpdateSerializer(ModelSerializer):

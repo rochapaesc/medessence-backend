@@ -1,7 +1,7 @@
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
-from apps.accounts.api.views import MeMembershipsView, MeView
+from apps.accounts.api.views import MeMembershipsView, MePasswordView, MeView
 from apps.inbox.api.views_reactivation import ReactivationMessageView
 from apps.inbox.api.views_signup import (
     ChannelConnectView,
@@ -31,6 +31,10 @@ urlpatterns = [
     path("auth/", include("apps.accounts.api.routers")),
     # Usuário logado
     path("me/", MeView.as_view(), name="me"),
+    # Troca da própria senha (RF-CTA-2) e saída do primeiro acesso (RF-EQP-7).
+    # ⚠️ O `name` é o que a autenticação usa para deixar a rota passar com a
+    # senha temporária de pé: renomear aqui tranca a única saída.
+    path("me/password/", MePasswordView.as_view(), name="me-password"),
     # Vínculos do usuário com clínicas - alimenta o seletor de clínica do front
     path("me/memberships/", MeMembershipsView.as_view(), name="me-memberships"),
     # CRM (pacientes e tags)
