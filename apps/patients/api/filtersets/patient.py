@@ -6,6 +6,7 @@ from django_filters.rest_framework import (
     NumberFilter,
 )
 
+from apps.patients.api.windows import parse_practitioner_ids
 from apps.patients.choices import Gender, PatientStatus
 from apps.patients.models import Patient
 from apps.patients.models.patient import ABSENCE_RANGES
@@ -20,7 +21,11 @@ class PatientFilterset(FilterSet):
     city = CharFilter(method="filter_city")
     gender = CharFilter(method="filter_gender")
     status = ChoiceFilter(choices=PatientStatus.choices, method="filter_status")
-    practitioner = NumberFilter(method="filter_practitioner")
+    # ⚠️ `CharFilter`, e NÃO `NumberFilter`: a tela de Reativação manda vários
+    # ids separados por vírgula, e o `NumberFilter` recusava com 400 antes de
+    # o método abaixo (que sabe dividir desde 11/08/2026) chegar a rodar. O
+    # método mudou e o tipo do campo não.
+    practitioner = CharFilter(method="filter_practitioner")
     # RF-REA-1.1/1.2: o recorte da fila de resgate e as faixas de ausência.
     segment = ChoiceFilter(
         choices=[("to_reactivate", "Fila de resgate")],
@@ -145,7 +150,7 @@ class PatientFilterset(FilterSet):
         compatível: `?practitioner=3` continua funcionando igual. O filtro da
         Reativação é multi-valor como os outros da coluna.
         """
-        ids = [parte for parte in str(value).split(",") if parte.strip().isdigit()]
+        ids = parse_practitioner_ids(value)
         if not ids:
             return queryset
         return queryset.filter(appointments__practitioner_id__in=ids).distinct()
@@ -157,10 +162,14 @@ class PatientFilterset(FilterSet):
 
         clinic = resolve_active_membership(self.request).clinic
         override = parse_window(self.request)
+        ids = parse_practitioner_ids(self.data.get("practitioner"))
+
+        # ⚠️ A janela do profissional só vale com UM escolhido. Com vários, "a
+        # janela de qual deles" não tem resposta, e a atividade relativa à
+        # carteira também não: cair na da clínica é a única leitura honesta.
         practitioner = None
-        practitioner_id = self.data.get("practitioner")
-        if practitioner_id:
-            practitioner = Practitioner.objects.filter(clinic=clinic, pk=practitioner_id).first()
+        if len(ids) == 1:
+            practitioner = Practitioner.objects.filter(clinic=clinic, pk=ids[0]).first()
         if practitioner is not None:
             return override or practitioner.effective_active_window_days, practitioner
         return override or clinic.active_window_days, None

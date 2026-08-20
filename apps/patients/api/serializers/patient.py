@@ -57,12 +57,36 @@ class PatientReadSerializer(ModelSerializer):
         ]
 
     def get_status(self, obj):
-        # Janela da clínica ativa vem do contexto (viewset escopado) -
-        # evita uma query de clinic por linha da listagem.
-        clinic = self.context.get("clinic")
-        if clinic is not None:
-            return obj.status_for_window(clinic.active_window_days)
-        return obj.status
+        """
+        O selo da linha, na MESMA janela que o filtro usou.
+
+        ⚠️ Aqui era sempre `clinic.active_window_days`, e o filtro honrava o
+        `?window=`. Com "Ativo em 12 meses" escolhido, o filtro devolvia 1394
+        pacientes na clínica real e 929 deles apareciam na linha marcados como
+        INATIVO: dois terços da lista se contradizendo, e a queixa era
+        "coloquei ativos e veio inativo".
+
+        A janela resolvida (com `?window=` e com o profissional) vem do
+        contexto; sem ela, cai na da clínica, como antes.
+        """
+        janela = self.context.get("window_days")
+        if janela is None:
+            clinic = self.context.get("clinic")
+            janela = clinic.active_window_days if clinic is not None else None
+        if janela is None:
+            return obj.status
+
+        # Com um profissional escolhido, a atividade é relativa à CARTEIRA
+        # dele, e o filtro anota `pract_last`/`pract_next` no queryset. Usar o
+        # denormalizado da clínica aqui recriaria a mesma divergência num
+        # outro eixo.
+        if hasattr(obj, "pract_last") or hasattr(obj, "pract_next"):
+            return obj.status_da_carteira(
+                janela,
+                ultima=getattr(obj, "pract_last", None),
+                proxima=getattr(obj, "pract_next", None),
+            )
+        return obj.status_for_window(janela)
 
     def get_tags(self, obj):
         assignments = obj.patient_tags.all()  # prefetch do viewset (só vivos)

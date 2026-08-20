@@ -24,3 +24,20 @@ def parse_window(request):
     if value not in ALLOWED_WINDOWS:
         raise ValidationError({"window": f"Janela deve ser uma de {ALLOWED_WINDOWS} dias."})
     return value
+
+
+def parse_practitioner_ids(raw) -> list[int]:
+    """
+    Os ids de profissional pedidos: um, ou vários separados por vírgula.
+
+    ⚠️ Existe para os TRÊS lugares que leem esse parâmetro darem a mesma
+    resposta. Eles não davam: a listagem devolvia 400 (`NumberFilter` recusava
+    "1,2" antes de o método rodar), o resumo da fila de resgate devolvia 200
+    ignorando o filtro em silêncio, e o contador estourava em 500 num
+    `filter(pk="1,2")`. Três comportamentos para o mesmo pedido, e a tela de
+    Reativação deixa marcar quantos o gestor quiser.
+
+    Valor inválido é DESCARTADO em vez de estourar: o parâmetro vem da URL, e
+    derrubar a tela por causa de um id torto é pior do que ignorá-lo.
+    """
+    return [int(parte) for parte in str(raw or "").split(",") if parte.strip().isdigit()]

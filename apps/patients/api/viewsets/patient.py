@@ -159,27 +159,85 @@ class PatientViewSet(
         """
         from rest_framework.exceptions import ValidationError
 
-        from apps.patients.api.windows import parse_window
+        from apps.patients.api.windows import parse_practitioner_ids, parse_window
         from apps.scheduling.models import Practitioner
 
-        queryset = self.get_queryset()
         override = parse_window(request)
+        # ⚠️ Era `filter(pk=<valor cru>)`, e com dois profissionais marcados a
+        # tela de Reativação manda "1,2": o Django estourava com
+        # `ValueError: Field 'id' expected a number` e a resposta virava 500.
+        # A janela do profissional só vale com UM escolhido; com vários, cai
+        # na da clínica, como no filterset.
+        ids = parse_practitioner_ids(request.query_params.get("practitioner"))
         practitioner = None
-        practitioner_id = request.query_params.get("practitioner")
-        if practitioner_id:
+        if len(ids) == 1:
             practitioner = Practitioner.objects.filter(
-                clinic=self.clinic, pk=practitioner_id
+                clinic=self.clinic, pk=ids[0]
             ).first()
             if practitioner is None:
                 raise ValidationError({"practitioner": "Profissional não encontrado."})
-            queryset = queryset.filter(appointments__practitioner=practitioner).distinct()
-            window_days = practitioner.effective_active_window_days
-        else:
-            window_days = self.clinic.active_window_days
+        window_days = (
+            practitioner.effective_active_window_days
+            if practitioner is not None
+            else self.clinic.active_window_days
+        )
         if override:
             window_days = override
 
-        return Response(queryset.status_counters(window_days, practitioner))
+        return Response(
+            self._recorte_dos_contadores(request).status_counters(window_days, practitioner)
+        )
+
+    def get_serializer_context(self):
+        """
+        A janela resolvida acompanha a linha, para o SELO bater com o filtro.
+
+        ⚠️ Sem isto o selo vinha sempre da janela da clínica enquanto o filtro
+        honrava o `?window=` e o profissional. Ver `PatientReadSerializer.
+        get_status`.
+        """
+        context = super().get_serializer_context()
+        context["window_days"] = self._janela_resolvida()
+        return context
+
+    def _janela_resolvida(self) -> int | None:
+        """
+        A MESMA conta do `_resolve_window` do filterset: `?window=` manda,
+        depois a janela efetiva do profissional escolhido, depois a da
+        clínica. Duplicar a regra aqui seria abrir a porta para os dois
+        divergirem de novo, então quem responde é o filterset.
+        """
+        try:
+            janela, _ = PatientFilterset(
+                self.request.query_params, request=self.request
+            )._resolve_window()
+        except Exception:  # noqa: BLE001 - contexto de serializer não derruba a listagem
+            return None
+        return janela
+
+    def _recorte_dos_contadores(self, request):
+        """
+        O MESMO recorte da listagem, menos o filtro de status.
+
+        ⚠️ Antes daqui isto era `get_queryset()` puro, e o número no topo da
+        tela respondia por outra pergunta que a lista: buscar, etiqueta,
+        cidade e status não chegavam aqui. Medido na clínica real, filtrando
+        por uma etiqueta: a lista caía para 350 pacientes e o contador
+        continuava dizendo 465 ativos, quando a verdade daquele recorte era
+        57. Oito vezes maior.
+        ⚠️ No DRF, `get_queryset()` NÃO aplica os filtros - quem aplica é o
+        `filter_queryset`. Era esse o buraco.
+
+        O status sai do recorte de propósito: o contador é "quantos DESTES
+        estão ativos", e filtrando por ativo ele responderia "465 de 465",
+        que é verdade e não serve para nada. É a mesma regra facetada que o
+        resumo da fila de resgate já usa.
+        """
+        parametros = request.query_params.copy()
+        parametros.pop("status", None)
+        return self.filterset_class(
+            parametros, queryset=self.get_queryset(), request=request
+        ).qs
 
     @action(detail=False, methods=["get"], url_path="reactivation-summary")
     def reactivation_summary(self, request):

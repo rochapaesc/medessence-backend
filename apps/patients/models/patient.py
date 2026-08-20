@@ -338,6 +338,20 @@ class Patient(TenantScopedModel):
         booked = self.next_appointment_at and self.next_appointment_at >= now
         return PatientStatus.ACTIVE if (attended or booked) else PatientStatus.INACTIVE
 
+    def status_da_carteira(self, window_days: int, *, ultima, proxima) -> str:
+        """
+        O mesmo cálculo do `status_for_window`, mas com as datas da CARTEIRA
+        de um profissional em vez dos denormalizados da clínica.
+
+        Existe para o selo da linha bater com o filtro quando há
+        `?practitioner=`: lá a atividade é "consultou COM ELE", e o
+        `last_appointment_at` do paciente pode ser de outro profissional.
+        """
+        now = timezone.now()
+        attended = ultima is not None and ultima >= active_cutoff(window_days, now)
+        booked = proxima is not None and proxima >= now
+        return PatientStatus.ACTIVE if (attended or booked) else PatientStatus.INACTIVE
+
     @property
     def status(self) -> str:
         """
