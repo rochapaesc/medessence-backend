@@ -493,3 +493,88 @@ class TestCotaDoRepique:
             _repicou_demais(conversa)
 
         assert Message.objects.filter(conversation=conversa, is_internal=True).count() == 1
+
+
+# --------------------------------------------------------------------- #
+# "Novo atendimento" (RF-FLW-5.2, 20/08/2026)
+# --------------------------------------------------------------------- #
+#
+# ⚠️ A diferença para "primeira mensagem do contato" só aparece no SEGUNDO mês
+# de uso: aqui a conversa é única por contato, então "primeira mensagem"
+# acontece uma vez na vida, e quem já falou com a clínica em março nunca mais
+# dispararia a acolhida. Este gatilho conta por ATENDIMENTO.
+
+
+def _encerrou(conversation):
+    """O evento que a linha do tempo guarda quando alguém encerra."""
+    from apps.inbox.attendance import resolve
+
+    resolve(conversation, None)
+    conversation.refresh_from_db()
+    return conversation
+
+
+def test_paciente_que_JA_FALOU_antes_dispara_o_novo_atendimento(clinic_a, conversa):
+    """
+    O caso que o gatilho existe para resolver, e que o `first_inbound` perde.
+    """
+    fluxo_simples(clinic_a, name="Acolhida", trigger=FlowTrigger.NEW_CONVERSATION)
+
+    # Março: ela falou, foi atendida, e o atendimento foi encerrado.
+    chegou(conversa, "oi, queria marcar")
+    _encerrou(conversa)
+
+    # Hoje: ela volta. É atendimento NOVO.
+    agora = chegou(conversa, "oi de novo")
+
+    assert pick_flow(conversa, agora) is not None
+
+
+def test_o_primeira_mensagem_PERDE_esse_caso(clinic_a, conversa):
+    """A prova de que os dois gatilhos não são sinônimos."""
+    fluxo_simples(clinic_a, name="Acolhida", trigger=FlowTrigger.FIRST_INBOUND)
+
+    chegou(conversa, "oi, queria marcar")
+    _encerrou(conversa)
+    agora = chegou(conversa, "oi de novo")
+
+    assert pick_flow(conversa, agora) is None
+
+
+def test_a_SEGUNDA_fala_do_mesmo_atendimento_nao_redispara(clinic_a, conversa):
+    """
+    Senão o robô se apresentaria a cada frase de quem escreve em três linhas,
+    que é o jeito de escrever mais comum no WhatsApp.
+    """
+    fluxo_simples(clinic_a, name="Acolhida", trigger=FlowTrigger.NEW_CONVERSATION)
+
+    chegou(conversa, "oi")
+    segunda = chegou(conversa, "queria marcar consulta")
+
+    assert pick_flow(conversa, segunda) is None
+
+
+def test_conversa_nova_dispara_igual(clinic_a, conversa):
+    """Sem encerramento nenhum, ele se comporta como a primeira mensagem: é o
+    caso particular, e não um caminho à parte."""
+    fluxo_simples(clinic_a, name="Acolhida", trigger=FlowTrigger.NEW_CONVERSATION)
+
+    primeira = chegou(conversa, "oi")
+
+    assert pick_flow(conversa, primeira) is not None
+
+
+def test_novo_atendimento_respeita_o_fora_do_horario(clinic_a, conversa):
+    """A trava que existe para o robô não passar na frente da recepção
+    (RF-FLW-5.1) vale para este gatilho também."""
+    fluxo_simples(
+        clinic_a,
+        name="Acolhida",
+        trigger=FlowTrigger.NEW_CONVERSATION,
+        only_outside_hours=True,
+    )
+    abrir_a_clinica(clinic_a)
+
+    primeira = chegou(conversa, "oi")
+
+    assert pick_flow(conversa, primeira) is None

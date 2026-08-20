@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from apps.automation.choices import FlowStatus, FlowTrigger
 from apps.automation.models import Flow
-from apps.inbox.choices import SenderKind
+from apps.inbox.choices import ActivityType, MessageKind, SenderKind
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,40 @@ def _matches_keyword(texto: str, config: dict) -> bool:
         if modo == "contains" and chave in alvo:
             return True
     return False
+
+
+def _is_new_conversation(conversation) -> bool:
+    """
+    Esta mensagem começou um ATENDIMENTO novo? (RF-FLW-5.2)
+
+    Conta as falas do contato desde o último ENCERRAMENTO: exatamente uma
+    significa que a que acabou de chegar abriu o atendimento. Sem encerramento
+    nenhum, é a conversa nova, e a conta dá o mesmo resultado do
+    `_is_first_inbound` — ele é o caso particular deste.
+
+    ⚠️ Por que não olhar o status: quando isto roda, a ingestão JÁ reabriu a
+    conversa (o signal da mensagem chama `reopen` antes do sinal que chega
+    aqui), então ela nunca está mais em Resolvida. O rastro que sobrevive é o
+    evento de encerramento na linha do tempo.
+    """
+    from apps.inbox.models import Message
+
+    encerramento = (
+        Message.objects.filter(
+            conversation=conversation,
+            kind=MessageKind.ACTIVITY,
+            activity_type=ActivityType.RESOLVED,
+        )
+        .order_by("-wa_timestamp")
+        .values_list("wa_timestamp", flat=True)
+        .first()
+    )
+    falas = Message.objects.filter(
+        conversation=conversation, sender_kind=SenderKind.CONTACT, is_internal=False
+    )
+    if encerramento is not None:
+        falas = falas.filter(wa_timestamp__gt=encerramento)
+    return falas.count() <= 1
 
 
 def _is_first_inbound(conversation) -> bool:
@@ -202,6 +236,7 @@ def pick_flow(conversation, message) -> Flow | None:
 
     aberta = _clinic_is_open(conversation.clinic)
     primeira = None  # calculado sob demanda: a contagem é uma query
+    atendimento_novo = None
 
     for flow in candidatos:
         if flow.only_outside_hours and aberta:
@@ -216,6 +251,15 @@ def pick_flow(conversation, message) -> Flow | None:
             if primeira is None:
                 primeira = _is_first_inbound(conversation)
             if primeira:
+                return flow
+            continue
+
+        if flow.trigger == FlowTrigger.NEW_CONVERSATION:
+            # Calculado sob demanda, como o de cima: são duas consultas, e
+            # cobrá-las em toda mensagem de menu seria pagar por nada.
+            if atendimento_novo is None:
+                atendimento_novo = _is_new_conversation(conversation)
+            if atendimento_novo:
                 return flow
 
     return None

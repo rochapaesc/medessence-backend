@@ -26,6 +26,14 @@ class FlowTrigger(TextChoices):
     """
 
     FIRST_INBOUND = "first_inbound", "Primeira mensagem do contato"
+    # ⚠️ NÃO é sinônimo do de cima, e a diferença aparece no segundo mês de uso
+    # (RF-FLW-5.2, 20/08/2026). Aqui a conversa é ÚNICA por contato, então
+    # "primeira mensagem" acontece UMA VEZ NA VIDA: quem já falou com a clínica
+    # em março nunca mais dispara o fluxo de acolhida. Este dispara a cada
+    # ATENDIMENTO novo — conversa que nasce, e conversa que volta depois de
+    # encerrada. É o `conversation_created` do Chatwoot, onde cada atendimento
+    # é uma conversa nova; como a nossa não é, a reabertura faz esse papel.
+    NEW_CONVERSATION = "new_conversation", "Novo atendimento (conversa nova ou reaberta)"
     KEYWORD = "keyword", "Palavra-chave"
     MANUAL = "manual", "Disparo manual do atendente"
 
