@@ -304,6 +304,78 @@ def wake_snoozed(conversation) -> bool:
     return True
 
 
+def count_open_conversations(user, clinic) -> int:
+    """Quantas conversas VIVAS estão com a pessoa nesta clínica (RF-EQP-5.1)."""
+    from apps.inbox.models import Conversation
+
+    return Conversation.objects.filter(
+        clinic=clinic,
+        assigned_to=user,
+        deleted_at__isnull=True,
+        status__in=[ConversationStatus.OPEN, ConversationStatus.SNOOZED],
+    ).count()
+
+
+@transaction.atomic
+def release_conversations_of(user, clinic) -> int:
+    """
+    Solta as conversas de quem perdeu o acesso à clínica (RF-EQP-5.1).
+
+    ⚠️ Sem isto, desativar alguém ESCONDE da fila as conversas que estavam com
+    ela: a posse continua apontando para quem não entra mais, e ninguém
+    consegue responder o paciente. É o mesmo defeito de posse de 31/07/2026,
+    agora entrando por outra porta.
+
+    As abertas voltam para a fila (Aguardando, sem responsável); as adiadas
+    só perdem o dono e mantêm a data, porque o compromisso do adiamento é com
+    o paciente, não com quem adiou - quando acordarem, já acordam sem dono.
+    """
+    from apps.inbox.models import Conversation
+    from apps.inbox.realtime import notify_conversation_updated
+
+    agora = timezone.now()
+    afetadas = list(
+        Conversation.objects.filter(
+            clinic=clinic,
+            assigned_to=user,
+            deleted_at__isnull=True,
+            status__in=[ConversationStatus.OPEN, ConversationStatus.SNOOZED],
+        ).select_related("contact")
+    )
+    if not afetadas:
+        return 0
+
+    quem = _nome(user)
+    for conversation in afetadas:
+        era_aberta = conversation.status == ConversationStatus.OPEN
+        conversation.assigned_to = None
+        conversation.attended_by = AttendedBy.NONE
+        conversation.attended_since = None
+        if era_aberta:
+            conversation.status = ConversationStatus.WAITING
+            conversation.waiting_since = agora
+        conversation.updated_at = agora
+        conversation.save(
+            update_fields=[
+                "assigned_to",
+                "attended_by",
+                "attended_since",
+                "status",
+                "waiting_since",
+                "updated_at",
+            ]
+        )
+        log_activity(
+            conversation,
+            ActivityType.REOPENED if era_aberta else ActivityType.ASSIGNED,
+            data={"by": "membership_revoked", "was_with": quem},
+        )
+        # A fila muda para todo mundo, não só para quem desativou.
+        notify_conversation_updated(conversation)
+
+    return len(afetadas)
+
+
 # --------------------------------------------------------------------- #
 # Classificação e passagem adiante (Bloco B1, RF-ATD-6/8/9)
 # --------------------------------------------------------------------- #

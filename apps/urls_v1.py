@@ -37,6 +37,8 @@ urlpatterns = [
     path("me/password/", MePasswordView.as_view(), name="me-password"),
     # Vínculos do usuário com clínicas - alimenta o seletor de clínica do front
     path("me/memberships/", MeMembershipsView.as_view(), name="me-memberships"),
+    # Equipe da clínica (§4.12): o gestor admite, edita e desativa sozinho.
+    path("", include("apps.accounts.api.team_routers")),
     # CRM (pacientes e tags)
     path("", include("apps.patients.api.routers")),
     # Agenda e catálogos

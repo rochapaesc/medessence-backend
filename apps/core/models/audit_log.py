@@ -30,6 +30,10 @@ class AuditAction(TextChoices):
     LOGIN = "LOGIN", "Login"
     LOGIN_FAILED = "LOGIN_FAILED", "Login falhou"
     LOGOUT = "LOGOUT", "Logout"
+    # O gestor trocou a senha de OUTRA pessoa (RF-EQP-6). Separado do UPDATE
+    # porque "quem redefiniu a senha de quem" é a pergunta que o auditor faz,
+    # e ela se perderia no meio das alterações de cadastro.
+    PASSWORD_RESET = "PASSWORD_RESET", "Senha redefinida"
 
 
 class AuditLog(Model):
