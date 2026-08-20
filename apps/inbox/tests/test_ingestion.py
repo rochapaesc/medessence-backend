@@ -459,3 +459,95 @@ def test_o_admin_apaga_em_LOTE_de_verdade(clinic_a, inbox_a):
     admin.delete_queryset(None, Message.objects.filter(clinic=clinic_a))
 
     assert Message.all_objects.filter(clinic=clinic_a).count() == 0
+
+
+# --------------------------------------------------------------------- #
+# `unsupported` não é UM caso só (achado em 20/08/2026)
+# --------------------------------------------------------------------- #
+#
+# A Meta usa o mesmo tipo para coisas muito diferentes. Os dois que chegaram de
+# verdade na clínica, achados nos webhooks arquivados: `unknown`, que é a
+# mensagem APAGADA pelo paciente, e `poll_creation`, que é enquete. Sem o
+# subtipo, a tela dava a mesma frase para os dois e mandava a recepção abrir o
+# celular à toa.
+
+
+def _payload_unsupported(wa_id, subtipo, wamid="wamid.UNS-1"):
+    """O formato REAL, copiado de um evento que a clínica recebeu."""
+    return {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": "PID"},
+                            "contacts": [
+                                {"wa_id": wa_id, "profile": {"name": "Marcia"}}
+                            ],
+                            "messages": [
+                                {
+                                    "id": wamid,
+                                    "from": wa_id,
+                                    "type": "unsupported",
+                                    "timestamp": "1787169694",
+                                    "errors": [
+                                        {
+                                            "code": 131051,
+                                            "title": "Message type unknown",
+                                            "error_data": {
+                                                "details": "Message type is "
+                                                "currently not supported."
+                                            },
+                                        }
+                                    ],
+                                    "unsupported": {"type": subtipo},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def test_mensagem_apagada_pelo_paciente_guarda_o_subtipo(clinic_a, inbox_a):
+    """
+    ⚠️ A Meta NÃO diz qual mensagem foi apagada: não vem `context` nem o wamid
+    da original. O que dá para fazer com honestidade é registrar o aviso na
+    posição em que ela o entregou.
+    """
+    wa_id = inbox_a["contact"].wa_id
+    ingest_events(
+        inbox_a["channel"], parse_meta_webhook(_payload_unsupported(wa_id, "unknown"))
+    )
+
+    mensagem = Message.objects.get(clinic=clinic_a, provider_message_id="wamid.UNS-1")
+    assert mensagem.kind == MessageKind.UNSUPPORTED
+    assert mensagem.content_data["unsupported_type"] == "unknown"
+
+
+def test_enquete_se_distingue_da_mensagem_apagada(clinic_a, inbox_a):
+    """As duas chegam como `unsupported`; só o subtipo as separa."""
+    wa_id = inbox_a["contact"].wa_id
+    ingest_events(
+        inbox_a["channel"],
+        parse_meta_webhook(_payload_unsupported(wa_id, "poll_creation", "wamid.UNS-2")),
+    )
+
+    mensagem = Message.objects.get(clinic=clinic_a, provider_message_id="wamid.UNS-2")
+    assert mensagem.content_data["unsupported_type"] == "poll_creation"
+
+
+def test_unsupported_sem_subtipo_nao_quebra(clinic_a, inbox_a):
+    """Tipo novo que a Meta invente: entra com o subtipo vazio e a tela usa a
+    frase genérica, em vez de a ingestão estourar."""
+    wa_id = inbox_a["contact"].wa_id
+    payload = _payload_unsupported(wa_id, "", "wamid.UNS-3")
+    payload["entry"][0]["changes"][0]["value"]["messages"][0].pop("unsupported")
+
+    ingest_events(inbox_a["channel"], parse_meta_webhook(payload))
+
+    mensagem = Message.objects.get(clinic=clinic_a, provider_message_id="wamid.UNS-3")
+    assert mensagem.content_data["unsupported_type"] == ""

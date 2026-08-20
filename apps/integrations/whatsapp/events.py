@@ -186,6 +186,19 @@ def _parse_message(
         botao = message.get("button") or {}
         body = botao.get("text", "")
         content_data = {"interactive_id": botao.get("payload", "")}
+    elif meta_type == "unsupported":
+        # ⚠️ A Meta usa `unsupported` para coisas MUITO diferentes, e sem o
+        # subtipo a tela dava a mesma frase genérica para todas. Os dois casos
+        # reais que apareceram na clínica (achados nos webhooks arquivados):
+        # `unknown`, que é a mensagem APAGADA pelo paciente, e `poll_creation`,
+        # que é enquete.
+        #
+        # ⚠️ Ela NÃO diz qual mensagem foi apagada: não vem `context` nem o
+        # wamid da original, então não há como marcar o balão certo. O aviso na
+        # posição em que a Meta o entregou é tudo o que dá para fazer com
+        # honestidade, e é o que o Chatwoot também faz.
+        subtipo = (message.get("unsupported") or {}).get("type", "")
+        content_data = {"unsupported_type": subtipo}
 
     # No inbound o identificador vem em `from_user_id`; no eco, em
     # `to_user_id`, porque ali quem manda é a clínica. O bloco `contacts[]` é o
