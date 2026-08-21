@@ -42,6 +42,20 @@ def _webm_de_voz(segundos=1) -> bytes:
     ).stdout
 
 
+def _ogg_de_voz(codec="libopus", segundos=1) -> bytes:
+    """
+    OGG de VERDADE. ⚠️ Bytes falsos não servem mais: desde 21/08/2026 o
+    upload confere o codec real de todo `.ogg`, porque o container também
+    aceita vorbis e a Cloud API só aceita opus.
+    """
+    return subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+         f"aevalsrc=0.6*sin(900*t):d={segundos}",
+         "-c:a", codec, "-f", "ogg", "pipe:1"],
+        capture_output=True, check=True,
+    ).stdout
+
+
 def _abre_janela(conversation):
     """Janela de 24h aberta: sem inbound recente, qualquer envio é recusado."""
     conversation.last_inbound_at = timezone.now() - timedelta(minutes=5)
@@ -209,6 +223,50 @@ def test_gravacao_vai_como_nota_de_voz(logado, inbox_a, monkeypatch):
     assert espiao.chamadas[0]["is_voice"] is True
 
 
+def test_o_audio_sobe_declarando_OPUS_para_a_meta(logado, inbox_a, monkeypatch):
+    """
+    ⚠️ O defeito visto na clínica real em 21/08/2026: o áudio saía, o CRM o
+    tocava normalmente, e no WhatsApp do paciente aparecia "Este áudio não
+    está mais disponível. Peça para reenviá-lo".
+
+    A documentação da Meta é explícita: "audio/ogg (OPUS codecs only; base
+    audio/ogg not supported)". Subindo como `audio/ogg` puro ela ACEITA o
+    upload e devolve media id - o estrago só aparece do outro lado. É também
+    assim que ela declara o mime dos áudios que ELA entrega para nós.
+    """
+    espiao = _ProvedorEspiao()
+    monkeypatch.setattr(
+        "apps.integrations.whatsapp.registry.get_whatsapp_provider", lambda c: espiao
+    )
+    conversation = inbox_a["conversation"]
+    _abre_janela(conversation)
+    media_id = _subir(logado, _webm_de_voz(), "gravacao.webm", "audio/webm").data["id"]
+
+    logado.post(
+        MESSAGES, {"conversation": conversation.id, "media": media_id}, format="json"
+    )
+
+    assert espiao.chamadas[0]["mime_type"] == "audio/ogg; codecs=opus"
+    # No BANCO continua o mime simples: quem serve o arquivo usa a extensão,
+    # e o `codecs=` só faz sentido para a Meta.
+    assert MediaAsset.objects.get(pk=media_id).mime_type == "audio/ogg"
+
+
+def test_o_ogg_que_NAO_e_opus_e_convertido_antes_de_subir(logado, inbox_a):
+    """
+    PROVA NEGATIVA do mesmo defeito: `.ogg` é um CONTAINER e aceita vorbis,
+    que a Cloud API recusa. Como declaramos `codecs=opus` no envio, mandar
+    vorbis seria mentir para a Meta - e o áudio chegaria quebrado do mesmo
+    jeito, com o arquivo intacto aqui.
+    """
+    resposta = _subir(logado, _ogg_de_voz(codec="libvorbis"), "recado.ogg", "audio/ogg")
+
+    from apps.inbox.audio import codec_de_audio
+
+    media = MediaAsset.objects.get(pk=resposta.data["id"])
+    assert codec_de_audio(media.stored_file.read()) == "opus"
+
+
 def test_anexo_nao_pode_ser_enviado_duas_vezes(logado, inbox_a):
     """A guarda que impede reencaminhar o exame de um paciente para outro:
     só se anexa mídia que ainda não tem mensagem."""
@@ -301,9 +359,7 @@ def test_audio_nao_leva_legenda(logado, inbox_a):
     """A Meta ignora, e o texto sumiria sem aviso para quem escreveu."""
     conversation = inbox_a["conversation"]
     _abre_janela(conversation)
-    media_id = _subir(
-        logado, b"\x00" * 64, "recado.ogg", "audio/ogg"
-    ).data["id"]
+    media_id = _subir(logado, _ogg_de_voz(), "recado.ogg", "audio/ogg").data["id"]
 
     resposta = logado.post(
         MESSAGES,

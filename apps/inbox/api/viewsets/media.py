@@ -45,7 +45,7 @@ class MediaUploadViewSet(ClinicScopedMixin, BaseGenericViewSet):
             raise ValidationError(str(exc)) from exc
 
         nome = Path(arquivo.name or "anexo").name
-        if kind == MessageKind.AUDIO and mime in media_rules.CONVERTER_PARA_OPUS:
+        if kind == MessageKind.AUDIO and self._precisa_converter(mime, conteudo):
             conteudo, mime, nome = self._converter_audio(conteudo, nome)
 
         media = MediaAsset(
@@ -84,6 +84,33 @@ class MediaUploadViewSet(ClinicScopedMixin, BaseGenericViewSet):
             clinic=self.clinic,
         )
         return Response(media_payload(media, request), status=HTTP_201_CREATED)
+
+    @staticmethod
+    def _precisa_converter(mime: str, conteudo: bytes) -> bool:
+        """
+        Este áudio precisa virar OGG/Opus antes de ir para a Meta?
+
+        Os formatos que o navegador grava (webm, wav) sempre precisam. E o
+        `.ogg` também pode precisar: ele é um CONTAINER, e dentro dele cabe
+        vorbis - que a Cloud API não aceita. Como declaramos `codecs=opus` no
+        envio, mandar vorbis seria mentir para a Meta e o áudio chegaria
+        quebrado no celular do paciente.
+
+        ⚠️ O `ffprobe` só roda para OGG: as gravações da própria recepção já
+        saem opus daqui, e conferir todo áudio custaria um processo a mais em
+        cada anexo.
+        """
+        if mime in media_rules.CONVERTER_PARA_OPUS:
+            return True
+        if mime != media_rules.MIME_OPUS:
+            return False
+
+        from apps.inbox.audio import codec_de_audio
+
+        codec = codec_de_audio(conteudo)
+        # Codec ilegível: converter é o caminho seguro - o custo é uma
+        # passada de ffmpeg, e o preço de errar é o paciente sem o áudio.
+        return codec != "opus"
 
     def _converter_audio(self, conteudo: bytes, nome: str):
         from apps.inbox.audio import converter_para_opus

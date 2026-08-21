@@ -14,6 +14,7 @@ from datetime import timedelta
 from django.db.models import F
 from django.utils import timezone
 
+from apps.inbox import media_rules
 from apps.inbox.choices import (
     ActivityType,
     AttendedBy,
@@ -1211,7 +1212,10 @@ def _enviar_anexo(provider, to: str, message):
         arquivo,
         message.caption or None,
         filename=media.filename or None,
-        mime_type=media.mime_type or None,
+        # ⚠️ `audio/ogg` puro a Meta declara NÃO SUPORTAR (só com opus). Ela
+        # aceita o upload assim mesmo e o áudio chega quebrado no celular do
+        # paciente - o defeito de 21/08/2026.
+        mime_type=media_rules.mime_para_a_meta(media.mime_type) or None,
         reply_to=message.reply_to_provider_id or None,
         # Áudio com onda calculada é gravação da recepção: vai como nota de
         # voz. Áudio anexado de um arquivo vai como áudio comum — que é o que

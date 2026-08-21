@@ -132,6 +132,25 @@ A clínica usa app do celular + API no mesmo número, então recebe também:
 os recebe — o que explica por que quase nenhum CRM do mercado os trata, e por
 que as três referências deste projeto (Chatwoot, wacrm, whatomate) também não.
 
+## ⚠️ O mime do ENVIO não é o mime do banco
+
+A Meta documenta: **"audio/ogg (OPUS codecs only; base audio/ogg not
+supported; mono input only)"**. Subir como `audio/ogg` puro ela ACEITA — o
+upload devolve media id e o status vira `delivered` — e o estrago aparece só
+do outro lado: o WhatsApp do paciente mostra *"Este áudio não está mais
+disponível. Peça para reenviá-lo"* com o arquivo intacto no CRM.
+
+Foi o defeito de 21/08/2026, e ele enganou porque **tudo o que dá para medir
+daqui estava certo**: arquivo OGG/Opus mono válido, Content-Type correto no
+nosso servidor, o áudio tocando no CRM.
+
+    banco / servir:  audio/ogg              (a extensão é quem decide o tipo)
+    upload à Meta:   audio/ogg; codecs=opus (`media_rules.mime_para_a_meta`)
+
+E como `.ogg` é um CONTAINER que também aceita vorbis, todo `.ogg` anexado tem
+o codec conferido no upload (`audio.codec_de_audio`) e é convertido quando não
+é opus — declarar `codecs=opus` sem conferir seria mentir para a Meta.
+
 ## A armadilha que custou caro
 
 O parser faz `KIND_MAP.get(meta_type, MessageKind.UNSUPPORTED)`. **Todo tipo

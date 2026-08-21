@@ -77,6 +77,37 @@ def _arquivo(conteudo: bytes):
                 os.unlink(caminho)
 
 
+def codec_de_audio(conteudo: bytes) -> str:
+    """
+    O codec REAL do áudio ("opus", "vorbis", "aac"...). Vazio se não der.
+
+    Existe porque a extensão e o mime mentem: `.ogg` é um CONTAINER, e dentro
+    dele cabe opus ou vorbis. A Cloud API só aceita opus, então declarar o
+    codec sem conferir é arriscar o defeito que este módulo passou a evitar.
+    """
+    with _arquivo(conteudo) as caminho:
+        saida = _run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "json",
+                caminho,
+            ]
+        )
+    if not saida:
+        return ""
+    try:
+        return json.loads(saida)["streams"][0]["codec_name"]
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        return ""
+
+
 def duracao_ms(caminho: str) -> int | None:
     """Duração real do áudio/vídeo, em milissegundos."""
     saida = _run(

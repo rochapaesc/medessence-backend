@@ -52,6 +52,23 @@ CONVERTER_PARA_OPUS = {"audio/webm", "audio/wav", "audio/x-wav", "audio/flac"}
 # vez de virar um anexo de áudio genérico.
 MIME_OPUS = "audio/ogg"
 
+# O mesmo formato, declarado como a Cloud API o exige NO ENVIO.
+#
+# ⚠️ A documentação da Meta é explícita: "audio/ogg (OPUS codecs only; base
+# audio/ogg not supported; mono input only)". Subindo como `audio/ogg` puro
+# ela ACEITA o upload e devolve um media id — o estrago só aparece do outro
+# lado, onde o WhatsApp mostra "Este áudio não está mais disponível. Peça
+# para reenviá-lo" com o arquivo intacto aqui dentro. Visto na clínica real em
+# 21/08/2026, e é assim que a Meta declara o mime dos áudios que ELA entrega.
+MIME_OPUS_ENVIO = "audio/ogg; codecs=opus"
+
+
+def mime_para_a_meta(mime: str) -> str:
+    """O mime como o upload da Cloud API o exige."""
+    if (mime or "").split(";")[0].strip().lower() == "audio/ogg":
+        return MIME_OPUS_ENVIO
+    return mime
+
 ENVIAVEIS = frozenset(TETOS)
 
 # ⚠️ Teto da Cloud API para a LEGENDA de um anexo. Passar dele faz a Meta
