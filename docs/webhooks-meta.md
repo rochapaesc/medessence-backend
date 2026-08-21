@@ -132,6 +132,29 @@ A clínica usa app do celular + API no mesmo número, então recebe também:
 os recebe — o que explica por que quase nenhum CRM do mercado os trata, e por
 que as três referências deste projeto (Chatwoot, wacrm, whatomate) também não.
 
+## ⚠️ Áudio enviado que não toca no celular de quem recebe (EM ABERTO)
+
+Sintoma: o áudio sai do CRM, o status vira `delivered`, o CRM o toca — e no
+celular do destinatário aparece *"Este áudio não está mais disponível. Peça
+para reenviá-lo"*.
+
+**Três hipóteses já descartadas por medição** (não refazer):
+
+| Hipótese | Como foi medida | Resultado |
+|---|---|---|
+| Content-Type ao servir | `curl -I` na URL de produção | já sai `audio/ogg` (nginx) |
+| Formato do arquivo | `ffprobe` + `OpusHead` byte a byte contra um áudio que a Meta entregou | idênticos: opus, 48kHz, mono, preskip 312 |
+| Mime no upload | upload real com os dois mimes + `GET /{media-id}` | **a Meta NORMALIZA**: sobe-se `audio/ogg; codecs=opus` e ela guarda `audio/ogg` |
+
+O que sobra exige mandar mensagem de verdade, e por isso virou comando com
+destinatário explícito:
+
+    manage.py diagnosticar_audio --clinic 3 --para <SEU celular>
+
+Ele manda o MESMO media id duas vezes, mudando só `voice: true/false`. Se só o
+áudio comum tocar, a resposta está no `is_voice`; se nenhum tocar, é a mídia;
+se os dois tocarem, o defeito está no caminho do CRM e não no formato.
+
 ## ⚠️ O mime do ENVIO não é o mime do banco
 
 A Meta documenta: **"audio/ogg (OPUS codecs only; base audio/ogg not
@@ -140,9 +163,10 @@ upload devolve media id e o status vira `delivered` — e o estrago aparece só
 do outro lado: o WhatsApp do paciente mostra *"Este áudio não está mais
 disponível. Peça para reenviá-lo"* com o arquivo intacto no CRM.
 
-Foi o defeito de 21/08/2026, e ele enganou porque **tudo o que dá para medir
-daqui estava certo**: arquivo OGG/Opus mono válido, Content-Type correto no
-nosso servidor, o áudio tocando no CRM.
+⚠️ **Isto NÃO resolveu o defeito do áudio** (medido em 21/08: a Meta normaliza
+o mime e guarda `audio/ogg` de qualquer jeito). Ficou porque é o que a
+documentação pede e porque a conferência de codec que veio junto evita um
+problema real: `.ogg` com vorbis, que a Cloud API recusa.
 
     banco / servir:  audio/ogg              (a extensão é quem decide o tipo)
     upload à Meta:   audio/ogg; codecs=opus (`media_rules.mime_para_a_meta`)
