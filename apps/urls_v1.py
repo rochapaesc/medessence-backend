@@ -20,7 +20,7 @@ from apps.patients.api.viewsets.partners import (
     PartnersCalendarView,
     PartnersDayView,
 )
-from apps.tenants.api.views import ClinicBusinessHoursView
+from apps.tenants.api.views import ClinicBusinessHoursView, ClinicSettingsView
 
 urlpatterns = [
     # Swagger
@@ -47,6 +47,9 @@ urlpatterns = [
     path("", include("apps.inbox.api.routers")),
     # Fluxos de atendimento (F2.6)
     path("", include("apps.automation.api.routers")),
+    # Configurações da clínica (§4.13): nome, fuso e a janela de paciente
+    # ativo. Até aqui, só pelo Django admin.
+    path("clinic/", ClinicSettingsView.as_view(), name="clinic-settings"),
     # Horário de funcionamento: quem decide se o fluxo atende ou se a conversa
     # vai para a recepção (RF-FLW-5.1)
     path(

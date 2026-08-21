@@ -8,16 +8,65 @@ clínica com meia semana cadastrada.
 """
 
 from itertools import pairwise
+from zoneinfo import ZoneInfo
 
 from rest_framework.serializers import (
     IntegerField,
     ListField,
+    ModelSerializer,
     Serializer,
     TimeField,
     ValidationError,
 )
 
+from apps.tenants.models import Clinic
 from apps.tenants.models.business_hours import Weekday
+
+
+class ClinicSettingsSerializer(ModelSerializer):
+    """
+    As configurações da clínica (§4.13, RF-CFG-2).
+
+    ⚠️ TRÊS campos, e só eles. O que o modelo tem além disto fica de fora com
+    motivo: `slug` é identificador (muda comando e endereço), as credenciais do
+    EHR são da plataforma e ficam cifradas, `ehr_push_enabled` é trava de
+    segurança que se liga por comando depois de validar a leitura, e
+    `appointments_backfilled_until` é marca-d'água interna do backfill.
+    """
+
+    class Meta:
+        model = Clinic
+        fields = ["id", "name", "slug", "timezone", "active_window_days"]
+        read_only_fields = ["id", "slug"]
+
+    def validate_name(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise ValidationError("A clínica precisa de um nome.")
+        return value
+
+    def validate_timezone(self, value):
+        """
+        ⚠️ Fuso inválido não pode entrar: ele é lido pelo disparo da sequência,
+        pela contagem da agenda e pelo horário de funcionamento, e um valor que
+        o `ZoneInfo` não conhece quebraria os três de uma vez, longe daqui.
+        """
+        value = (value or "").strip()
+        # Uma guarda só: o `ZoneInfo` é quem recusa de verdade. Conferir antes
+        # contra `available_timezones()` era código que nunca chegava a agir,
+        # e a prova negativa mostrou isso ao desligá-lo sem nada quebrar.
+        try:
+            ZoneInfo(value)
+        except Exception as exc:
+            raise ValidationError(f"'{value}' não é um fuso horário conhecido.") from exc
+        return value
+
+    def validate_active_window_days(self, value):
+        # A faixa existe para barrar o dedo errado: 1 dia deixaria a clínica
+        # inteira inativa amanhã, e 3.650 faria "ativo" perder o sentido.
+        if not (7 <= value <= 1095):
+            raise ValidationError("Escolha entre 7 e 1095 dias.")
+        return value
 
 
 class BusinessHoursRangeSerializer(Serializer):
@@ -32,9 +81,7 @@ class BusinessHoursRangeSerializer(Serializer):
         # ninguém entender por quê: nenhuma hora cai dentro do intervalo.
         if attrs["closes_at"] <= attrs["opens_at"]:
             dia = Weekday(attrs["weekday"]).label
-            raise ValidationError(
-                f"{dia}: a hora de fechar precisa ser depois da hora de abrir."
-            )
+            raise ValidationError(f"{dia}: a hora de fechar precisa ser depois da hora de abrir.")
         return attrs
 
 

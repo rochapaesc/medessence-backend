@@ -10,13 +10,63 @@ porque ninguém tinha como cadastrar o expediente.
 """
 
 from django.db import transaction
+from rest_framework.generics import RetrieveUpdateAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.api.permissions import IsClinicManager
+from apps.core.audit import log_action
 from apps.core.context import resolve_active_membership
-from apps.tenants.api.serializers import ClinicBusinessHoursSerializer
+from apps.core.models.audit_log import AuditAction
+from apps.tenants.api.serializers import (
+    ClinicBusinessHoursSerializer,
+    ClinicSettingsSerializer,
+)
 from apps.tenants.models import ClinicBusinessHours
+
+
+class ClinicSettingsView(RetrieveUpdateAPIView):
+    """
+    As configurações da clínica ativa (§4.13, RF-CFG-2).
+
+    Só o GESTOR, e para ler também: o que se muda aqui alcança a clínica
+    inteira. O nome sai nas mensagens ao paciente, o fuso decide quando a
+    sequência dispara e a janela redefine quem é paciente ativo.
+    """
+
+    permission_classes = [IsClinicManager]
+    serializer_class = ClinicSettingsSerializer
+    http_method_names = ["get", "patch", "options", "head"]
+
+    def get_object(self):
+        return resolve_active_membership(self.request).clinic
+
+    def perform_update(self, serializer):
+        antes = {campo: getattr(serializer.instance, campo) for campo in _AUDITADOS}
+        clinic = serializer.save()
+        mudou = [c for c in _AUDITADOS if antes[c] != getattr(clinic, c)]
+        if not mudou:
+            return
+        # RF-CFG-2.5: trocar a janela de atividade muda a fila de resgate da
+        # clínica inteira, e quando o número muda sozinho a primeira pergunta é
+        # quem mexeu. Os VALORES entram porque nenhum deles é sensível, e sem
+        # eles o registro não responde "mudou de quanto para quanto".
+        log_action(
+            self.request.user,
+            AuditAction.UPDATE,
+            "Clinic",
+            clinic.pk,
+            payload={
+                "changed_fields": mudou,
+                **{f"{c}_antes": antes[c] for c in mudou},
+                **{f"{c}_depois": getattr(clinic, c) for c in mudou},
+            },
+            request=self.request,
+            clinic=clinic,
+        )
+
+
+_AUDITADOS = ("name", "timezone", "active_window_days")
 
 
 class ClinicBusinessHoursView(APIView):
@@ -66,9 +116,7 @@ class ClinicBusinessHoursView(APIView):
         horas valem. Sem isso, quem cadastra de outro estado digita o horário
         errado e só descobre pelo paciente que não foi atendido.
         """
-        faixas = ClinicBusinessHours.objects.filter(clinic=clinic).order_by(
-            "weekday", "opens_at"
-        )
+        faixas = ClinicBusinessHours.objects.filter(clinic=clinic).order_by("weekday", "opens_at")
         return {
             "timezone": clinic.timezone,
             "hours": [
