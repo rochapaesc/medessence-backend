@@ -16,6 +16,23 @@ ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*").split(",")
 
 CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="*").split(",")
 
+# Atrás de um proxy que termina o TLS (21/08/2026).
+#
+# O proxy fala HTTPS com o navegador e HTTP com a aplicação, então o Django
+# via a request como insegura e montava toda URL absoluta com `http://`. A
+# página está em HTTPS: o navegador BLOQUEIA essas URLs por mixed-content, e
+# foi assim que as mídias do Inbox pararam de aparecer na clínica real - o
+# arquivo estava lá, a URL estava certa, e o navegador se recusava a buscá-la.
+#
+# Quem monta URL absoluta hoje é o `media_payload` (a foto e o áudio que o
+# paciente manda). Qualquer outra que nasça depois herda a correção.
+#
+# ⚠️ Isto só é seguro porque a aplicação NÃO é alcançável direto: quem define
+# o `X-Forwarded-Proto` é o proxy, e ele sobrescreve o que vier de fora. Se um
+# dia a porta da aplicação ficar exposta sem proxy na frente, qualquer um
+# manda esse cabeçalho e o Django passa a acreditar que a request é segura.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
 DJANGO_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

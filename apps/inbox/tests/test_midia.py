@@ -13,6 +13,7 @@ import subprocess
 from datetime import timedelta
 
 import pytest
+from django.core.files.base import ContentFile
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -179,6 +180,36 @@ def test_o_servidor_sabe_o_TIPO_de_cada_arquivo_que_a_clinica_recebe(
 
     assert mimetypes.guess_type(arquivo)[0] == esperado
 
+
+def test_a_url_da_midia_sai_em_HTTPS_atras_do_proxy(clinic_a):
+    """
+    ⚠️ Mixed-content: o defeito que apagou as mídias da clínica real
+    (21/08/2026).
+
+    O proxy fala HTTPS com o navegador e HTTP com a aplicação. Sem o
+    `SECURE_PROXY_SSL_HEADER`, o Django dava a request por insegura e montava
+    `http://` na URL da mídia — e a página, servida em HTTPS, tinha essas
+    URLs BLOQUEADAS pelo navegador. O arquivo estava lá e a URL estava certa;
+    o navegador se recusava a buscá-la.
+    """
+    from django.test import RequestFactory, override_settings
+
+    from apps.inbox.api.serializers.message import media_payload
+
+    media = _midia(clinic_a, mime_type="audio/ogg")
+    media.stored_file.save("recado.ogg", ContentFile(b"x"), save=True)
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        pelo_proxy = RequestFactory().get(
+            "/", HTTP_HOST="app.medessence.com.br", HTTP_X_FORWARDED_PROTO="https"
+        )
+        direto = RequestFactory().get("/", HTTP_HOST="localhost:9000")
+
+        assert media_payload(media, pelo_proxy)["url"].startswith(
+            "https://app.medessence.com.br/"
+        )
+        # E sem proxy nenhum nada muda: o ambiente local segue em http.
+        assert media_payload(media, direto)["url"].startswith("http://localhost:9000/")
 
 
 # ──────────────────────────── desenho de onda ────────────────────────────
