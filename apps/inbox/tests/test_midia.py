@@ -143,6 +143,44 @@ def test_extensao_do_arquivo_salvo(clinic_a, mime, esperado):
     assert _nome_do_arquivo(media).endswith(esperado)
 
 
+@pytest.mark.parametrize(
+    ("arquivo", "esperado"),
+    [
+        # ⚠️ O áudio de voz do WhatsApp. A imagem do container não traz o
+        # `/etc/mime.types`, então `guess_type` devolvia None e o arquivo era
+        # SERVIDO como `application/octet-stream` - com esse tipo nenhum player
+        # toca, e foi assim que todo áudio recebido parou de tocar na clínica
+        # real (21/08/2026). Salvar com a extensão certa não bastava: quem
+        # decide o tipo da RESPOSTA é esta tabela.
+        ("recado.ogg", "audio/ogg"),
+        ("recado.oga", "audio/ogg"),
+        ("recado.m4a", "audio/mp4"),  # iPhone
+        ("recado.amr", "audio/amr"),
+        ("exame.docx", "application/vnd.openxmlformats-officedocument."
+                       "wordprocessingml.document"),
+        ("planilha.xlsx", "application/vnd.openxmlformats-officedocument."
+                          "spreadsheetml.sheet"),
+        # Estes o Python já sabia - entram para a lista não encolher em
+        # silêncio no dia em que alguém mexer nela.
+        ("foto.jpg", "image/jpeg"),
+        ("video.mp4", "video/mp4"),
+        ("laudo.pdf", "application/pdf"),
+    ],
+)
+def test_o_servidor_sabe_o_TIPO_de_cada_arquivo_que_a_clinica_recebe(
+    arquivo, esperado
+):
+    """
+    O tipo com que o arquivo SAI na resposta HTTP, que é o que decide se o
+    player toca. Sem isto, o áudio virava um download que não abria nem fora
+    do navegador.
+    """
+    import mimetypes
+
+    assert mimetypes.guess_type(arquivo)[0] == esperado
+
+
+
 # ──────────────────────────── desenho de onda ────────────────────────────
 
 

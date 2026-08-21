@@ -1,3 +1,4 @@
+import mimetypes
 from datetime import timedelta
 from pathlib import Path
 
@@ -298,6 +299,29 @@ STATIC_ROOT = BASE_DIR / "static/"
 MEDIA_URL = "/media/"
 
 MEDIA_ROOT = BASE_DIR / "media/"
+
+# ⚠️ Tipos que a imagem do container NÃO conhece (21/08/2026).
+#
+# O `mimetypes` do Python lê o `/etc/mime.types` do sistema, e a imagem slim
+# não traz esse arquivo: `guess_type("audio.ogg")` devolve None e o servidor
+# entrega o arquivo como `application/octet-stream`. Com esse tipo, NENHUM
+# player toca - foi assim que todo áudio de voz recebido do paciente parou de
+# tocar na clínica real, e o arquivo baixado não abria nem fora do navegador.
+#
+# `audio/ogg` é o formato do áudio de voz do WhatsApp, então este é o caso
+# mais comum de todos. Os outros vêm junto porque saem dos mesmos aparelhos:
+# `.m4a` do iPhone, `.amr` de aparelho antigo, e os documentos do Office que o
+# paciente manda.
+mimetypes.add_type("audio/ogg", ".ogg")
+mimetypes.add_type("audio/ogg", ".oga")
+mimetypes.add_type("audio/mp4", ".m4a")
+mimetypes.add_type("audio/amr", ".amr")
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"
+)
 
 # WhiteNoise: comprime (gzip/brotli) e versiona os estáticos com hash no nome,
 # permitindo cache imutável de longo prazo. Aplica-se em produção (o manifesto
