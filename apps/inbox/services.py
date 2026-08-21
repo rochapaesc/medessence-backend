@@ -95,9 +95,19 @@ def apply_message_to_conversation(message, *, created: bool) -> None:
     # Reabertura (RF-ATD-2): mensagem do paciente ressuscita conversa dormente.
     # Depois do save para não brigar pelos mesmos campos.
     if message.direction == MessageDirection.IN:
-        from apps.inbox.attendance import reopen
+        from apps.inbox.attendance import reopen, voltar_para_a_fila
 
         reopen(conversation, by_contact=True)
+        # E a conversa que está ABERTA SEM DONO volta para a fila (RF-ATD-1).
+        # ⚠️ Sem isto, a conversa que a clínica atendeu PELO CELULAR ficava
+        # aberta sem responsável para sempre: o `reopen` acima só age em
+        # conversa dormente, então o paciente podia escrever de novo e ela não
+        # aparecia em recorte nenhum da fila. Visto na clínica real em 21/08,
+        # com três pacientes esperando resposta e invisíveis.
+        #
+        # Roda DEPOIS do reopen: se ele acabou de decidir o destino da
+        # conversa dormente, esta não tem mais o que fazer.
+        voltar_para_a_fila(conversation)
 
 
 # --------------------------------------------------------------------- #

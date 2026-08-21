@@ -526,6 +526,48 @@ def atendida_pelo_celular(conversation) -> bool:
     return True
 
 
+def voltar_para_a_fila(conversation) -> bool:
+    """
+    O paciente escreveu numa conversa que NÃO tem responsável: ela volta a
+    Aguardando (RF-ATD-1, corrigido em 21/08/2026). Devolve True se mudou.
+
+    ⚠️ Este é o par de `atendida_pelo_celular`, e existe por causa dela. Aquela
+    põe a conversa em ABERTA SEM DONO quando a clínica responde pelo aparelho,
+    e nada a tirava mais desse estado: o `reopen` só age em conversa dormente.
+    O resultado apareceu na clínica real em 21/08 - o paciente mandava "Bom
+    dia!", ninguém respondia, e a conversa não estava em Aguardando nem em
+    lugar nenhum dos recortes. Quem trabalha por recorte não via que havia
+    alguém esperando.
+
+    O RF-ATD-1 já dizia o certo desde o começo: Aguardando é "na fila, sem
+    responsável". Se ninguém está com ela e o paciente falou, ela É isso.
+
+    ⚠️ Só quando NÃO há dono nenhum:
+      - `attended_by=AGENT` é atendimento humano em curso, e devolver à fila
+        arrancaria a conversa de quem está digitando a resposta;
+      - `attended_by=BOT` é o robô conduzindo, e cortá-lo no meio deixaria o
+        paciente falando sozinho (RF-FLW-11);
+      - conversa DORMENTE é assunto de `reopen`, que decide se volta com dono
+        ou para a fila.
+    """
+    if conversation.status != ConversationStatus.OPEN:
+        return False
+    if conversation.assigned_to_id or conversation.attended_by != AttendedBy.NONE:
+        return False
+
+    conversation.status = ConversationStatus.WAITING
+    # O relógio da fila conta desde o INBOUND, não desde agora: a Meta
+    # reentrega webhook com horas de atraso, e `now()` diria "aguardando há um
+    # minuto" para quem espera desde ontem. `last_inbound_at` já carrega a
+    # guarda de não retroceder no tempo.
+    conversation.waiting_since = conversation.last_inbound_at or timezone.now()
+    conversation.save(update_fields=["status", "waiting_since", "updated_at"])
+    # Sem evento na linha do tempo de propósito: o que aconteceu foi a
+    # MENSAGEM do paciente, e ela já está na thread. Um "voltou para a fila" a
+    # cada mensagem de conversa sem dono viraria ruído em cima do conteúdo.
+    return True
+
+
 def mark_waiting(conversation, user=None):
     """Devolve para a fila: perde o responsável (RF-ATD-1)."""
     conversation.status = ConversationStatus.WAITING

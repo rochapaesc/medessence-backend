@@ -754,6 +754,17 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
                 "bot": queryset.filter(
                     status=ConversationStatus.OPEN, attended_by=AttendedBy.BOT
                 ).count(),
+                # ABERTA e SEM DONO: a clínica respondeu pelo celular
+                # (RF-CON-5.2) e o sistema não tem a quem atribuir.
+                #
+                # ⚠️ Este contador nasceu em 21/08/2026 porque sem ele os três
+                # recortes NÃO SOMAVAM a fila: na clínica real, 7 das 10
+                # conversas vivas estavam neste estado, e os botões diziam
+                # 1 + 2 + 0. Quem olha o topo lia "três conversas" numa lista
+                # de dez.
+                "unattended": queryset.filter(
+                    status=ConversationStatus.OPEN, attended_by=AttendedBy.NONE
+                ).count(),
                 "snoozed": queryset.filter(status=ConversationStatus.SNOOZED).count(),
                 "resolved": queryset.filter(status=ConversationStatus.RESOLVED).count(),
                 "unassigned": queryset.filter(assigned_to__isnull=True).count(),

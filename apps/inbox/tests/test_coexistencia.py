@@ -416,3 +416,155 @@ def test_o_mais_da_frente_do_payload_nao_confunde_o_parser(db):
 def test_account_update_nao_vira_evento_de_mensagem(db):
     """Ele é tratado fora da ingestão, no caminho de conta."""
     assert parse_meta_webhook(_conta()) == []
+
+
+# --------------------------------------------------------------------- #
+# A volta para a fila (RF-ATD-1, corrigido em 21/08/2026)
+# --------------------------------------------------------------------- #
+
+
+def _inbound(wamid="wamid.dePaciente", texto="Bom dia!", quando="1755700000"):
+    """Mensagem do PACIENTE, no formato que a Meta entrega."""
+    return {
+        "entry": [
+            {
+                "id": WABA,
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": PHONE_ID},
+                            "contacts": [
+                                {"wa_id": PACIENTE, "profile": {"name": "Tatiane"}}
+                            ],
+                            "messages": [
+                                {
+                                    "from": PACIENTE,
+                                    "id": wamid,
+                                    "timestamp": quando,
+                                    "type": "text",
+                                    "text": {"body": texto},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_paciente_que_escreve_em_conversa_SEM_DONO_devolve_ela_a_fila(
+    conversa_esperando, canal
+):
+    """
+    ⚠️ O defeito que a clínica real mostrou em 21/08/2026.
+
+    A clínica responde pelo celular, o eco põe a conversa em ABERTA SEM DONO,
+    e nada a tirava mais desse estado: o `reopen` só age em conversa dormente.
+    O paciente escrevia de novo, ninguém respondia, e a conversa não aparecia
+    em recorte nenhum da fila - havia gente esperando e invisível.
+    """
+    from apps.inbox.choices import AttendedBy
+
+    ingest_events(canal, parse_meta_webhook(_eco()))
+    conversa_esperando.refresh_from_db()
+    assert conversa_esperando.status == ConversationStatus.OPEN, "o eco abriu"
+
+    ingest_events(canal, parse_meta_webhook(_inbound()))
+
+    conversa_esperando.refresh_from_db()
+    assert conversa_esperando.status == ConversationStatus.WAITING
+    assert conversa_esperando.attended_by == AttendedBy.NONE
+    assert conversa_esperando.waiting_since is not None
+
+
+def test_o_relogio_da_fila_conta_desde_a_MENSAGEM_e_nao_desde_agora(
+    conversa_esperando, canal
+):
+    """
+    A Meta reentrega webhook com horas de atraso. Marcando `now()`, a conversa
+    de quem espera desde ontem diria "aguardando há um minuto", e a fila
+    perderia justamente a ordem que ela existe para dar.
+    """
+    ingest_events(canal, parse_meta_webhook(_eco()))
+    ingest_events(canal, parse_meta_webhook(_inbound(quando="1755700000")))
+
+    conversa_esperando.refresh_from_db()
+    assert conversa_esperando.waiting_since == conversa_esperando.last_inbound_at
+
+
+def test_conversa_COM_ATENDENTE_nao_e_arrancada_de_quem_atende(
+    conversa_esperando, canal, clinic_a
+):
+    """
+    PROVA NEGATIVA: devolver à fila uma conversa que alguém está atendendo
+    tiraria a conversa das mãos de quem está digitando a resposta.
+    """
+    from apps.accounts.choices import MembershipRole
+    from apps.accounts.models import Membership
+    from apps.inbox.attendance import take_over
+    from apps.inbox.choices import AttendedBy
+    from conftest import make_user
+
+    atendente = make_user("recepcao.fila@teste.dev")
+    Membership.objects.create(
+        user=atendente, clinic=clinic_a, role=MembershipRole.ATTENDANT
+    )
+    take_over(conversa_esperando, atendente)
+
+    ingest_events(canal, parse_meta_webhook(_inbound()))
+
+    conversa_esperando.refresh_from_db()
+    assert conversa_esperando.status == ConversationStatus.OPEN
+    assert conversa_esperando.attended_by == AttendedBy.AGENT
+    assert conversa_esperando.assigned_to_id == atendente.pk
+
+
+def test_conversa_COM_O_ROBO_nao_e_interrompida(conversa_esperando, canal):
+    """
+    PROVA NEGATIVA: cortar o robô no meio deixaria o paciente falando sozinho
+    (RF-FLW-11). Responder é justamente o que o fluxo espera do paciente.
+    """
+    from apps.inbox.choices import AttendedBy
+
+    conversa_esperando.status = ConversationStatus.OPEN
+    conversa_esperando.attended_by = AttendedBy.BOT
+    conversa_esperando.waiting_since = None
+    conversa_esperando.save()
+
+    ingest_events(canal, parse_meta_webhook(_inbound()))
+
+    conversa_esperando.refresh_from_db()
+    assert conversa_esperando.status == ConversationStatus.OPEN
+    assert conversa_esperando.attended_by == AttendedBy.BOT
+
+
+def test_os_quatro_recortes_SOMAM_a_fila(conversa_esperando, canal, clinic_a):
+    """
+    ⚠️ O contador que faltava. Na clínica real os três botões diziam
+    1 + 2 + 0 numa fila de 10: sete conversas estavam abertas sem dono e não
+    cabiam em recorte nenhum.
+    """
+    from django.test import override_settings
+    from rest_framework.test import APIClient
+
+    from apps.accounts.choices import MembershipRole
+    from apps.accounts.models import Membership
+    from conftest import make_user
+
+    # Uma aberta pelo celular: é a que não era contada por ninguém.
+    ingest_events(canal, parse_meta_webhook(_eco()))
+
+    gestor = make_user("gestor.contadores@teste.dev")
+    Membership.objects.create(user=gestor, clinic=clinic_a, role=MembershipRole.MANAGER)
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        client = APIClient()
+        client.force_authenticate(gestor)
+        client.credentials(HTTP_X_CLINIC_ID=str(clinic_a.pk))
+        c = client.get("/api/v1/conversations/counters/").data
+        fila = client.get("/api/v1/conversations/?status=waiting,open").data["count"]
+
+    assert c["unattended"] == 1
+    assert c["attending"] + c["waiting"] + c["bot"] + c["unattended"] == fila
