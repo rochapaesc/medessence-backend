@@ -108,6 +108,10 @@ class EHRSyncView(APIView):
         return Response(
             {
                 "ehr_configured": bool(clinic.ehr_provider),
+                # A trava do write-through como LEITURA (RF-CFG-1.6): ela se
+                # liga por comando, mas o gestor precisa ver em que fase a
+                # clínica está sem abrir chamado.
+                "ehr_push_enabled": clinic.ehr_push_enabled,
                 "running": running,
                 "last_synced_at": max(finished) if finished else None,
                 "runs": runs,

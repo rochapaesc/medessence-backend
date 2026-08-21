@@ -27,17 +27,18 @@ class ClinicSettingsSerializer(ModelSerializer):
     """
     As configurações da clínica (§4.13, RF-CFG-2).
 
-    ⚠️ TRÊS campos, e só eles. O que o modelo tem além disto fica de fora com
-    motivo: `slug` é identificador (muda comando e endereço), as credenciais do
-    EHR são da plataforma e ficam cifradas, `ehr_push_enabled` é trava de
-    segurança que se liga por comando depois de validar a leitura, e
-    `appointments_backfilled_until` é marca-d'água interna do backfill.
+    ⚠️ TRÊS campos EDITÁVEIS, e só eles. O que o modelo tem além disto fica de
+    fora com motivo: as credenciais do EHR são da plataforma e ficam cifradas,
+    `ehr_push_enabled` é trava de segurança que se liga por comando depois de
+    validar a leitura, e `appointments_backfilled_until` é marca-d'água
+    interna do backfill. `slug` e `created_at` saem como LEITURA (RF-CFG-2.6):
+    identificador e idade da clínica são contexto do cartão, não opção.
     """
 
     class Meta:
         model = Clinic
-        fields = ["id", "name", "slug", "timezone", "active_window_days"]
-        read_only_fields = ["id", "slug"]
+        fields = ["id", "name", "slug", "timezone", "active_window_days", "created_at"]
+        read_only_fields = ["id", "slug", "created_at"]
 
     def validate_name(self, value):
         value = (value or "").strip()

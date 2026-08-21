@@ -32,6 +32,20 @@ class TestLer:
         assert resposta.data["name"] == clinic_a.name
         assert resposta.data["timezone"] == clinic_a.timezone
         assert resposta.data["active_window_days"] == clinic_a.active_window_days
+        # Contexto de LEITURA do cartão (RF-CFG-2.6): identificador e idade.
+        assert resposta.data["slug"] == clinic_a.slug
+        assert resposta.data["created_at"] is not None
+
+    def test_created_at_nao_se_edita(self, gestor, clinic_a):
+        """RF-CFG-2.6: a idade da clínica é contexto, não opção."""
+        antes = clinic_a.created_at
+        resposta = gestor.patch(
+            URL, {"created_at": "2020-01-01T00:00:00Z"}, format="json"
+        )
+
+        assert resposta.status_code == 200
+        clinic_a.refresh_from_db()
+        assert clinic_a.created_at == antes
 
     def test_nao_expoe_credencial_nem_trava_do_ehr(self, gestor):
         """

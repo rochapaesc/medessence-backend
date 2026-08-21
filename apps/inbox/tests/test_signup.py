@@ -358,6 +358,27 @@ def test_atendente_LE_o_estado_do_canal(api_client, attendant_a, inbox_a):
     resposta = api_client.get(CHANNEL)
     assert resposta.status_code == 200
     assert resposta.data["conectado"] is True
+    # Canal de pé: o carimbo de queda sai nulo, não some do payload.
+    assert resposta.data["canal"]["disconnected_at"] is None
+
+
+def test_canal_caido_diz_DESDE_QUANDO(gestor, inbox_a):
+    """
+    RF-CFG-4.1: "caiu" sem o "há quanto tempo" obriga a adivinhar a urgência.
+    O modelo sempre teve `disconnected_at`; o payload é que o engolia.
+    """
+    canal = inbox_a["channel"]
+    canal.auth_error_count = 2
+    canal.disconnected_at = timezone.now()
+    canal.disconnect_reason = "Session has expired."
+    canal.save()
+
+    resposta = gestor.get(CHANNEL)
+
+    assert resposta.status_code == 200
+    assert resposta.data["conectado"] is False
+    assert resposta.data["canal"]["disconnected_at"] is not None
+    assert resposta.data["canal"]["disconnect_reason"] == "Session has expired."
 
 
 def test_atendente_nao_ve_a_configuracao_do_app(api_client, attendant_a, app_da_meta):

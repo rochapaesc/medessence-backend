@@ -54,6 +54,9 @@ def estado_do_canal(clinic) -> dict:
             "is_coexistence": canal.is_coexistence,
             "connected_at": canal.connected_at,
             "disconnected": canal.disconnected,
+            # Desde quando está fora (RF-CFG-4.1): "caiu" sem o "há quanto
+            # tempo" obrigava a adivinhar a urgência.
+            "disconnected_at": canal.disconnected_at,
             "disconnect_reason": canal.disconnect_reason,
         },
     }
