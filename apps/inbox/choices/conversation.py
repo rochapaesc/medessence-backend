@@ -78,3 +78,7 @@ class ActivityType(TextChoices):
     BOT_STARTED = "bot_started", "IA assumiu"
     BOT_HANDOFF = "bot_handoff", "IA entregou para humano"
     TAKEN_OVER = "taken_over", "Tomou o atendimento"
+    # O contato trocou de número (webhook `system`, RF-CON-5.4). Vai na linha
+    # do tempo porque a recepção PRECISA saber: o número que ela tinha anotado
+    # no papel deixou de valer.
+    NUMBER_CHANGED = "number_changed", "Trocou de número"

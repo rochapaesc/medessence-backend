@@ -104,15 +104,30 @@ class Message(TenantScopedModel):
     # do que se sabia: uma que mudou de texto sem avisar faria alguém confiar
     # numa versão que já não é a original. O antes/depois fica na auditoria.
     edited_at = DateTimeField(verbose_name="Editada em", null=True, blank=True)
+    revoked_by = ForeignKey(
+        "accounts.User",
+        verbose_name="Apagada por",
+        null=True,
+        blank=True,
+        on_delete=SET_NULL,
+        related_name="+",
+        help_text=(
+            "Quem apagou PELO CRM. Vazio quando veio do WhatsApp: aí quem "
+            "apagou foi o paciente (mensagem recebida) ou alguém no app do "
+            "celular da clínica (mensagem enviada, `from_phone`)."
+        ),
+    )
     revoked_at = DateTimeField(
         verbose_name="Apagada pelo contato em",
         null=True,
         blank=True,
         help_text=(
-            "O paciente apagou esta mensagem no WhatsApp dele (webhook "
-            "`revoke`, só em coexistência). ⚠️ O CONTEÚDO FICA: o registro do "
+            "Quando esta mensagem foi apagada, por qualquer um dos TRÊS "
+            "caminhos: o paciente no WhatsApp dele, a clínica no app do "
+            "celular (os dois pelo webhook `revoke`, só em coexistência) ou "
+            "alguém aqui no CRM. ⚠️ O CONTEÚDO FICA nos três: o registro do "
             "atendimento é da clínica, e a tela apenas o esmaece e avisa. "
-            "Apagar aqui junto reescreveria o que a recepção leu e respondeu."
+            "Apagar junto reescreveria o que a recepção leu e respondeu."
         ),
     )
 

@@ -31,14 +31,55 @@
 | `reaction` | Emoji colado numa mensagem | ✅ |
 | `status` | Entrega: sent/delivered/read/failed | ✅ |
 | **`revoke`** | **O usuário APAGOU uma mensagem** | ✅ *(21/08/2026)* |
-| **`edit`** | **O usuário EDITOU uma mensagem** | ⬜ |
-| **`system`** | **O usuário TROCOU DE NÚMERO** | ⬜ |
+| **`edit`** | **O usuário EDITOU uma mensagem** | ✅ *(21/08/2026)* |
+| **`system`** | **O usuário TROCOU DE NÚMERO** | ✅ *(21/08/2026)* |
 | `order` | Pedido do catálogo | n/a |
 | `group` | Mensagem em grupo (Groups API) | n/a |
-| `errors` | Falha de sistema ou de conta | parcial |
+| `errors` | Falha de sistema ou de conta | ignorado de propósito |
 | `unsupported` | Tipo que a Cloud API não entende | ✅ |
 
-## ⚠️ Os dois que ainda caem no balde errado
+## ⚠️ Os DOIS laços: mensagens e ecos
+
+O `revoke`/`edit` chega em **duas listas diferentes**, e tratar só uma foi um
+defeito de 21/08/2026 (visto em produção no mesmo dia da correção):
+
+| Lista | Quem agiu |
+|---|---|
+| `messages[]` | o **paciente**, no WhatsApp dele |
+| `message_echoes[]` | a **clínica**, no app do celular |
+
+Hoje um `_kind_do_evento()` só decide nos dois laços, justamente para não
+divergirem de novo. Some com ele e os ecos voltam a virar balão vazio.
+
+O terceiro caminho é o **CRM**: `perform_destroy` do `MessageViewSet` marca
+`revoked_at` + `revoked_by`. Nos três, o conteúdo FICA.
+
+## O que resta em aberto
+
+- **`history`** (coexistência, até 180 dias em 3 fases): NÃO tratado, e
+  **medido em produção em 21/08: ZERO webhooks arquivados**. A clínica não
+  compartilhou o histórico no onboarding (é uma escolha feita na hora de
+  conectar, e a Meta só envia naquele momento) — não há o que importar. Se um
+  dia outra clínica conectar aceitando compartilhar, o comando de medição
+  abaixo acusa, e só então vale desenhar a fatia. Todo
+  webhook é arquivado em `WebhookEvent` ANTES de processar, então se a clínica
+  compartilhou o histórico no onboarding, os payloads estão guardados em
+  produção esperando reprocessamento. Medir lá antes de desenhar:
+
+      docker exec medessence_django python manage.py shell -c "
+      import json
+      from apps.inbox.models import WebhookEvent
+      n = sum(1 for w in WebhookEvent.objects.all().iterator()
+              if '\"history\"' in json.dumps(w.payload))
+      print('webhooks de history arquivados:', n)"
+
+  Regras já decididas para quando entrar: mensagem histórica NÃO gera não
+  lida, NÃO notifica e NÃO dispara fluxo (o robô não pode responder a uma
+  mensagem de março); conversa criada por histórico nasce Resolvida.
+- **`request_welcome`**: ignorado de propósito hoje; anotado como possível
+  sinal de "clicou no anúncio" para a F4 de campanhas.
+
+## Como os dois de 21/08 foram fechados (edit e system)
 
 ### `edit` — o paciente corrigiu o que escreveu
 

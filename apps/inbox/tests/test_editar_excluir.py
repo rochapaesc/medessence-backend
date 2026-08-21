@@ -99,8 +99,18 @@ def test_nota_vazia_e_recusada(logado, inbox_a, manager_single_clinic):
 # ────────────────────────────── excluir ──────────────────────────────
 
 
-def test_exclui_nota_mas_o_REGISTRO_fica(logado, inbox_a, manager_single_clinic):
-    """Soft delete: some da thread, permanece no banco com a auditoria."""
+def test_exclui_nota_mas_o_CONTEUDO_fica_na_conversa(
+    logado, inbox_a, manager_single_clinic
+):
+    """
+    ⚠️ Contrato mudado em 21/08/2026. Era soft delete e a nota SUMIA da
+    thread; agora ela fica esmaecida, com o selo e o conteúdo legível.
+
+    O registro do atendimento é da clínica: quem leu aquilo respondeu com
+    base naquilo, e sumir apagaria da vista da equipe um pedaço do que
+    aconteceu. É a mesma regra do apagar que vem do WhatsApp (RF-INB-6.6),
+    valendo para os três caminhos: CRM, app do celular e paciente.
+    """
     nota = _mensagem(
         inbox_a["conversation"], manager_single_clinic, body="rascunho", is_internal=True
     )
@@ -108,10 +118,12 @@ def test_exclui_nota_mas_o_REGISTRO_fica(logado, inbox_a, manager_single_clinic)
     resposta = logado.delete(f"{MESSAGES}{nota.pk}/")
 
     assert resposta.status_code == 204
-    assert not Message.objects.filter(pk=nota.pk).exists()
-    guardada = Message.all_objects.get(pk=nota.pk)
-    assert guardada.deleted_at is not None
-    assert guardada.body == "rascunho"
+    nota.refresh_from_db()
+    assert nota.body == "rascunho", "o conteúdo não pode sumir"
+    assert nota.revoked_at is not None
+    # Quem apagou AQUI fica gravado; o selo da tela usa isso.
+    assert nota.revoked_by_id == manager_single_clinic.pk
+    assert nota.deleted_at is None, "não é mais soft delete"
 
 
 def test_exclui_mensagem_que_FALHOU(logado, inbox_a, manager_single_clinic):
@@ -198,8 +210,12 @@ def test_evento_da_linha_do_tempo_nao_e_alterado(logado, inbox_a):
 def test_apagar_a_ultima_refaz_a_previa_da_fila(
     logado, inbox_a, manager_single_clinic
 ):
-    """Sem isto, a lista mostraria um texto que já não existe — e a recepção
-    clicaria na conversa procurando algo que sumiu."""
+    """
+    ⚠️ A fila deixa de mostrar o TEXTO apagado (21/08/2026): ela passa a dizer
+    "Mensagem apagada". O conteúdo continua na conversa - a fila é vitrine de
+    relance, e repetir ali o que a pessoa apagou é o oposto de discreto. É o
+    que o WhatsApp faz na lista dele.
+    """
     conversation = inbox_a["conversation"]
     _mensagem(
         conversation,
@@ -216,4 +232,4 @@ def test_apagar_a_ultima_refaz_a_previa_da_fila(
     logado.delete(f"{MESSAGES}{ultima.pk}/")
 
     conversation.refresh_from_db()
-    assert conversation.last_message_preview == "a que fica"
+    assert conversation.last_message_preview == "Mensagem apagada"

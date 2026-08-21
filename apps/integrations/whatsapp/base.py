@@ -36,6 +36,13 @@ class WhatsAppEventKind:
     #
     # Não é mensagem e não vira balão: MARCA a mensagem que já está lá.
     REVOKE = "revoke"
+    # O paciente EDITOU uma mensagem já enviada (só coexistência, até 15 min
+    # depois do envio). Como o revoke: não vira balão, atualiza a que existe.
+    EDIT = "edit"
+    # O contato TROCOU DE NÚMERO (`system.type=user_changed_number`).
+    # ⚠️ Sem tratar isto, o paciente que troca de chip vira um contato NOVO,
+    # sem ficha e sem histórico - o mesmo estrago do nono dígito.
+    NUMBER_CHANGE = "number_change"
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,12 @@ class WhatsAppEvent:
     # quem diz QUAL foi (`revoke.original_message_id`), então aqui não há
     # adivinhação nenhuma.
     revoked_message_id: str = ""
+    # para kind=EDIT: o wamid da mensagem editada; o texto/legenda novos vêm
+    # em `body`/`caption`, como numa mensagem comum.
+    edited_message_id: str = ""
+    # para kind=NUMBER_CHANGE: o número NOVO (`system.wa_id`). O antigo vem em
+    # `wa_id`, que neste evento é o `from`.
+    new_wa_id: str = ""
     status: str = ""  # para kind=STATUS: sent/delivered/read/failed
     status_error: str = ""  # para status=failed: motivo legível (errors[] da Meta)
     # para kind=PREFERENCE: True quando o contato pediu para PARAR (RF-SEQ-8.1)

@@ -32,6 +32,12 @@ PREVIEW_MAX = 200
 
 
 def _preview(message) -> str:
+    # ⚠️ Mensagem apagada não mostra o CONTEÚDO na fila, e isso não contradiz
+    # o RF-INB-6.6: o conteúdo continua na conversa, que é o registro do
+    # atendimento. A fila é uma vitrine de relance - repetir ali um texto que
+    # a pessoa apagou é o oposto de discreto, e é assim que o WhatsApp faz.
+    if message.revoked_at:
+        return "Mensagem apagada"
     text = message.body or message.caption or message.get_kind_display()
     return text[:PREVIEW_MAX]
 
@@ -125,6 +131,8 @@ def ingest_events(channel, events) -> dict:
         "preference": 0,
         "contact_sync": 0,
         "revoke": 0,
+        "edit": 0,
+        "number_change": 0,
         "ignored": 0,
     }
     for event in events:
@@ -140,6 +148,10 @@ def ingest_events(channel, events) -> dict:
             stats["contact_sync"] += bool(_sincronizar_contato(channel, event))
         elif event.kind == WhatsAppEventKind.REVOKE:
             stats["revoke"] += bool(_aplicar_revoke(channel, event))
+        elif event.kind == WhatsAppEventKind.EDIT:
+            stats["edit"] += bool(_aplicar_edit(channel, event))
+        elif event.kind == WhatsAppEventKind.NUMBER_CHANGE:
+            stats["number_change"] += bool(_aplicar_troca_de_numero(channel, event))
         else:
             stats["ignored"] += 1
     return stats
@@ -176,10 +188,155 @@ def _aplicar_revoke(channel, event) -> bool:
     alvo.revoked_at = event.wa_timestamp or timezone.now()
     alvo.save(update_fields=["revoked_at", "updated_at"])
 
-    from apps.inbox.realtime import notify_message_revoked
+    # A fila mostrava o texto que a pessoa acabou de apagar: a prévia passa a
+    # dizer "Mensagem apagada" (o conteúdo continua na conversa).
+    recalcular_ultima_mensagem(alvo.conversation)
+
+    from apps.inbox.realtime import notify_conversation_updated, notify_message_revoked
+
+    notify_conversation_updated(alvo.conversation)
 
     notify_message_revoked(alvo)
     return True
+
+
+def _aplicar_edit(channel, event) -> bool:
+    """
+    O paciente EDITOU uma mensagem (webhook `edit`, RF-INB-6.7).
+
+    O conteúdo da tela passa a ser o NOVO - é o que vale na conversa de
+    verdade, e responder ao texto velho é marcar consulta no dia errado. A
+    versão anterior NÃO se perde: vai para `content_data["edit_history"]`,
+    porque a recepção pode ter respondido com base nela e o CRM não pode
+    fingir que ela nunca existiu.
+
+    Devolve False quando a original não está aqui ou nada mudou (a Meta
+    reentrega webhook, e aplicar duas vezes duplicaria o histórico).
+    """
+    from apps.inbox.models import Message
+
+    alvo = Message.objects.filter(
+        clinic=channel.clinic, provider_message_id=event.edited_message_id
+    ).first()
+    if alvo is None:
+        return False
+
+    novo_body = event.body
+    nova_caption = event.caption
+    mudou_body = bool(novo_body) and novo_body != alvo.body
+    mudou_caption = bool(nova_caption) and nova_caption != alvo.caption
+    if not (mudou_body or mudou_caption):
+        return False
+
+    historico = list((alvo.content_data or {}).get("edit_history") or [])
+    historico.append(
+        {
+            "body": alvo.body,
+            "caption": alvo.caption,
+            "ate": (alvo.edited_at or alvo.wa_timestamp).isoformat(),
+        }
+    )
+    alvo.content_data = {**(alvo.content_data or {}), "edit_history": historico}
+    if mudou_body:
+        alvo.body = novo_body
+    if mudou_caption:
+        alvo.caption = nova_caption
+    alvo.edited_at = event.wa_timestamp or timezone.now()
+    alvo.save(
+        update_fields=["body", "caption", "content_data", "edited_at", "updated_at"]
+    )
+
+    # A prévia da fila pode ser a mensagem que acabou de mudar de texto.
+    recalcular_ultima_mensagem(alvo.conversation)
+
+    from apps.inbox.realtime import notify_message_edited
+
+    notify_message_edited(alvo)
+    return True
+
+
+def _aplicar_troca_de_numero(channel, event) -> bool:
+    """
+    O contato trocou de número (webhook `system`, RF-CON-5.4).
+
+    SEM colisão, o `wa_id` do contato é atualizado no lugar: ficha, vínculos
+    com paciente e conversas vêm juntos de graça, porque tudo aponta para o
+    CONTATO e não para o número. É o contrário de deixar o webhook cair no
+    chão, onde o paciente vira um contato novo sem histórico - o mesmo
+    estrago que o nono dígito já causou aqui.
+
+    COM colisão (já existe contato no número novo), NÃO se funde sozinho:
+    fusão automática de contatos é onde CRM perde dado - qual ficha vale, qual
+    nome fica? A linha do tempo avisa e a decisão é da recepção.
+
+    ⚠️ A auditoria registra as duas situações (§15): número é o identificador
+    do titular, e trocá-lo precisa deixar rastro de antes/depois.
+    """
+    from apps.core.audit import log_action
+    from apps.core.models.audit_log import AuditAction
+    from apps.inbox.choices import ActivityType
+    from apps.patients.models import Contact
+    from apps.patients.phone import grafia_alternativa
+
+    if not event.new_wa_id or event.new_wa_id == event.wa_id:
+        return False
+
+    contato = Contact.objects.filter(clinic=channel.clinic, wa_id=event.wa_id).first()
+    if contato is None:
+        # O nono dígito: o webhook pode trazer a grafia que não é a gravada.
+        alternativa = grafia_alternativa(event.wa_id)
+        if alternativa:
+            contato = Contact.objects.filter(
+                clinic=channel.clinic, wa_id=alternativa
+            ).first()
+    if contato is None:
+        return False
+
+    ja_existe = (
+        Contact.objects.filter(clinic=channel.clinic, wa_id=event.new_wa_id)
+        .exclude(pk=contato.pk)
+        .exists()
+    )
+    numero_antigo = contato.wa_id
+    if not ja_existe:
+        contato.wa_id = event.new_wa_id
+        contato.save(update_fields=["wa_id", "updated_at"])
+
+    log_action(
+        user=None,
+        action=AuditAction.UPDATE,
+        resource="Contact",
+        resource_id=contato.pk,
+        payload={
+            "operation": "contact.number_change",
+            "before": numero_antigo,
+            "after": event.new_wa_id,
+            "applied": not ja_existe,
+        },
+        clinic=channel.clinic,
+    )
+
+    conversa = (
+        contato.conversations.order_by(F("last_message_at").desc(nulls_last=True))
+        .first()
+    )
+    if conversa is not None:
+        from apps.inbox.attendance import log_activity
+        from apps.inbox.realtime import notify_conversation_updated
+
+        log_activity(
+            conversa,
+            ActivityType.NUMBER_CHANGED,
+            data={
+                "from": numero_antigo,
+                "to": event.new_wa_id,
+                # Colisão: o número novo já tem contato aqui, e fundir é
+                # decisão de gente, não de webhook.
+                "conflito": ja_existe,
+            },
+        )
+        notify_conversation_updated(conversa)
+    return not ja_existe
 
 
 def _sincronizar_contato(channel, event) -> bool:

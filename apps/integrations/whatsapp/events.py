@@ -34,7 +34,10 @@ MEDIA_KINDS = {"image", "audio", "video", "document", "sticker"}
 # `request_welcome` avisa que alguém ABRIU a conversa sem escrever nada —
 # balão vazio viraria ruído na fila de quem atende. O payload cru continua no
 # WebhookEvent, então nada se perde para investigação.
-IGNORED_KINDS = {"ephemeral", "request_welcome"}
+# `errors` entrou em 21/08/2026: é o aviso de falha de sistema/conta da Meta,
+# não uma fala do paciente - virava balão VAZIO na conversa. O payload cru
+# fica no WebhookEvent, e a saúde do canal já cobre o que é acionável.
+IGNORED_KINDS = {"ephemeral", "request_welcome", "errors"}
 
 STATUS_MAP = {
     "sent": MessageStatus.SENT,
@@ -145,6 +148,22 @@ def _resposta_interativa(interativa: dict) -> tuple[str, str]:
     return resposta.get("title", ""), resposta.get("id", "")
 
 
+# Tipos que AGEM sobre uma mensagem que já existe, em vez de criar uma nova.
+# ⚠️ Chegam na mesma lista das mensagens (e também na dos ECOS, quando é a
+# própria clínica que apaga ou edita pelo celular): tratá-los como mensagem
+# faz nascer um balão vazio, que foi o defeito visto em produção em 21/08.
+KIND_POR_ACAO = {
+    "revoke": WhatsAppEventKind.REVOKE,
+    "edit": WhatsAppEventKind.EDIT,
+    "system": WhatsAppEventKind.NUMBER_CHANGE,
+}
+
+
+def _kind_do_evento(message: dict, padrao: str) -> str:
+    """O tipo do evento: a AÇÃO quando é uma, senão o padrão do laço."""
+    return KIND_POR_ACAO.get(message.get("type", ""), padrao)
+
+
 def _parse_message(
     message: dict, *, kind: str, wa_id: str, names: dict, user_ids: dict | None = None
 ) -> WhatsAppEvent:
@@ -153,7 +172,7 @@ def _parse_message(
 
     body = caption = media_id = mime_type = filename = ""
     reaction_emoji = reaction_to = ""
-    revoked_message_id = ""
+    revoked_message_id = edited_message_id = new_wa_id = ""
     content_data: dict = {}
     if meta_type == "reaction":
         reacao = message.get("reaction") or {}
@@ -193,6 +212,24 @@ def _parse_message(
         # ia para o lixo - a conversa ganhava um balão vazio no lugar de marcar
         # a mensagem certa.
         revoked_message_id = (message.get("revoke") or {}).get("original_message_id", "")
+    elif meta_type == "edit":
+        # O paciente corrigiu o que escreveu (só coexistência). O payload traz
+        # a mensagem INTEIRA de novo, com o conteúdo atualizado: texto no
+        # `text.body`, legenda dentro do bloco da mídia.
+        edicao = message.get("edit") or {}
+        edited_message_id = edicao.get("original_message_id", "")
+        nova = edicao.get("message") or {}
+        tipo_novo = nova.get("type", "")
+        if tipo_novo == "text":
+            body = (nova.get("text") or {}).get("body", "")
+        elif tipo_novo in MEDIA_KINDS:
+            caption = (nova.get(tipo_novo) or {}).get("caption", "")
+    elif meta_type == "system":
+        # Hoje o único `system.type` documentado é a troca de número.
+        sistema = message.get("system") or {}
+        if sistema.get("type") == "user_changed_number":
+            new_wa_id = sistema.get("wa_id", "")
+        content_data = {"system_type": sistema.get("type", "")}
     elif meta_type == "unsupported":
         # ⚠️ A Meta usa `unsupported` para coisas MUITO diferentes, e sem o
         # subtipo a tela dava a mesma frase genérica para todas. Os dois casos
@@ -233,6 +270,8 @@ def _parse_message(
         reaction_emoji=reaction_emoji,
         reaction_to=reaction_to,
         revoked_message_id=revoked_message_id,
+        edited_message_id=edited_message_id,
+        new_wa_id=new_wa_id,
         reply_to_provider_id=(message.get("context") or {}).get("id", ""),
         wa_timestamp=_ts(message.get("timestamp")),
         # Pelo telefone quando ele existe, pelo identificador quando não.
@@ -285,13 +324,10 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
                 # lista, mas o que ele pede é marcar uma mensagem que já
                 # existe. Entrar como INBOUND o transformaria num balão novo,
                 # que é o defeito que a clínica viu (21/08/2026).
-                revoke = message.get("type") == "revoke"
                 events.append(
                     _parse_message(
                         message,
-                        kind=WhatsAppEventKind.REVOKE
-                        if revoke
-                        else WhatsAppEventKind.INBOUND,
+                        kind=_kind_do_evento(message, WhatsAppEventKind.INBOUND),
                         wa_id=message.get("from", ""),
                         names=names,
                         user_ids=user_ids,
@@ -305,10 +341,14 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
             for echo in value.get("message_echoes", []) or []:
                 if echo.get("type") in IGNORED_KINDS:
                     continue
+                # ⚠️ O eco também traz APAGAR e EDITAR: é a própria clínica
+                # mexendo na conversa pelo app do celular. Sem passar pelo
+                # mesmo mapa, cada apagada pelo aparelho virava um balão vazio
+                # na tela da recepção (visto em produção, 21/08/2026).
                 events.append(
                     _parse_message(
                         echo,
-                        kind=WhatsAppEventKind.ECHO,
+                        kind=_kind_do_evento(echo, WhatsAppEventKind.ECHO),
                         wa_id=echo.get("to", ""),
                         names=names,
                         user_ids=user_ids,

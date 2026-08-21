@@ -6,6 +6,7 @@ Contrato de eventos (servidor → cliente):
     message:new          · conversation_id, message{mínimo, com media e caption}
     message:revoked      · conversation_id, message_id, revoked_at (o paciente
                            apagou; o CONTEÚDO fica, a tela só esmaece)
+    message:edited       · conversation_id, message_id, body, caption, edited_at
     message:status       · provider_message_id | message_id, status, error
     media:updated        · conversation_id, message_id, media{estado novo}
     channel:health       · disconnected, reason, display_number,
@@ -225,6 +226,25 @@ def notify_message_revoked(message) -> None:
             "conversation_id": message.conversation_id,
             "message_id": message.pk,
             "revoked_at": message.revoked_at.isoformat() if message.revoked_at else None,
+        },
+    )
+
+
+def notify_message_edited(message) -> None:
+    """
+    O paciente editou a mensagem (webhook `edit`). Mínimo como o `revoked`,
+    mas leva o CONTEÚDO novo junto: diferente do selo, aqui o texto na tela
+    precisa mudar.
+    """
+    _broadcast(
+        message.clinic_id,
+        {
+            "event": "message:edited",
+            "conversation_id": message.conversation_id,
+            "message_id": message.pk,
+            "body": message.body,
+            "caption": message.caption,
+            "edited_at": message.edited_at.isoformat() if message.edited_at else None,
         },
     )
 

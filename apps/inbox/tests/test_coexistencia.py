@@ -13,6 +13,7 @@ Os payloads abaixo seguem o formato documentado pela Meta. Inventar um formato
 """
 
 import pytest
+from django.utils import timezone
 
 from apps.inbox.choices import (
     ConversationStatus,
@@ -716,3 +717,370 @@ def test_revoke_repetido_nao_reescreve_a_hora(conversa_esperando, canal):
     )
 
     assert Message.objects.get(provider_message_id="wamid.opa").revoked_at == primeira
+
+
+# --------------------------------------------------------------------- #
+# Mensagem editada pelo paciente (webhook `edit`, RF-INB-6.7)
+# --------------------------------------------------------------------- #
+
+
+def _edit(wamid_original, novo_texto, wamid="wamid.edit1", quando="1787300000"):
+    """Payload da documentação da Meta: o conteúdo novo vem inteiro dentro
+    de `edit.message`."""
+    return {
+        "entry": [
+            {
+                "id": WABA,
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": PHONE_ID},
+                            "contacts": [
+                                {"wa_id": PACIENTE, "profile": {"name": "Willian"}}
+                            ],
+                            "messages": [
+                                {
+                                    "from": PACIENTE,
+                                    "id": wamid,
+                                    "timestamp": quando,
+                                    "type": "edit",
+                                    "edit": {
+                                        "original_message_id": wamid_original,
+                                        "message": {
+                                            "type": "text",
+                                            "text": {"body": novo_texto},
+                                        },
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_editar_troca_o_texto_e_GUARDA_o_anterior(conversa_esperando, canal):
+    """
+    O texto da tela passa a ser o novo - responder ao velho é marcar consulta
+    no dia errado. E o anterior não se perde: a recepção pode ter respondido
+    com base nele, e o CRM não pode fingir que ele nunca existiu.
+    """
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.doze", "posso dia 12")))
+    ingest_events(
+        canal, parse_meta_webhook(_edit("wamid.doze", "posso dia 21, corrigido"))
+    )
+
+    m = Message.objects.get(provider_message_id="wamid.doze")
+    assert m.body == "posso dia 21, corrigido"
+    assert m.edited_at is not None
+    historico = m.content_data["edit_history"]
+    assert [h["body"] for h in historico] == ["posso dia 12"]
+
+
+def test_editar_NAO_cria_balao_novo(conversa_esperando, canal):
+    """O mesmo defeito do revoke: o evento age sobre o que existe."""
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.doze", "posso dia 12")))
+    antes = Message.objects.filter(conversation=conversa_esperando).count()
+
+    ingest_events(canal, parse_meta_webhook(_edit("wamid.doze", "dia 21")))
+
+    assert Message.objects.filter(conversation=conversa_esperando).count() == antes
+
+
+def test_edit_reentregue_nao_duplica_o_historico(conversa_esperando, canal):
+    """PROVA NEGATIVA: a Meta reentrega webhook. O mesmo edit duas vezes não
+    pode virar duas entradas no histórico."""
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.doze", "posso dia 12")))
+    ingest_events(canal, parse_meta_webhook(_edit("wamid.doze", "dia 21")))
+    ingest_events(
+        canal, parse_meta_webhook(_edit("wamid.doze", "dia 21", wamid="wamid.edit2"))
+    )
+
+    m = Message.objects.get(provider_message_id="wamid.doze")
+    assert len(m.content_data["edit_history"]) == 1
+
+
+def test_edit_de_mensagem_que_nao_temos_some_calado(conversa_esperando, canal):
+    stats = ingest_events(
+        canal, parse_meta_webhook(_edit("wamid.NUNCA-EXISTIU", "tanto faz"))
+    )
+
+    assert stats["edit"] == 0
+
+
+def test_a_previa_da_fila_acompanha_a_edicao(conversa_esperando, canal):
+    """A fila mostra a última fala; se ela foi editada, mostrar a antiga é
+    mostrar informação errada na primeira tela que a recepção olha."""
+    # ⚠️ Timestamp DEPOIS do "oi" da fixture (que usa o relógio de agora):
+    # a prévia é da mensagem mais recente, e um epoch fixo ficaria para trás.
+    agora = str(int(timezone.now().timestamp()) + 60)
+    ingest_events(
+        canal, parse_meta_webhook(_texto("wamid.doze", "posso dia 12", quando=agora))
+    )
+    ingest_events(canal, parse_meta_webhook(_edit("wamid.doze", "posso dia 21")))
+
+    conversa_esperando.refresh_from_db()
+    assert conversa_esperando.last_message_preview == "posso dia 21"
+
+
+# --------------------------------------------------------------------- #
+# Troca de número (webhook `system`, RF-CON-5.4)
+# --------------------------------------------------------------------- #
+
+
+NUMERO_NOVO = "5589999911111"
+
+
+def _troca_de_numero(antigo=PACIENTE, novo=NUMERO_NOVO):
+    """⚠️ Sem `contacts[]`, e é assim mesmo: a doc diz que o system não traz."""
+    return {
+        "entry": [
+            {
+                "id": WABA,
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": PHONE_ID},
+                            "messages": [
+                                {
+                                    "from": antigo,
+                                    "id": "wamid.sys1",
+                                    "timestamp": "1787400000",
+                                    "type": "system",
+                                    "system": {
+                                        "type": "user_changed_number",
+                                        "body": "Mudou de numero",
+                                        "wa_id": novo,
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_trocar_de_numero_LEVA_a_ficha_junto(conversa_esperando, canal):
+    """
+    O contato é o mesmo, só o número mudou: ficha, vínculos e conversas vêm
+    juntos porque tudo aponta para o CONTATO. Sem isto, o paciente que troca
+    de chip vira um contato novo sem histórico - o estrago do nono dígito.
+    """
+    from apps.core.models import AuditLog
+    from apps.inbox.choices import MessageKind
+
+    contato = conversa_esperando.contact
+    stats = ingest_events(canal, parse_meta_webhook(_troca_de_numero()))
+
+    contato.refresh_from_db()
+    assert stats["number_change"] == 1
+    assert contato.wa_id == NUMERO_NOVO
+    # A linha do tempo avisa a recepção.
+    atividade = Message.objects.filter(
+        conversation=conversa_esperando, kind=MessageKind.ACTIVITY
+    ).latest("id")
+    assert atividade.activity_type == "number_changed"
+    assert atividade.activity_data["conflito"] is False
+    # E a auditoria guarda o antes/depois (§15).
+    linha = AuditLog.objects.filter(resource="Contact").latest("id")
+    assert linha.payload["before"] == PACIENTE
+    assert linha.payload["after"] == NUMERO_NOVO
+
+
+def test_numero_novo_ja_ocupado_NAO_funde_sozinho(conversa_esperando, canal, clinic_a):
+    """
+    PROVA NEGATIVA, e a decisão mais importante do recurso: fusão automática
+    de contatos é onde CRM perde dado - qual ficha vale, qual nome fica? A
+    linha do tempo avisa e quem decide é a recepção.
+    """
+    from apps.inbox.choices import MessageKind
+
+    Contact.objects.create(
+        clinic=clinic_a, wa_id=NUMERO_NOVO, display_name="Já existia"
+    )
+    contato = conversa_esperando.contact
+    numero_original = contato.wa_id
+
+    stats = ingest_events(canal, parse_meta_webhook(_troca_de_numero()))
+
+    contato.refresh_from_db()
+    assert stats["number_change"] == 0
+    assert contato.wa_id == numero_original, "não pode sobrescrever"
+    atividade = Message.objects.filter(
+        conversation=conversa_esperando, kind=MessageKind.ACTIVITY
+    ).latest("id")
+    assert atividade.activity_data["conflito"] is True
+
+
+def test_troca_de_numero_de_contato_desconhecido_some_calada(canal):
+    """Trocou o número alguém que nunca falou com a clínica: nada a fazer."""
+    stats = ingest_events(
+        canal, parse_meta_webhook(_troca_de_numero(antigo="5589000000000"))
+    )
+
+    assert stats["number_change"] == 0
+
+
+# --------------------------------------------------------------------- #
+# Os TRÊS caminhos: paciente, app do celular e CRM (21/08/2026)
+# --------------------------------------------------------------------- #
+
+
+def _eco_de_acao(acao, wamid_original, **extra):
+    """
+    Apagar ou editar feito NO APP DO CELULAR da clínica: chega pelo eco.
+
+    ⚠️ Foi o buraco visto em produção em 21/08: o laço do eco forçava
+    `kind=ECHO` sem olhar o tipo, então cada apagada no aparelho virava um
+    balão VAZIO na tela da recepção.
+    """
+    mensagem = {
+        "from": "5589959011077",
+        "to": PACIENTE,
+        "id": f"wamid.eco-{acao}",
+        "timestamp": "1787600000",
+        "type": acao,
+        acao: {"original_message_id": wamid_original, **extra},
+    }
+    return {
+        "entry": [
+            {
+                "id": WABA,
+                "changes": [
+                    {
+                        "field": "smb_message_echoes",
+                        "value": {
+                            "metadata": {"phone_number_id": PHONE_ID},
+                            "message_echoes": [mensagem],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_apagar_PELO_CELULAR_marca_a_mensagem_e_nao_cria_balao(
+    conversa_esperando, canal
+):
+    """A clínica respondeu e se arrependeu, tudo pelo aparelho."""
+    from apps.inbox.choices import MessageDirection, SenderKind as SK
+
+    minha = Message.objects.create(
+        clinic=canal.clinic,
+        conversation=conversa_esperando,
+        provider_message_id="wamid.minha",
+        direction=MessageDirection.OUT,
+        sender_kind=SK.AGENT,
+        body="deixa pra lá",
+        from_phone=True,
+        wa_timestamp=timezone.now(),
+    )
+    antes = Message.objects.filter(conversation=conversa_esperando).count()
+
+    ingest_events(canal, parse_meta_webhook(_eco_de_acao("revoke", "wamid.minha")))
+
+    minha.refresh_from_db()
+    assert minha.revoked_at is not None
+    assert minha.body == "deixa pra lá", "o conteúdo fica"
+    # ⚠️ Veio do WhatsApp, não do CRM: não há usuário a quem creditar.
+    assert minha.revoked_by_id is None
+    assert Message.objects.filter(conversation=conversa_esperando).count() == antes
+
+
+def test_editar_PELO_CELULAR_atualiza_o_texto(conversa_esperando, canal):
+    from apps.inbox.choices import MessageDirection, SenderKind as SK
+
+    minha = Message.objects.create(
+        clinic=canal.clinic,
+        conversation=conversa_esperando,
+        provider_message_id="wamid.minha2",
+        direction=MessageDirection.OUT,
+        sender_kind=SK.AGENT,
+        body="chegue as 14",
+        from_phone=True,
+        wa_timestamp=timezone.now(),
+    )
+
+    ingest_events(
+        canal,
+        parse_meta_webhook(
+            _eco_de_acao(
+                "edit",
+                "wamid.minha2",
+                message={"type": "text", "text": {"body": "chegue as 15"}},
+            )
+        ),
+    )
+
+    minha.refresh_from_db()
+    assert minha.body == "chegue as 15"
+    assert minha.edited_at is not None
+    assert [h["body"] for h in minha.content_data["edit_history"]] == ["chegue as 14"]
+
+
+def test_a_previa_da_fila_nao_repete_o_texto_apagado(conversa_esperando, canal):
+    """
+    A conversa guarda o conteúdo; a FILA diz só que foi apagada. Repetir na
+    vitrine o que a pessoa apagou é o oposto de discreto.
+    """
+    agora = str(int(timezone.now().timestamp()) + 60)
+    ingest_events(
+        canal, parse_meta_webhook(_texto("wamid.ops", "escrevi errado", quando=agora))
+    )
+    ingest_events(canal, parse_meta_webhook(_revoke("wamid.ops")))
+
+    conversa_esperando.refresh_from_db()
+    assert conversa_esperando.last_message_preview == "Mensagem apagada"
+    assert Message.objects.get(provider_message_id="wamid.ops").body == "escrevi errado"
+
+
+def test_comando_conserta_os_baloes_VAZIOS_que_o_parser_antigo_deixou(
+    conversa_esperando, canal
+):
+    """
+    Em produção ficaram balões sem conteúdo: cada apagar/editar que o parser
+    antigo tratou como "não suportado". O payload cru de cada um está no
+    `raw_payload`, então dá para aplicar o efeito e remover o balão.
+    """
+    from django.core.management import call_command
+
+    from apps.inbox.choices import MessageDirection
+
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.alvo", "vou apagar esta")))
+    # O balão vazio, do jeito que o parser antigo o gravava.
+    fantasma = Message.objects.create(
+        clinic=canal.clinic,
+        conversation=conversa_esperando,
+        provider_message_id="wamid.fantasma",
+        direction=MessageDirection.IN,
+        sender_kind=SenderKind.CONTACT,
+        kind=MessageKind.UNSUPPORTED,
+        body="",
+        wa_timestamp=timezone.now(),
+        raw_payload={
+            "from": PACIENTE,
+            "id": "wamid.fantasma",
+            "timestamp": "1787700000",
+            "type": "revoke",
+            "revoke": {"original_message_id": "wamid.alvo"},
+        },
+    )
+
+    # Ensaio primeiro: não pode mexer em nada.
+    call_command("reprocessar_acoes")
+    assert Message.objects.filter(pk=fantasma.pk).exists()
+    assert Message.objects.get(provider_message_id="wamid.alvo").revoked_at is None
+
+    call_command("reprocessar_acoes", "--apply")
+
+    assert not Message.objects.filter(pk=fantasma.pk).exists(), "o balão vazio sai"
+    alvo = Message.objects.get(provider_message_id="wamid.alvo")
+    assert alvo.revoked_at is not None, "e o efeito é aplicado na mensagem certa"
+    assert alvo.body == "vou apagar esta"

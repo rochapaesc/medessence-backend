@@ -91,6 +91,7 @@ class MessageSerializer(ModelSerializer):
     # e a assinatura da nota interna são montadas no front, e um id de usuário
     # obrigaria a tela a buscar o nome mensagem a mensagem.
     sent_by_name = SerializerMethodField()
+    revoked_by_name = SerializerMethodField()
 
     class Meta:
         model = Message
@@ -124,6 +125,7 @@ class MessageSerializer(ModelSerializer):
             # O paciente apagou do lado dele. O conteúdo continua aqui: a tela
             # esmaece e avisa (RF-INB-6.6).
             "revoked_at",
+            "revoked_by_name",
             "wa_timestamp",
         ]
 
@@ -160,6 +162,13 @@ class MessageSerializer(ModelSerializer):
                 clinic_id=obj.clinic_id, provider_message_id=obj.reply_to_provider_id
             ).first()
         return citacao_payload(citada) if citada else None
+
+    def get_revoked_by_name(self, obj):
+        """Quem apagou PELO CRM. Vazio quando veio do WhatsApp - aí a tela
+        deduz do lado: recebida é o paciente, enviada é o app do celular."""
+        if obj.revoked_by_id is None:
+            return ""
+        return obj.revoked_by.get_full_name() or obj.revoked_by.email
 
     def get_sent_by_name(self, obj):
         if not obj.sent_by_id:

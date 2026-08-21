@@ -13,7 +13,9 @@ from rest_framework.status import HTTP_201_CREATED
 
 from apps.core.api.viewsets import ClinicScopedMixin
 from apps.core.api.viewsets.base import BaseGenericViewSet
+from apps.core.audit import log_action
 from apps.core.mixins import AuditMixin
+from apps.core.models.audit_log import AuditAction
 from apps.inbox.api.filtersets import MessageFilterset
 from apps.inbox.api.serializers import (
     MessageCreateSerializer,
@@ -271,8 +273,15 @@ class MessageViewSet(
         não revoga. Deixar apagar daria a falsa sensação de que sumiu dos dois
         lados, que é pior do que não ter o botão.
 
-        É soft delete: a linha fica, a auditoria registra quem apagou. "Fica o
-        registro para o sistema" é requisito, não detalhe de implementação.
+        ⚠️ A mensagem NÃO some da conversa (mudou em 21/08/2026): ela fica
+        ESMAECIDA, com o selo de apagada e o conteúdo legível. Antes era soft
+        delete e sumia da thread, o que apagava da vista da equipe um pedaço
+        do atendimento que existiu — o registro é da clínica, e quem leu
+        aquilo respondeu com base naquilo. É a mesma regra do apagar que vem
+        do WhatsApp (RF-INB-6.6), agora valendo para os três caminhos: CRM,
+        app do celular e paciente.
+
+        `revoked_by` guarda QUEM apagou aqui; a auditoria registra o DELETE.
         """
         self._assert_pode_mexer(instance, acao="excluir")
         entregue = bool(instance.provider_message_id) and not instance.is_internal
@@ -281,13 +290,28 @@ class MessageViewSet(
                 "Esta mensagem já foi entregue ao paciente e não pode ser "
                 "apagada — o WhatsApp dele continuaria mostrando."
             )
+        if instance.revoked_at:
+            raise ValidationError("Esta mensagem já foi apagada.")
+
         conversation = instance.conversation
-        super().perform_destroy(instance)  # AuditMixin registra o DELETE
+        instance.revoked_at = timezone.now()
+        instance.revoked_by = self.request.user
+        instance.save(update_fields=["revoked_at", "revoked_by", "updated_at"])
+        log_action(
+            user=self.request.user,
+            action=AuditAction.DELETE,
+            resource="Message",
+            resource_id=instance.pk,
+            payload={"operation": "message.revoke", "interna": instance.is_internal},
+            request=self.request,
+            clinic=self.clinic,
+        )
 
         # A prévia da fila pode ser a mensagem que acabou de sumir.
         from apps.inbox.realtime import notify_conversation_updated_on_commit
         from apps.inbox.services import recalcular_ultima_mensagem
 
+        # A prévia passa a dizer "Mensagem apagada" no lugar do texto.
         recalcular_ultima_mensagem(conversation)
         notify_conversation_updated_on_commit(conversation)
 
