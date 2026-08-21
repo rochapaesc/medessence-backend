@@ -27,6 +27,15 @@ class WhatsAppEventKind:
     # dono do número mexe na agenda do aparelho. Não é mensagem e não abre
     # conversa: só acrescenta ou atualiza o contato.
     CONTACT_SYNC = "contact_sync"
+    # O paciente APAGOU uma mensagem que já tinha mandado (21/08/2026).
+    #
+    # ⚠️ Só existe em COEXISTÊNCIA, e é por isso que ele passou despercebido:
+    # a Meta o documenta numa página à parte da de `unsupported`, e sem estar
+    # no mapa de tipos ele caía no balde de "não suportado" - virando um balão
+    # novo e vazio na conversa, com o `original_message_id` jogado fora.
+    #
+    # Não é mensagem e não vira balão: MARCA a mensagem que já está lá.
+    REVOKE = "revoke"
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,10 @@ class WhatsAppEvent:
     reaction_emoji: str = ""
     reaction_to: str = ""
     reply_to_provider_id: str = ""
+    # para kind=REVOKE: o wamid da mensagem que o paciente apagou. É a Meta
+    # quem diz QUAL foi (`revoke.original_message_id`), então aqui não há
+    # adivinhação nenhuma.
+    revoked_message_id: str = ""
     status: str = ""  # para kind=STATUS: sent/delivered/read/failed
     status_error: str = ""  # para status=failed: motivo legível (errors[] da Meta)
     # para kind=PREFERENCE: True quando o contato pediu para PARAR (RF-SEQ-8.1)

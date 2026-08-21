@@ -568,3 +568,151 @@ def test_os_quatro_recortes_SOMAM_a_fila(conversa_esperando, canal, clinic_a):
 
     assert c["unattended"] == 1
     assert c["attending"] + c["waiting"] + c["bot"] + c["unattended"] == fila
+
+
+# --------------------------------------------------------------------- #
+# Mensagem apagada pelo paciente (webhook `revoke`, RF-INB-6.6)
+# --------------------------------------------------------------------- #
+
+
+def _revoke(wamid_original, wamid="wamid.revoke1", quando="1787200000"):
+    """
+    O paciente apagou uma mensagem.
+
+    ⚠️ Payload da DOCUMENTAÇÃO da Meta, não invenção: o tipo é `revoke` e o
+    `original_message_id` diz QUAL mensagem sumiu. Este webhook só existe em
+    coexistência, e foi por isso que ele passou meses despercebido aqui -
+    caía no balde de "não suportado" e virava um balão vazio.
+    """
+    return {
+        "entry": [
+            {
+                "id": WABA,
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": PHONE_ID},
+                            "contacts": [
+                                {"wa_id": PACIENTE, "profile": {"name": "Willian"}}
+                            ],
+                            "messages": [
+                                {
+                                    "from": PACIENTE,
+                                    "id": wamid,
+                                    "timestamp": quando,
+                                    "type": "revoke",
+                                    "revoke": {
+                                        "original_message_id": wamid_original
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def _texto(wamid, corpo, quando="1787100000"):
+    return {
+        "entry": [
+            {
+                "id": WABA,
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": PHONE_ID},
+                            "contacts": [
+                                {"wa_id": PACIENTE, "profile": {"name": "Willian"}}
+                            ],
+                            "messages": [
+                                {
+                                    "from": PACIENTE,
+                                    "id": wamid,
+                                    "timestamp": quando,
+                                    "type": "text",
+                                    "text": {"body": corpo},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_o_conteudo_da_mensagem_apagada_FICA(conversa_esperando, canal):
+    """
+    ⚠️ O registro do atendimento é da CLÍNICA. A recepção leu aquilo e
+    respondeu com base naquilo; apagar junto reescreveria o que aconteceu.
+    A tela esmaece e avisa - o texto continua.
+    """
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.opa", "Opa opa")))
+    ingest_events(canal, parse_meta_webhook(_revoke("wamid.opa")))
+
+    apagada = Message.objects.get(provider_message_id="wamid.opa")
+    assert apagada.body == "Opa opa"
+    assert apagada.revoked_at is not None
+
+
+def test_apagar_NAO_cria_balao_novo(conversa_esperando, canal):
+    """
+    ⚠️ O defeito que a clínica viu em 21/08/2026: o `revoke` não estava no
+    mapa do parser, caía em "não suportado" e nascia uma mensagem VAZIA na
+    conversa - o apagar aparecia como se fosse conteúdo novo.
+    """
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.opa", "Opa opa")))
+    antes = Message.objects.filter(conversation=conversa_esperando).count()
+
+    ingest_events(canal, parse_meta_webhook(_revoke("wamid.opa")))
+
+    assert Message.objects.filter(conversation=conversa_esperando).count() == antes
+    assert not Message.objects.filter(provider_message_id="wamid.revoke1").exists()
+
+
+def test_a_MENSAGEM_CERTA_e_marcada(conversa_esperando, canal):
+    """
+    A Meta diz qual foi, então não há adivinhação: apagar a primeira de três
+    não pode carimbar a última.
+    """
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.um", "primeira")))
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.dois", "segunda")))
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.tres", "terceira")))
+
+    ingest_events(canal, parse_meta_webhook(_revoke("wamid.um")))
+
+    marcadas = list(
+        Message.objects.filter(revoked_at__isnull=False).values_list("body", flat=True)
+    )
+    assert marcadas == ["primeira"]
+
+
+def test_revoke_de_mensagem_que_nao_temos_some_calado(conversa_esperando, canal):
+    """
+    PROVA NEGATIVA: o paciente pode apagar algo anterior à conexão do canal.
+    Não há o que marcar, e um aviso sobre mensagem que a clínica nunca viu não
+    ajudaria ninguém.
+    """
+    antes = Message.objects.filter(conversation=conversa_esperando).count()
+
+    stats = ingest_events(canal, parse_meta_webhook(_revoke("wamid.NUNCA-EXISTIU")))
+
+    assert stats["revoke"] == 0
+    assert Message.objects.filter(conversation=conversa_esperando).count() == antes
+
+
+def test_revoke_repetido_nao_reescreve_a_hora(conversa_esperando, canal):
+    """Reentrega do webhook é comum; a hora de quando foi apagada é uma só."""
+    ingest_events(canal, parse_meta_webhook(_texto("wamid.opa", "Opa opa")))
+    ingest_events(canal, parse_meta_webhook(_revoke("wamid.opa")))
+    primeira = Message.objects.get(provider_message_id="wamid.opa").revoked_at
+
+    ingest_events(
+        canal, parse_meta_webhook(_revoke("wamid.opa", wamid="wamid.revoke2"))
+    )
+
+    assert Message.objects.get(provider_message_id="wamid.opa").revoked_at == primeira

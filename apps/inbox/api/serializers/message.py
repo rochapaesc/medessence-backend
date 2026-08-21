@@ -121,6 +121,9 @@ class MessageSerializer(ModelSerializer):
             "from_phone",
             "template_name",
             "edited_at",
+            # O paciente apagou do lado dele. O conteúdo continua aqui: a tela
+            # esmaece e avisa (RF-INB-6.6).
+            "revoked_at",
             "wa_timestamp",
         ]
 

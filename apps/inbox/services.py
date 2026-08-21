@@ -124,6 +124,7 @@ def ingest_events(channel, events) -> dict:
         "status": 0,
         "preference": 0,
         "contact_sync": 0,
+        "revoke": 0,
         "ignored": 0,
     }
     for event in events:
@@ -137,9 +138,48 @@ def ingest_events(channel, events) -> dict:
             stats["preference"] += bool(_apply_preference(channel, event))
         elif event.kind == WhatsAppEventKind.CONTACT_SYNC:
             stats["contact_sync"] += bool(_sincronizar_contato(channel, event))
+        elif event.kind == WhatsAppEventKind.REVOKE:
+            stats["revoke"] += bool(_aplicar_revoke(channel, event))
         else:
             stats["ignored"] += 1
     return stats
+
+
+def _aplicar_revoke(channel, event) -> bool:
+    """
+    O paciente apagou uma mensagem no WhatsApp dele (webhook `revoke`).
+
+    ⚠️ O CONTEÚDO FICA. O registro do atendimento é da clínica: a recepção leu
+    aquilo e respondeu com base naquilo, e apagar junto reescreveria a história
+    de quem trabalhou. A tela esmaece e avisa; o texto, a foto e o áudio
+    continuam onde estavam.
+
+    ⚠️ E NÃO nasce balão nenhum. Até 21/08/2026 o tipo `revoke` não estava no
+    mapa do parser, caía em "não suportado" e virava uma mensagem VAZIA na
+    conversa - o apagar aparecia como se fosse conteúdo novo, e o
+    `original_message_id` (que diz exatamente qual mensagem sumiu) ia para o
+    lixo.
+
+    Devolve False quando a mensagem original não está aqui: o paciente pode
+    apagar algo anterior à conexão do canal, e não há o que marcar. Some
+    calado, porque um aviso sobre mensagem que a clínica nunca viu não ajuda
+    ninguém.
+    """
+    from apps.inbox.models import Message
+
+    alvo = Message.objects.filter(
+        clinic=channel.clinic, provider_message_id=event.revoked_message_id
+    ).first()
+    if alvo is None or alvo.revoked_at:
+        return False
+
+    alvo.revoked_at = event.wa_timestamp or timezone.now()
+    alvo.save(update_fields=["revoked_at", "updated_at"])
+
+    from apps.inbox.realtime import notify_message_revoked
+
+    notify_message_revoked(alvo)
+    return True
 
 
 def _sincronizar_contato(channel, event) -> bool:

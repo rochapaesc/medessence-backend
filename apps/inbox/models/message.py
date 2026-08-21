@@ -104,6 +104,17 @@ class Message(TenantScopedModel):
     # do que se sabia: uma que mudou de texto sem avisar faria alguém confiar
     # numa versão que já não é a original. O antes/depois fica na auditoria.
     edited_at = DateTimeField(verbose_name="Editada em", null=True, blank=True)
+    revoked_at = DateTimeField(
+        verbose_name="Apagada pelo contato em",
+        null=True,
+        blank=True,
+        help_text=(
+            "O paciente apagou esta mensagem no WhatsApp dele (webhook "
+            "`revoke`, só em coexistência). ⚠️ O CONTEÚDO FICA: o registro do "
+            "atendimento é da clínica, e a tela apenas o esmaece e avisa. "
+            "Apagar aqui junto reescreveria o que a recepção leu e respondeu."
+        ),
+    )
 
     # ---------------- nota interna e atividade (F2.5, §4.3.1) --------------
     is_internal = BooleanField(

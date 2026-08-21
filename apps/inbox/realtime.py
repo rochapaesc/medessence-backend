@@ -4,6 +4,8 @@ para o grupo da clínica. A fonte da verdade continua a API REST.
 
 Contrato de eventos (servidor → cliente):
     message:new          · conversation_id, message{mínimo, com media e caption}
+    message:revoked      · conversation_id, message_id, revoked_at (o paciente
+                           apagou; o CONTEÚDO fica, a tela só esmaece)
     message:status       · provider_message_id | message_id, status, error
     media:updated        · conversation_id, message_id, media{estado novo}
     channel:health       · disconnected, reason, display_number,
@@ -200,6 +202,29 @@ def notify_media_updated(message, media) -> None:
             "conversation_id": message.conversation_id,
             "message_id": message.pk,
             "media": _media_min(message) if message.media_id == media.pk else None,
+        },
+    )
+
+
+def notify_message_revoked(message) -> None:
+    """
+    O paciente apagou uma mensagem (webhook `revoke`, coexistência).
+
+    Evento próprio e MÍNIMO, pelo mesmo motivo do `media:updated`: o balão já
+    está na tela e o que mudou foi um selo. Reemitir a mensagem inteira faria
+    a thread piscar, e um `message:new` a duplicaria.
+
+    ⚠️ O conteúdo NÃO vai junto e não precisa ir: ele não mudou. Quem está com
+    a conversa aberta continua lendo o que leu; só ganha o aviso de que o
+    paciente apagou aquilo do lado dele.
+    """
+    _broadcast(
+        message.clinic_id,
+        {
+            "event": "message:revoked",
+            "conversation_id": message.conversation_id,
+            "message_id": message.pk,
+            "revoked_at": message.revoked_at.isoformat() if message.revoked_at else None,
         },
     )
 

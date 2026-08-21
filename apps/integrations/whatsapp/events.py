@@ -153,6 +153,7 @@ def _parse_message(
 
     body = caption = media_id = mime_type = filename = ""
     reaction_emoji = reaction_to = ""
+    revoked_message_id = ""
     content_data: dict = {}
     if meta_type == "reaction":
         reacao = message.get("reaction") or {}
@@ -186,6 +187,12 @@ def _parse_message(
         botao = message.get("button") or {}
         body = botao.get("text", "")
         content_data = {"interactive_id": botao.get("payload", "")}
+    elif meta_type == "revoke":
+        # ⚠️ A Meta DIZ qual mensagem foi apagada. Até 21/08/2026 este tipo não
+        # estava no mapa, caía em `unsupported` e o identificador da original
+        # ia para o lixo - a conversa ganhava um balão vazio no lugar de marcar
+        # a mensagem certa.
+        revoked_message_id = (message.get("revoke") or {}).get("original_message_id", "")
     elif meta_type == "unsupported":
         # ⚠️ A Meta usa `unsupported` para coisas MUITO diferentes, e sem o
         # subtipo a tela dava a mesma frase genérica para todas. Os dois casos
@@ -225,6 +232,7 @@ def _parse_message(
         content_data=content_data,
         reaction_emoji=reaction_emoji,
         reaction_to=reaction_to,
+        revoked_message_id=revoked_message_id,
         reply_to_provider_id=(message.get("context") or {}).get("id", ""),
         wa_timestamp=_ts(message.get("timestamp")),
         # Pelo telefone quando ele existe, pelo identificador quando não.
@@ -273,10 +281,17 @@ def parse_meta_webhook(payload: dict) -> list[WhatsAppEvent]:
             for message in value.get("messages", []) or []:
                 if message.get("type") in IGNORED_KINDS:
                     continue
+                # ⚠️ Apagar NÃO é mandar mensagem: o evento chega na mesma
+                # lista, mas o que ele pede é marcar uma mensagem que já
+                # existe. Entrar como INBOUND o transformaria num balão novo,
+                # que é o defeito que a clínica viu (21/08/2026).
+                revoke = message.get("type") == "revoke"
                 events.append(
                     _parse_message(
                         message,
-                        kind=WhatsAppEventKind.INBOUND,
+                        kind=WhatsAppEventKind.REVOKE
+                        if revoke
+                        else WhatsAppEventKind.INBOUND,
                         wa_id=message.get("from", ""),
                         names=names,
                         user_ids=user_ids,
