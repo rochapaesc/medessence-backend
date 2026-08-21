@@ -21,6 +21,65 @@ SENSITIVE_FIELDS = {
 # Marcador para campos sensíveis sanitizados
 REDACTED = "***"
 
+# ---------------------------------------------------------------------- #
+# Operações de tela (20/08/2026)
+#
+# CREATE/UPDATE/DELETE respondem bem por cadastro, mas metade do sistema não
+# é cadastro: encerrar um atendimento, publicar um fluxo, inscrever alguém
+# numa trilha. Registrados só como "Atualização", viram dezenas de linhas
+# idênticas ("Atualização, Conversation #482") e a auditoria deixa de
+# responder a pergunta que ela existe para responder.
+#
+# O código estável vai no payload em `operation`; a frase mora aqui, no
+# backend, para a tela não precisar aprender vocabulário novo a cada ação
+# que nasce.
+# ---------------------------------------------------------------------- #
+OPERATION = "operation"
+
+OPERATION_LABELS = {
+    # Atendimento (RF-INB / RF-ATD)
+    "conversation.start": "Iniciou uma conversa",
+    "conversation.assign": "Assumiu o atendimento",
+    "conversation.assign_other": "Atribuiu o atendimento a outra pessoa",
+    "conversation.wait": "Devolveu o atendimento para a fila",
+    "conversation.resolve": "Encerrou o atendimento",
+    "conversation.reopen": "Reabriu o atendimento",
+    "conversation.snooze": "Adiou o atendimento",
+    "conversation.transfer": "Transferiu o atendimento",
+    "conversation.priority": "Mudou a prioridade do atendimento",
+    "conversation.label_add": "Marcou um assunto na conversa",
+    "conversation.label_remove": "Tirou um assunto da conversa",
+    "conversation.link_patient": "Vinculou a conversa a um paciente",
+    "conversation.unlink_patient": "Desfez o vínculo da conversa com o paciente",
+    # Vínculo número↔paciente (RF-PAC-7.1)
+    "contact.patient_add": "Acrescentou um paciente ao número",
+    "contact.patient_primary": "Trocou o paciente principal do número",
+    "contact.patient_remove": "Tirou um paciente do número",
+    # Automação (RF-FLW / RF-SEQ)
+    "flow.activate": "Publicou o fluxo",
+    "flow.deactivate": "Tirou o fluxo do ar",
+    "flow.export": "Exportou o desenho do fluxo",
+    "flow.import": "Importou um fluxo",
+    "sequence.enroll": "Inscreveu um paciente na sequência",
+    "sequence.enroll_batch": "Inscreveu pacientes em lote na sequência",
+    "sequence.unenroll": "Tirou um paciente da sequência",
+    # Configuração e integrações
+    "template.sync": "Sincronizou os templates com a Meta",
+    "clinic.business_hours": "Alterou o horário de atendimento",
+    "clinic.create": "Criou a clínica",
+    "ehr.sync": "Pediu uma sincronização com o prontuário",
+}
+
+
+def describe_operation(payload) -> str:
+    """
+    A frase da operação registrada no payload. Vazia quando o evento não é
+    uma operação de tela (um CREATE de paciente já se explica sozinho).
+    """
+    if not isinstance(payload, dict):
+        return ""
+    return OPERATION_LABELS.get(payload.get(OPERATION), "")
+
 
 def get_client_ip(request) -> str | None:
     """Extrai o IP real do cliente, considerando proxies."""

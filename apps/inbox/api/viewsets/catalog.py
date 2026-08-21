@@ -177,5 +177,14 @@ class WhatsAppTemplateViewSet(AuditMixin, ClinicScopedModelViewSet):
             quantos = sincronizar_templates_da_clinica(self.clinic)
         except WhatsAppError as exc:
             raise ValidationError(f"Não deu para falar com a Meta: {exc}") from exc
+
+        # O alvo é a CLÍNICA: a sincronização mexe na lista inteira, e prender
+        # o registro a um template só esconderia os outros que mudaram.
+        self.log_operation(
+            self.clinic,
+            "template.sync",
+            resource="Clinic",
+            templates=quantos,
+        )
         return Response({"templates": quantos})
 

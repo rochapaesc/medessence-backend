@@ -1,9 +1,36 @@
 from rest_framework.serializers import ModelSerializer, SerializerMethodField
 
+from apps.core.audit import describe_operation
 from apps.core.models import AuditLog
 
 # Ações cujo alvo é um paciente — o rótulo da linha vira o nome dele.
 PATIENT_RESOURCES = {"Patient"}
+
+# O nome do modelo é de quem escreve código; a auditoria é lida por gestor.
+# Sem isto a coluna "Sobre" mostra "Conversation #482", que não diz nada para
+# quem está tentando entender o que houve na clínica.
+RESOURCE_LABELS = {
+    "Conversation": "Conversa",
+    "Message": "Mensagem",
+    "Contact": "Contato",
+    "Patient": "Paciente",
+    "PatientFile": "Arquivo do paciente",
+    "ClinicalDocument": "Documento clínico",
+    "Appointment": "Agendamento",
+    "User": "Usuário",
+    "Membership": "Vínculo com a clínica",
+    "Clinic": "Clínica",
+    "ClinicBusinessHours": "Horário de atendimento",
+    "Channel": "Canal do WhatsApp",
+    "WhatsAppTemplate": "Template do WhatsApp",
+    "Flow": "Fluxo",
+    "Sequence": "Sequência",
+    "SequenceEnrollment": "Inscrição em sequência",
+    "Label": "Assunto",
+    "QuickReply": "Resposta rápida",
+    "HttpDestination": "Sistema externo",
+    "SyncRun": "Sincronização com o prontuário",
+}
 
 
 class AuditLogReadSerializer(ModelSerializer):
@@ -18,6 +45,8 @@ class AuditLogReadSerializer(ModelSerializer):
     user = SerializerMethodField()
     action_display = SerializerMethodField()
     resource_label = SerializerMethodField()
+    resource_display = SerializerMethodField()
+    operation_label = SerializerMethodField()
 
     class Meta:
         model = AuditLog
@@ -29,6 +58,8 @@ class AuditLogReadSerializer(ModelSerializer):
             "resource",
             "resource_id",
             "resource_label",
+            "resource_display",
+            "operation_label",
             "ip_address",
             "timestamp",
         ]
@@ -55,6 +86,15 @@ class AuditLogReadSerializer(ModelSerializer):
             return ""
         names = self.context.get("patient_names") or {}
         return names.get(str(obj.resource_id), "")
+
+    def get_resource_display(self, obj):
+        """O recurso em português. Cai no nome técnico quando não há tradução:
+        linha sem rótulo seria pior que linha com nome de modelo."""
+        return RESOURCE_LABELS.get(obj.resource, obj.resource)
+
+    def get_operation_label(self, obj):
+        """A frase da ação de tela, quando o evento é uma. Vazia no resto."""
+        return describe_operation(obj.payload)
 
 
 class AuditLogDetailSerializer(AuditLogReadSerializer):

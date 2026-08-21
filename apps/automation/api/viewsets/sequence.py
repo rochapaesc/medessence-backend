@@ -42,9 +42,10 @@ from apps.automation.sequences import (
     resultado_por_passo,
 )
 from apps.core.api.permissions import IsClinicManager, IsClinicMember
-from apps.patients.phone import so_digitos
 from apps.core.api.viewsets import ClinicScopedModelViewSet
 from apps.core.mixins import AuditMixin
+from apps.core.models.audit_log import AuditAction
+from apps.patients.phone import so_digitos
 
 # Quantas linhas o painel mostra de próximos disparos. É uma AMOSTRA do que vem
 # pela frente, não a fila inteira: com 1.758 inscritos numa trilha, a lista
@@ -592,6 +593,13 @@ class SequenceViewSet(AuditMixin, ClinicScopedModelViewSet):
             raise ValidationError(
                 {"detail": "Este paciente já está nesta sequência, ou ela não tem passo ativo."}
             )
+        self.log_operation(
+            sequence,
+            "sequence.enroll",
+            action=AuditAction.CREATE,
+            patient=patient.pk,
+            enrollment=enrollment.pk,
+        )
         return Response(
             SequenceEnrollmentSerializer(enrollment).data, status=HTTP_201_CREATED
         )
@@ -640,6 +648,7 @@ class SequenceViewSet(AuditMixin, ClinicScopedModelViewSet):
             contas = inscrever_em_lote(sequence, pacientes)
             contas["nao_encontrados"] = 0
             contas["fora_do_lote"] = sobraram
+            self._auditar_lote(sequence, contas, origem="filtros")
             return Response(contas, status=HTTP_201_CREATED)
 
         if not isinstance(ids, list) or not ids:
@@ -659,7 +668,24 @@ class SequenceViewSet(AuditMixin, ClinicScopedModelViewSet):
         # Selecionado que não existe nesta clínica não some calado.
         contas["nao_encontrados"] = len(set(ids)) - len(pacientes)
         contas["fora_do_lote"] = 0
+        self._auditar_lote(sequence, contas, origem="selecao")
         return Response(contas, status=HTTP_201_CREATED)
+
+    def _auditar_lote(self, sequence, contas, *, origem):
+        """
+        A prestação de contas do lote vira a linha da auditoria.
+
+        ⚠️ CONTAGENS, nunca a lista de ids: um lote da fila de resgate leva
+        1.891 pacientes, e despejar isso no payload transformaria a auditoria
+        num segundo cadastro de quem tem qual doença.
+        """
+        self.log_operation(
+            sequence,
+            "sequence.enroll_batch",
+            action=AuditAction.CREATE,
+            origem=origem,
+            **contas,
+        )
 
     @action(detail=True, methods=["post"], url_path="unenroll")
     def unenroll(self, request, pk=None):
@@ -692,6 +718,14 @@ class SequenceViewSet(AuditMixin, ClinicScopedModelViewSet):
 
         if ativa is not None:
             remover(ativa, reason=EnrollmentEndReason.MANUAL)
+            self.log_operation(
+                sequence,
+                "sequence.unenroll",
+                patient=ativa.patient_id,
+                enrollment=ativa.pk,
+            )
+        # Sair de onde não se está não é evento: a ação é idempotente e um log
+        # aqui registraria um clique que não mudou nada.
         return Response({"detail": "Removido da sequência."})
 
     def _paciente(self, request):

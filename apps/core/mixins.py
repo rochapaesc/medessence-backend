@@ -84,6 +84,44 @@ class AuditMixin:
             clinic=self.get_audit_clinic(),
         )
 
+    def log_operation(
+        self,
+        instance,
+        operation: str,
+        action: str = "UPDATE",
+        resource: str = "",
+        **details,
+    ):
+        """
+        Registra uma AÇÃO DE TELA que não passa por `perform_*` (20/08/2026).
+
+        ⚠️ Os `perform_create/update/destroy` acima cobrem cadastro. Metade do
+        sistema não é cadastro: encerrar atendimento, publicar fluxo, inscrever
+        numa sequência são `@action`, e o mixin nunca as viu — sumiam da
+        auditoria inteiras.
+
+        Fica no viewset, e não na camada de serviço, porque o log precisa do
+        `request` para guardar o IP: as funções de serviço recebem só o usuário
+        (elas também rodam a partir do motor de fluxos e do Celery, onde não há
+        request nem gente do outro lado).
+
+        `operation` é um código de `OPERATION_LABELS`; a frase mora lá.
+        `resource` só é passado quando o alvo não é o recurso do viewset (a
+        sincronização de templates é da CLÍNICA, não de um template).
+        """
+        log_action(
+            user=self.request.user,
+            action=action,
+            resource=resource or self.get_audit_resource(),
+            resource_id=instance.pk,
+            # Ids e contagens, nunca conteúdo: nota interna, texto de mensagem
+            # e desenho de fluxo não entram no log (§15 - o registro diz o que
+            # houve; o dado continua onde ele mora).
+            payload={"operation": operation, **details},
+            request=self.request,
+            clinic=self.get_audit_clinic(),
+        )
+
 
 class ProtectRelationsMixin:
     """

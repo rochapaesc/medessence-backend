@@ -12,6 +12,7 @@ from apps.automation.models import Flow, FlowRun, SequenceStep
 from apps.core.api.permissions import IsClinicManager, IsClinicMember
 from apps.core.api.viewsets import ClinicScopedModelViewSet, ClinicScopedReadOnlyViewSet
 from apps.core.mixins import AuditMixin
+from apps.core.models.audit_log import AuditAction
 
 
 class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
@@ -68,7 +69,11 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
         """
         from apps.automation.portability import exportar
 
-        return Response(exportar(self.get_object()))
+        flow = self.get_object()
+        # LEITURA, não alteração: o desenho do fluxo sai daqui em arquivo, e
+        # levar o atendimento da clínica para fora é o que a linha registra.
+        self.log_operation(flow, "flow.export", action=AuditAction.READ)
+        return Response(exportar(flow))
 
     @action(detail=False, methods=["post"], url_path="import")
     def importar_fluxo(self, request):
@@ -91,6 +96,12 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
         except ArquivoInvalido as exc:
             raise ValidationError({"arquivo": str(exc)}) from exc
 
+        self.log_operation(
+            flow,
+            "flow.import",
+            action=AuditAction.CREATE,
+            pending=len(pendencias),
+        )
         return Response(
             {
                 **self.get_serializer(flow).data,
@@ -164,6 +175,7 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
         version.published_at = version.published_at or agora
         version.save(update_fields=["published_at", "updated_at"])
         flow.save(update_fields=["status", "activated_at", "updated_at"])
+        self.log_operation(flow, "flow.activate", version=version.pk)
         return Response(self.get_serializer(self.get_queryset().get(pk=flow.pk)).data)
 
     @action(detail=True, methods=["post"], url_path="deactivate")
@@ -176,6 +188,7 @@ class FlowViewSet(AuditMixin, ClinicScopedModelViewSet):
         flow = self.get_object()
         flow.status = FlowStatus.DRAFT
         flow.save(update_fields=["status", "updated_at"])
+        self.log_operation(flow, "flow.deactivate")
         return Response(self.get_serializer(self.get_queryset().get(pk=flow.pk)).data)
 
     # ------------------------------------------------------------------ #

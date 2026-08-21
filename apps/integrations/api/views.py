@@ -14,7 +14,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.api.permissions import IsClinicMember
+from apps.core.audit import log_action
 from apps.core.context import resolve_active_membership
+from apps.core.models.audit_log import AuditAction
 from apps.integrations.choices import SyncRunKind
 from apps.integrations.models import SyncRun
 
@@ -69,6 +71,17 @@ class EHRSyncView(APIView):
         for kind in SYNC_KINDS:
             sync_clinic.delay(clinic.id, kind)
 
+        # Puxar o prontuário inteiro traz dado clínico de fora para dentro:
+        # quem mandou buscar, e quando, é pergunta de auditoria (§15).
+        log_action(
+            user=request.user,
+            action=AuditAction.UPDATE,
+            resource="SyncRun",
+            resource_id=clinic.pk,
+            payload={"operation": "ehr.sync", "kinds": SYNC_KINDS},
+            request=request,
+            clinic=clinic,
+        )
         return Response(
             {"detail": "Sincronização com o EHR iniciada.", "kinds": SYNC_KINDS},
             status=status.HTTP_202_ACCEPTED,

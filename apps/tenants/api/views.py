@@ -101,12 +101,29 @@ class ClinicBusinessHoursView(APIView):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        antes = ClinicBusinessHours.objects.filter(clinic=clinic).count()
         ClinicBusinessHours.all_objects.filter(clinic=clinic).hard_delete()
+        faixas = serializer.validated_data["hours"]
         ClinicBusinessHours.objects.bulk_create(
-            [
-                ClinicBusinessHours(clinic=clinic, **faixa)
-                for faixa in serializer.validated_data["hours"]
-            ]
+            [ClinicBusinessHours(clinic=clinic, **faixa) for faixa in faixas]
+        )
+
+        # O horário decide se o robô atende ou se a conversa vai para a
+        # recepção: quem mexeu nele precisa ficar registrado. Só as contagens
+        # e os dias, porque o expediente em si está na tela de configuração.
+        log_action(
+            user=request.user,
+            action=AuditAction.UPDATE,
+            resource="ClinicBusinessHours",
+            resource_id=clinic.pk,
+            payload={
+                "operation": "clinic.business_hours",
+                "faixas": len(faixas),
+                "faixas_antes": antes,
+                "dias": sorted({faixa["weekday"] for faixa in faixas}),
+            },
+            request=request,
+            clinic=clinic,
         )
         return Response(self._payload(clinic))
 

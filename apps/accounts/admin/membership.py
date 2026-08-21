@@ -1,9 +1,13 @@
 from django.contrib.admin import ModelAdmin
 
+from apps.core.admin.audited import AuditedAdminMixin
 from apps.scheduling.models import Practitioner
 
 
-class MembershipAdmin(ModelAdmin):
+class MembershipAdmin(AuditedAdminMixin, ModelAdmin):
+    # Quem entra e quem sai da clínica: o evento mais sensível do admin.
+    audit_clinic_field = "clinic"
+
     list_display = ("id", "user", "clinic", "role", "practitioner", "is_active", "created_at")
     list_filter = ("role", "is_active", "clinic")
     list_select_related = ("user", "clinic", "practitioner")

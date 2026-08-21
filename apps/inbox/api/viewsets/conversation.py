@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from apps.core.api.viewsets import ClinicScopedReadOnlyViewSet
 from apps.core.health import saude_do_processamento
 from apps.core.mixins import AuditMixin
+from apps.core.models.audit_log import AuditAction
 from apps.inbox.api.filtersets import ConversationFilterset
 from apps.inbox.api.serializers import ConversationSerializer
 from apps.inbox.choices import AttendedBy, ConversationPriority, ConversationStatus
@@ -125,6 +126,11 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
                 conversation, assignee, expected=request.data.get("expected_attended_by")
             )
         )
+        self.log_operation(
+            conversation,
+            "conversation.assign_other" if assigned_to_id else "conversation.assign",
+            assigned_to=assignee.pk,
+        )
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -134,6 +140,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         from apps.inbox.attendance import mark_waiting
 
         conversation = mark_waiting(self.get_object(), request.user)
+        self.log_operation(conversation, "conversation.wait")
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -145,6 +152,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         conversation = resolve(
             self.get_object(), request.user, note=request.data.get("note", "")
         )
+        self.log_operation(conversation, "conversation.resolve")
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -154,6 +162,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         from apps.inbox.attendance import reopen
 
         conversation = reopen(self.get_object(), user=request.user)
+        self.log_operation(conversation, "conversation.reopen")
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -176,6 +185,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         conversation = snooze(
             self.get_object(), request.user, until=until, note=request.data.get("note", "")
         )
+        self.log_operation(conversation, "conversation.snooze", until=until)
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -200,6 +210,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
                 note=request.data.get("note", ""),
             )
         )
+        self.log_operation(conversation, "conversation.transfer", to=destino.pk)
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -213,6 +224,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
             raise ValidationError({"priority": "Prioridade desconhecida."})
 
         conversation = set_priority(self.get_object(), request.user, priority=valor)
+        self.log_operation(conversation, "conversation.priority", priority=valor)
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -220,9 +232,9 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
     def add_label(self, request, pk=None):
         from apps.inbox.attendance import add_label
 
-        conversation = add_label(
-            self.get_object(), request.user, label=self._resolve_label(request)
-        )
+        label = self._resolve_label(request)
+        conversation = add_label(self.get_object(), request.user, label=label)
+        self.log_operation(conversation, "conversation.label_add", label=label.pk)
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -230,9 +242,9 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
     def remove_label(self, request, pk=None):
         from apps.inbox.attendance import remove_label
 
-        conversation = remove_label(
-            self.get_object(), request.user, label=self._resolve_label(request)
-        )
+        label = self._resolve_label(request)
+        conversation = remove_label(self.get_object(), request.user, label=label)
+        self.log_operation(conversation, "conversation.label_remove", label=label.pk)
         self._notify(conversation)
         return Response(self.get_serializer(conversation).data)
 
@@ -356,6 +368,17 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         except ConversaSemDestino as exc:
             raise ValidationError({"detail": str(exc)}) from exc
 
+        if created:
+            # Só a criação vira evento: abrir de novo uma conversa que já
+            # existia não muda nada, e registrar isso encheria a auditoria de
+            # linhas de navegação.
+            self.log_operation(
+                conversation,
+                "conversation.start",
+                action=AuditAction.CREATE,
+                patient=patient.pk if patient else None,
+            )
+
         data = self.get_serializer(conversation).data
         data["created"] = created
         # A tela avisa quando a conversa NÃO vai no número do próprio paciente
@@ -392,6 +415,7 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         # do EHR, e ninguém virava principal por este caminho: o auto-vínculo
         # da conversa nova (RF-INB-7) nunca acontecia para estes números).
         vincular(patient, conversation.contact)
+        self.log_operation(conversation, "conversation.link_patient", patient=patient.pk)
         return Response(self.get_serializer(conversation).data)
 
     def _paciente_do_corpo(self, request):
@@ -417,6 +441,12 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         conversation = self.get_object()
         patient = self._paciente_do_corpo(request)
         vincular(patient, conversation.contact)
+        self.log_operation(
+            conversation,
+            "contact.patient_add",
+            patient=patient.pk,
+            contact=conversation.contact_id,
+        )
         return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["post"], url_path="set-primary-patient")
@@ -432,6 +462,12 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
             definir_principal(patient, conversation.contact)
         except PatientContact.DoesNotExist as exc:
             raise ValidationError({"patient": str(exc)}) from exc
+        self.log_operation(
+            conversation,
+            "contact.patient_primary",
+            patient=patient.pk,
+            contact=conversation.contact_id,
+        )
         return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["post"], url_path="remove-contact-patient")
@@ -454,10 +490,20 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
             raise ValidationError({"patient": str(exc)}) from exc
 
         conversation.refresh_from_db()
+        promovido = efeito["promoveu"]
+        self.log_operation(
+            conversation,
+            "contact.patient_remove",
+            patient=patient.pk,
+            contact=conversation.contact_id,
+            # Quantas conversas ficaram sem paciente por tabela: o efeito
+            # colateral é o que o gestor vai querer entender depois.
+            released=efeito["conversas_soltas"],
+            promoted=promovido.pk if promovido else None,
+        )
         if efeito["conversas_soltas"]:
             self._notify(conversation)
         data = self.get_serializer(conversation).data
-        promovido = efeito["promoveu"]
         data["promoted_to_primary"] = (
             {"id": promovido.pk, "name": promovido.name} if promovido else None
         )
@@ -481,8 +527,12 @@ class ConversationViewSet(AuditMixin, ClinicScopedReadOnlyViewSet):
         if conversation.patient_id is None:
             raise ValidationError("Esta conversa não está vinculada a ninguém.")
 
+        anterior = conversation.patient_id
         conversation.patient = None
         conversation.save(update_fields=["patient", "updated_at"])
+        # O paciente que SAIU é a informação da linha: depois do save não há
+        # mais como saber de quem a conversa foi desvinculada.
+        self.log_operation(conversation, "conversation.unlink_patient", patient=anterior)
         return Response(self.get_serializer(conversation).data)
 
     @action(detail=True, methods=["get"], url_path="template-context")

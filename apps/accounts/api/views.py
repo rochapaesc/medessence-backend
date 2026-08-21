@@ -2,6 +2,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework.generics import GenericAPIView, ListAPIView, RetrieveUpdateAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework_simplejwt.views import TokenBlacklistView as BaseTokenBlacklistView
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.views import TokenRefreshView as BaseTokenRefreshView
 
@@ -48,6 +49,50 @@ class TokenRefreshView(BaseTokenRefreshView):
     """Renovação que recusa token anterior à troca de senha (RF-CTA-3)."""
 
     serializer_class = TokenRefreshSerializer
+
+
+@extend_schema(tags=["auth"])
+class AuditedTokenBlacklistView(BaseTokenBlacklistView):
+    """
+    Logout com registro (§15, 20/08/2026).
+
+    O SimpleJWT não dispara `user_logged_out`: o Django só emite esse signal
+    no logout de SESSÃO, e aqui a sessão é o token. Sem esta view a auditoria
+    mostrava todo LOGIN e nenhum LOGOUT, e não havia como distinguir quem
+    encerrou o acesso de quem largou a aba aberta.
+    """
+
+    def post(self, request, *args, **kwargs):
+        # ⚠️ ANTES do super: depois dele o refresh já está na lista negra e
+        # não pode mais ser lido.
+        quem_saiu = self._quem_saiu(request)
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200 and quem_saiu is not None:
+            log_action(quem_saiu, AuditAction.LOGOUT, "User", quem_saiu.pk, request=request)
+        return response
+
+    @staticmethod
+    def _quem_saiu(request):
+        """
+        O dono do refresh que está sendo invalidado.
+
+        ⚠️ NÃO existe `request.user` aqui: o `TokenViewBase` do SimpleJWT
+        zera `authentication_classes`, então esta request é sempre anônima -
+        mesmo quando o front manda o cabeçalho de autenticação junto. O
+        refresh é a única identificação que ela carrega, e ele é validado
+        (assinatura e validade) antes de virar um nome no log.
+        """
+        from rest_framework_simplejwt.exceptions import TokenError
+        from rest_framework_simplejwt.settings import api_settings
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        from apps.accounts.models import User
+
+        try:
+            token = RefreshToken(request.data.get("refresh") or "")
+        except TokenError:
+            return None
+        return User.objects.filter(pk=token.get(api_settings.USER_ID_CLAIM)).first()
 
 
 @extend_schema(tags=["me"])
