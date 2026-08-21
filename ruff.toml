@@ -44,12 +44,13 @@ ignore = [
 "**/serializers/**/*.py" = ["RUF012"]
 # O mesmo, para o app que tem um ARQUIVO de serializers em vez de um pacote:
 # o padrão acima só casa com diretório, e `Meta.fields` é lista por desenho do
-# próprio DRF.
-"**/api/serializers.py" = ["RUF012"]
+# próprio DRF. O `*` cobre também os arquivos com prefixo de área
+# (`platform_serializers.py`), que são a mesma coisa com outro nome.
+"**/api/*serializers.py" = ["RUF012"]
 "**/viewsets/**/*.py" = ["RUF012"]
 "**/models/**/*.py" = ["RUF012"]
 "**/admin/**/*.py" = ["RUF012"]
-"**/api/views.py" = ["RUF012"]
+"**/api/*views.py" = ["RUF012"]
 "**/mixins.py" = ["RUF012"]
 
 [lint.isort]

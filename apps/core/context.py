@@ -35,6 +35,27 @@ class ClinicContextRequired(APIException):
     default_code = "clinic_context_required"
 
 
+class ClinicSuspended(APIException):
+    """
+    403 com código próprio - a clínica está suspensa (RF-ADM-1.7a).
+
+    O código separado existe para o front distinguir isto de "você não tem
+    vínculo": são situações diferentes e a tela é outra. A pessoa da clínica
+    não fez nada errado, e um 403 genérico a mandaria procurar o gestor dela,
+    que também não pode resolver.
+
+    ⚠️ A mensagem NÃO conta o motivo interno da suspensão. A categoria (uso
+    indevido, falta de pagamento) é para a plataforma responder, não para
+    aparecer na tela de quem trabalha na recepção.
+    """
+
+    status_code = status.HTTP_403_FORBIDDEN
+    default_detail = (
+        "O acesso desta clínica está suspenso. Fale com o suporte do MedEssence."
+    )
+    default_code = "clinic_suspended"
+
+
 def resolve_active_membership(request):
     """
     Resolve (e cacheia na request) o Membership ativo do usuário logado.
@@ -75,6 +96,17 @@ def resolve_active_membership(request):
         if len(found) > 1:
             raise ClinicContextRequired()
         membership = found[0]
+
+    # ⚠️ A cerca da suspensão fica AQUI e não numa permission (RF-ADM-1.7a):
+    # 36 views declaram `permission_classes` próprio, e a que esquecesse de
+    # incluir a nova entraria com a clínica suspensa. Este é o funil por onde
+    # toda request escopada passa.
+    #
+    # Não barra `/me/`, `/me/memberships/` nem o logout, que não resolvem
+    # contexto: a pessoa continua entrando, vendo o próprio perfil e saindo.
+    # O que fecha é a clínica, não a conta dela.
+    if membership.clinic.is_suspended:
+        raise ClinicSuspended()
 
     request.active_membership = membership
     return membership

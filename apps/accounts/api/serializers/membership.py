@@ -12,7 +12,11 @@ class ClinicSummarySerializer(ModelSerializer):
 
     class Meta:
         model = Clinic
-        fields = ["id", "name", "slug", "timezone", "data_guard"]
+        # ⚠️ `status` viaja aqui porque a tela precisa saber da suspensão ANTES
+        # de pedir qualquer coisa (RF-ADM-1.7e). Esperar o 403 mostraria a tela
+        # errada primeiro, e é a mesma razão de `must_change_password` estar no
+        # `/me/`. O MOTIVO não vem junto: ele é para a plataforma responder.
+        fields = ["id", "name", "slug", "timezone", "status", "data_guard"]
 
     def get_data_guard(self, obj) -> bool:
         from apps.core.api.guards import guard_is_on

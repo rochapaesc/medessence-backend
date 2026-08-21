@@ -67,6 +67,8 @@ OPERATION_LABELS = {
     "template.sync": "Sincronizou os templates com a Meta",
     "clinic.business_hours": "Alterou o horário de atendimento",
     "clinic.create": "Criou a clínica",
+    "clinic.suspend": "Suspendeu a clínica",
+    "clinic.reactivate": "Reativou a clínica",
     "ehr.sync": "Pediu uma sincronização com o prontuário",
 }
 

@@ -2,13 +2,15 @@ from django.db.models import (
     BooleanField,
     CharField,
     DateField,
+    DateTimeField,
     PositiveSmallIntegerField,
     SlugField,
+    TextField,
 )
 
 from apps.core.fields import EncryptedJSONField
 from apps.core.models import BaseModel
-from apps.tenants.choices import EHRProviderKind
+from apps.tenants.choices import ClinicStatus, EHRProviderKind, SuspensionCategory
 
 
 class Clinic(BaseModel):
@@ -20,6 +22,34 @@ class Clinic(BaseModel):
 
     name = CharField(verbose_name="Nome", max_length=160)
     slug = SlugField(verbose_name="Slug", unique=True)
+    status = CharField(
+        verbose_name="Situação",
+        max_length=12,
+        choices=ClinicStatus.choices,
+        default=ClinicStatus.ACTIVE,
+        help_text=(
+            "Suspensa: a equipe não entra, o robô não responde e as sequências "
+            "não disparam. As mensagens que o paciente mandar CONTINUAM sendo "
+            "recebidas (RF-ADM-1.7)."
+        ),
+    )
+    suspension_category = CharField(
+        verbose_name="Motivo da suspensão",
+        max_length=20,
+        choices=SuspensionCategory.choices,
+        blank=True,
+    )
+    suspension_reason = TextField(
+        verbose_name="Detalhe da suspensão",
+        max_length=256,
+        blank=True,
+        help_text="Obrigatório ao suspender: é o que responde 'por quê' meses depois.",
+    )
+    suspended_at = DateTimeField(
+        verbose_name="Suspensa em",
+        null=True,
+        blank=True,
+    )
     timezone = CharField(
         verbose_name="Fuso horário",
         max_length=48,
@@ -76,3 +106,7 @@ class Clinic(BaseModel):
 
     def __str__(self):
         return self.name
+
+    @property
+    def is_suspended(self) -> bool:
+        return self.status == ClinicStatus.SUSPENDED

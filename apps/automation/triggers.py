@@ -272,8 +272,17 @@ def handle_inbound(conversation, message) -> bool:
     A ordem importa: PRIMEIRO tenta continuar uma execução em andamento, e só
     então cogita começar uma nova. Invertido, a palavra-chave "orçamento" dita
     no meio de um agendamento reiniciaria a conversa do zero.
+
+    ⚠️ Clínica suspensa não fala (RF-ADM-1.7c). A mensagem do paciente JÁ foi
+    gravada quando chegamos aqui - a suspensão cala o robô, não a caixa de
+    entrada. Um robô respondendo em nome de uma clínica suspensa é a clínica
+    dizendo ao paciente que está funcionando, e ainda gasta conversa paga na
+    Meta enquanto ninguém pode atender.
     """
     from apps.automation.engine import on_inbound, start_run
+
+    if conversation.clinic.is_suspended:
+        return False
 
     if on_inbound(conversation, message):
         return True

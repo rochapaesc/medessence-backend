@@ -97,6 +97,10 @@ urlpatterns = [
         name="notifications-counters",
     ),
     path("notifications/read/", NotificationsReadView.as_view(), name="notifications-read"),
+    # Plano PLATAFORMA (§4.8): o único lugar que enxerga vários tenants.
+    # Fora do contexto de clínica de propósito - o admin da plataforma não é
+    # membro de nenhuma (RF-ADM-6).
+    path("platform/", include("apps.tenants.api.platform_routers")),
     # Recursos internos (auditoria)
     path("core/", include("apps.core.api.routers")),
 ]

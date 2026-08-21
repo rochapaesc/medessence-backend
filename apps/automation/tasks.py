@@ -14,6 +14,8 @@ import logging
 from celery import shared_task
 from django.utils import timezone
 
+from apps.tenants.choices import ClinicStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -143,8 +145,12 @@ def sweep_flow_runs():
     agora = timezone.now()
     stats = {"assumidas": 0, "acordadas": 0, "expiradas": 0}
 
-    vivas = FlowRun.objects.filter(status=FlowRunStatus.ACTIVE).select_related(
-        "flow", "version", "conversation", "clinic"
+    vivas = (
+        FlowRun.objects.filter(status=FlowRunStatus.ACTIVE)
+        # Clínica suspensa não avança execução (RF-ADM-1.7b): acordar um nó de
+        # espera aqui faria o robô falar por uma clínica fora do ar.
+        .exclude(clinic__status=ClinicStatus.SUSPENDED)
+        .select_related("flow", "version", "conversation", "clinic")
     )
 
     for run in vivas:
@@ -218,6 +224,13 @@ def sweep_sequences():
             # deixava as inscrições disparando. O gerenciador padrão filtra o
             # `deleted_at` da INSCRIÇÃO, não o do que ela referencia.
             sequence__deleted_at__isnull=True,
+        )
+        .exclude(
+            # Clínica suspensa não dispara (RF-ADM-1.7b). As inscrições ficam
+            # onde estão: o `next_dispatch_at` vencido é reprocessado quando a
+            # clínica voltar, e cancelá-las aqui destruiria a trilha de quem
+            # não teve culpa nenhuma na suspensão.
+            clinic__status=ClinicStatus.SUSPENDED
         )
         .order_by("next_dispatch_at")
         .values_list("pk", flat=True)[: MAX_DISPAROS_POR_VARREDURA + 1]
