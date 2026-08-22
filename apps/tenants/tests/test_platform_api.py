@@ -28,6 +28,8 @@ pytestmark = pytest.mark.django_db
 CLINICS = "/api/v1/platform/clinics/"
 OVERVIEW = "/api/v1/platform/overview/"
 SYNC = "/api/v1/platform/sync/"
+USERS = "/api/v1/platform/users/"
+HEALTH = "/api/v1/platform/health/"
 
 
 @pytest.fixture
@@ -47,7 +49,7 @@ def logado(api_client, admin_plataforma):
 
 
 class TestQuemEntra:
-    @pytest.mark.parametrize("url", [CLINICS, OVERVIEW, SYNC])
+    @pytest.mark.parametrize("url", [CLINICS, OVERVIEW, SYNC, USERS, HEALTH])
     def test_gestor_de_clinica_nao_entra_na_plataforma(
         self, api_client, manager_single_clinic, url
     ):
@@ -59,7 +61,7 @@ class TestQuemEntra:
 
         assert api_client.get(url).status_code == 403
 
-    @pytest.mark.parametrize("url", [CLINICS, OVERVIEW, SYNC])
+    @pytest.mark.parametrize("url", [CLINICS, OVERVIEW, SYNC, USERS, HEALTH])
     def test_deslogado_nao_entra(self, api_client, url):
         assert api_client.get(url).status_code == 401
 
@@ -564,3 +566,228 @@ class TestPainelDeSync:
         linha = logado.get(SYNC).data["clinics"][0]
 
         assert linha["stalled"] is False
+
+
+# --------------------------------------------------------------------- #
+# A plataforma de verdade (RF-ADM-4.1/4.2/4.3, 1.8, 7 e 8)
+# --------------------------------------------------------------------- #
+
+
+class TestVisaoGeralComTempo:
+    def test_a_serie_cobre_os_30_dias_com_zeros(self, logado):
+        """RF-ADM-4.1: dia sem mensagem entra como zero, senão o gráfico
+        esconde justamente o buraco."""
+        resposta = logado.get(OVERVIEW)
+
+        serie = resposta.data["messages_by_day"]
+        assert len(serie) == 31  # 30 dias atrás até hoje, inclusive
+        assert all(item["count"] == 0 for item in serie)
+
+    def test_canal_caido_vira_problema_de_primeira_classe(self, logado, clinic_a):
+        """RF-ADM-4.2: a clínica real ficou dias com o WhatsApp fora sem a
+        Visão geral gritar. Nunca mais."""
+        _canal(
+            clinic_a,
+            disconnected_at=timezone.now() - timedelta(days=2),
+            disconnect_reason="Session has expired.",
+        )
+
+        atencao = logado.get(OVERVIEW).data["attention"]
+
+        caidos = [a for a in atencao if a["kind"] == "channel_down"]
+        assert len(caidos) == 1
+        assert caidos[0]["clinic"]["id"] == clinic_a.pk
+        assert caidos[0]["detail"] == "Session has expired."
+        assert caidos[0]["since"] is not None
+
+    def test_sem_problema_nenhum_o_bloco_vem_vazio(self, logado, clinic_a):
+        assert logado.get(OVERVIEW).data["attention"] == []
+
+    def test_a_lista_diz_a_ultima_mensagem(self, logado, clinic_a):
+        """RF-ADM-4.3: o "está viva?" que contagem de 30 dias não responde."""
+        resposta = logado.get(CLINICS)
+
+        linha = next(c for c in resposta.data["results"] if c["id"] == clinic_a.pk)
+        assert "last_message_at" in linha
+
+
+class TestDetalheInteiro:
+    def test_o_detalhe_traz_os_seis_cartoes(self, logado, clinic_a, attendant_a):
+        """RF-ADM-1.8: canal, sync, automação, equipe e histórico juntos."""
+        resposta = logado.get(f"{CLINICS}{clinic_a.pk}/")
+
+        assert resposta.status_code == 200
+        for campo in (
+            "channel_details",
+            "sync_runs",
+            "automation",
+            "team",
+            "suspension_history",
+        ):
+            assert campo in resposta.data, campo
+        equipe = resposta.data["team"]
+        assert len(equipe) == 1
+        assert equipe[0]["role"] == MembershipRole.ATTENDANT
+        assert "last_login" in equipe[0]
+        # Cerca: papel e nome de EQUIPE são cadastro; paciente continua número.
+        assert "patients" in resposta.data["counts"]
+
+    def test_a_lista_continua_leve_sem_os_cartoes(self, logado, clinic_a):
+        """As consultas por objeto são do RETRIEVE; a lista não as paga."""
+        resposta = logado.get(CLINICS)
+
+        assert "channel_details" not in resposta.data["results"][0]
+        assert "team" not in resposta.data["results"][0]
+
+    def test_o_historico_de_suspensao_sai_da_auditoria(self, logado, clinic_a):
+        logado.post(
+            f"{CLINICS}{clinic_a.pk}/suspend/",
+            {"category": SuspensionCategory.NON_PAYMENT, "reason": "teste"},
+            format="json",
+        )
+        logado.post(f"{CLINICS}{clinic_a.pk}/reactivate/", {}, format="json")
+
+        historico = logado.get(f"{CLINICS}{clinic_a.pk}/").data[
+            "suspension_history"
+        ]
+
+        assert [h["operation"] for h in historico] == [
+            "clinic.reactivate",
+            "clinic.suspend",
+        ]
+        assert historico[1]["reason"] == "teste"
+
+
+class TestFiltrosServerSide:
+    """⚠️ Filtro é do SERVIDOR (regra de 21/08): o front não peneira lista."""
+
+    def test_clinicas_filtram_por_busca_e_situacao(self, logado, clinic_a, clinic_b):
+        clinic_b.status = ClinicStatus.SUSPENDED
+        clinic_b.save(update_fields=["status"])
+
+        nomes = [
+            c["name"]
+            for c in logado.get(CLINICS, {"search": "Alfa"}).data["results"]
+        ]
+        assert nomes == [clinic_a.name]
+
+        suspensas = [
+            c["name"]
+            for c in logado.get(CLINICS, {"status": "suspended"}).data["results"]
+        ]
+        assert suspensas == [clinic_b.name]
+
+        # Busca que não acha nada devolve vazio, não erro.
+        assert logado.get(CLINICS, {"search": "nao-existe"}).data["results"] == []
+
+    def test_o_detalhe_nao_some_por_causa_do_filtro(self, logado, clinic_a):
+        """`get_object` ignora a busca da lista de propósito."""
+        resposta = logado.get(
+            f"{CLINICS}{clinic_a.pk}/", {"search": "nada-a-ver"}
+        )
+        assert resposta.status_code == 200
+        assert resposta.data["id"] == clinic_a.pk
+
+    def test_pessoas_filtram_por_busca_clinica_e_tipo(
+        self, logado, admin_plataforma, manager_two_clinics, attendant_a, clinic_a
+    ):
+        por_busca = logado.get(USERS, {"search": "atendente@"}).data["users"]
+        assert [u["email"] for u in por_busca] == ["atendente@teste.dev"]
+
+        por_clinica = {
+            u["email"]
+            for u in logado.get(USERS, {"clinic": str(clinic_a.pk)}).data["users"]
+        }
+        assert por_clinica == {"gestor@teste.dev", "atendente@teste.dev"}
+
+        por_papel = {
+            u["email"] for u in logado.get(USERS, {"role": "manager"}).data["users"]
+        }
+        assert por_papel == {"gestor@teste.dev"}
+
+        admins = {
+            u["email"]
+            for u in logado.get(USERS, {"role": "platform_admin"}).data["users"]
+        }
+        assert admins == {"dono@medessence.dev"}
+
+
+class TestPessoas:
+    def test_lista_todo_mundo_com_vinculos_e_ultimo_acesso(
+        self, logado, admin_plataforma, manager_two_clinics
+    ):
+        """RF-ADM-7: quem tem acesso a quê, sem abrir clínica por clínica."""
+        resposta = logado.get(USERS)
+
+        assert resposta.status_code == 200
+        pessoas = {u["email"]: u for u in resposta.data["users"]}
+        gestor = pessoas["gestor@teste.dev"]
+        assert len(gestor["memberships"]) == 2
+        assert gestor["is_platform_admin"] is False
+        assert "last_login" in gestor
+        assert pessoas["dono@medessence.dev"]["is_platform_admin"] is True
+
+    def test_e_leitura_nesta_fase(self, logado):
+        """As ações de conta são do eixo poder, e a rota nem aceita POST."""
+        assert logado.post(USERS, {}, format="json").status_code == 405
+
+
+class TestSaudeDoSistema:
+    def test_o_painel_reune_banco_filas_worker_e_presas(self, logado):
+        """RF-ADM-8: o inbox_doctor com porta na tela."""
+        resposta = logado.get(HEALTH)
+
+        assert resposta.status_code == 200
+        assert resposta.data["database"]["alive"] is True
+        assert "queues" in resposta.data
+        assert "worker" in resposta.data
+        assert resposta.data["stuck_messages"]["total"] == 0
+        assert resposta.data["pending_migrations"] == 0
+
+    def test_a_presa_identifica_a_conversa_e_nunca_o_conteudo(
+        self, logado, clinic_a
+    ):
+        from apps.inbox.choices import MessageStatus, SenderKind
+        from apps.inbox.models import Message
+
+        conversa = _conversa(clinic_a)
+        Message.objects.create(
+            clinic=clinic_a,
+            conversation=conversa,
+            sender_kind=SenderKind.AGENT,
+            status=MessageStatus.FAILED,
+            body="conteúdo que NÃO pode atravessar",
+            wa_timestamp=timezone.now(),
+        )
+
+        presas = logado.get(HEALTH).data["stuck_messages"]
+
+        assert presas["total"] == 1
+        item = presas["items"][0]
+        assert item["conversation_id"] == conversa.pk
+        assert "conteúdo" not in str(item)
+
+
+# Andaime local: o `inbox_a` mora no conftest do app inbox e não chega aqui.
+def _canal(clinic, **campos):
+    from apps.inbox.choices import WhatsAppProviderKind
+    from apps.inbox.models import Channel
+
+    return Channel.objects.create(
+        clinic=clinic,
+        provider=WhatsAppProviderKind.FAKE,
+        display_number="5585999990000",
+        is_test=False,
+        **campos,
+    )
+
+
+def _conversa(clinic):
+    from apps.inbox.models import Conversation
+    from apps.patients.models import Contact
+
+    canal = _canal(clinic)
+    contato = Contact.objects.create(
+        clinic=clinic, wa_id="5585900000009", display_name="Fulano"
+    )
+    return Conversation.objects.create(clinic=clinic, channel=canal, contact=contato)
