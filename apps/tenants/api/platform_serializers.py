@@ -196,7 +196,6 @@ class PlatformClinicDetailSerializer(PlatformClinicSerializer):
     """
 
     channel_details = SerializerMethodField()
-    sync_runs = SerializerMethodField()
     automation = SerializerMethodField()
     team = SerializerMethodField()
     suspension_history = SerializerMethodField()
@@ -204,7 +203,6 @@ class PlatformClinicDetailSerializer(PlatformClinicSerializer):
     class Meta(PlatformClinicSerializer.Meta):
         fields = PlatformClinicSerializer.Meta.fields + [
             "channel_details",
-            "sync_runs",
             "automation",
             "team",
             "suspension_history",
@@ -234,23 +232,6 @@ class PlatformClinicDetailSerializer(PlatformClinicSerializer):
             "templates_approved": templates.filter(status__iexact="APPROVED").count(),
             "templates_pending": templates.filter(status__iexact="PENDING").count(),
         }
-
-    def get_sync_runs(self, obj):
-        """A última execução por tipo, na MESMA serialização do GET /sync/ehr/."""
-        from apps.integrations.api.views import STATUS_KINDS, _serialize
-        from apps.integrations.models import SyncRun
-
-        if not obj.ehr_provider:
-            return []
-        runs = []
-        for kind in STATUS_KINDS:
-            run = (
-                SyncRun.objects.filter(clinic=obj, kind=kind)
-                .order_by("-started_at")
-                .first()
-            )
-            runs.append(_serialize(kind, run))
-        return runs
 
     def get_automation(self, obj):
         from apps.automation.choices import FlowStatus

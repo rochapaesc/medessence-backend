@@ -612,19 +612,23 @@ class TestVisaoGeralComTempo:
 
 
 class TestDetalheInteiro:
-    def test_o_detalhe_traz_os_seis_cartoes(self, logado, clinic_a, attendant_a):
-        """RF-ADM-1.8: canal, sync, automação, equipe e histórico juntos."""
+    def test_o_detalhe_traz_os_cartoes(self, logado, clinic_a, attendant_a):
+        """RF-ADM-1.8: canal, automação, equipe e histórico juntos.
+
+        Sincronização SAIU do detalhe (22/08): a tela própria já responde por
+        tipo e por clínica, e o retrieve pagava quatro consultas para repetir.
+        """
         resposta = logado.get(f"{CLINICS}{clinic_a.pk}/")
 
         assert resposta.status_code == 200
         for campo in (
             "channel_details",
-            "sync_runs",
             "automation",
             "team",
             "suspension_history",
         ):
             assert campo in resposta.data, campo
+        assert "sync_runs" not in resposta.data
         equipe = resposta.data["team"]
         assert len(equipe) == 1
         assert equipe[0]["role"] == MembershipRole.ATTENDANT
